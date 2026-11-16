@@ -13,7 +13,7 @@ Label: wayfinder:map
 
 ## Notes
 
-领域是桌面相框，不是壁纸。用词以根目录 `GLOSSARY.md` 为准：相框、图库、播放序列、历史、轮播、切换、关闭、退出。
+领域是桌面相框，不是壁纸。用词以根目录 `GLOSSARY.md` 为准：相框、图库、播放序列、本轮进度、历史、轮播、切换、关闭、退出。
 
 每个会话先读本图，再按票的 `Type:` 工作。grilling 票同时使用 grilling 与 domain-modeling。不要把本图票标成 `ready-for-agent`。
 
