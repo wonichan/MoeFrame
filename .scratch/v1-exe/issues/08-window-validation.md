@@ -1,5 +1,6 @@
 # 08: 无边框窗口最小验证
 
+Type: implement
 **What to build:** 提供独立的窗口验证程序、操作清单和诊断日志，让用户在本机确认相框所需的窗口能力确实可用，再开始正式窗口实现。
 
 **Blocked by:** None (can start immediately).

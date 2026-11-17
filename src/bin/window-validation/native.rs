@@ -101,6 +101,10 @@ pub fn observe(ctx: &egui::Context, frame: &eframe::Frame) -> WindowObservation 
     sample.hwnd = Some(hwnd as usize);
     let mut errors = Vec::new();
     // SAFETY: This HWND is borrowed from the live Frame on its UI thread. It is never retained.
+    // SAFETY: read-only Win32 queries against an HWND borrowed from the live Frame on its owning
+    // (UI) thread. The handle is not stored past this call, no message pump runs here, and every
+    // call only fills caller-owned OUT parameters or reads a LONG_PTR, so no aliasing or reentrancy
+    // hazard exists.
     unsafe {
         let mut client = RECT::default();
         if GetClientRect(hwnd, &mut client) != 0 {
