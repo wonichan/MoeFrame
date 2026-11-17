@@ -10,7 +10,7 @@ Label: wayfinder:map
 
 本图覆盖 wayfinder 的默认：允许把实现做进本图，终点是可运行的程序，不是一份只含决定的交接路线。上一张图 [V1 交接路线](../v1-route/map.md) 已作废，不要继续。
 
-手势分界、重启后续播、设置窗边界已关闭，分别按 [ADR-0001](../../docs/adr/0001-defer-side-click.md)、[ADR-0002](../../docs/adr/0002-persist-round-and-history.md)、[ADR-0003](../../docs/adr/0003-settings-window-boundary.md) 实现。在 [边缘缩放先验证](issues/06-resize-before-switch.md) 和 [全分辨率解码](issues/07-full-res-decode.md) 关闭之前，不改 GUI 框架，不改解码策略。里程碑先不要预切。
+手势分界、重启后续播、设置窗边界已关闭，分别按 [ADR-0001](../../docs/adr/0001-defer-side-click.md)、[ADR-0002](../../docs/adr/0002-persist-round-and-history.md)、[ADR-0003](../../docs/adr/0003-settings-window-boundary.md) 实现。[边缘缩放先验证](issues/06-resize-before-switch.md) 和 [全分辨率解码](issues/07-full-res-decode.md) 也已关闭路线决定，但两项实际验证尚未执行。先分别做独立最小验证，通过后才进入对应的正式实现；失败先排查，确认仍不达标后再另开备选票，不直接更换 GUI 框架或解码器。本轮不预切里程碑。
 
 领域用词以根目录 `GLOSSARY.md` 为准。grilling 票同时使用 grilling 与 domain-modeling。不要把本图票标成 `ready-for-agent`。
 
@@ -35,10 +35,13 @@ Label: wayfinder:map
 - 无边框窗口：eframe 0.37.0 不能把四条同时记成已证实。拖边缘未跑过。见 [无边框窗口能力](issues/04-borderless-window.md)。
 - 边缘缩放先验证：先在本机 Windows 11 x64（Build 26100）做独立最小验证，通过后才继续正式窗口实现并沿用 eframe/egui；失败先排查调用方式，确认仍不能满足要求后另开票，不直接换框架。验证含四边四角、120×120 逻辑最小尺寸、内容区移动、创建时不抢焦点、默认不置顶、DPI 与物理尺寸记录，以及最大化后恢复的移动和缩放。由用户手工确认；本机通过不是完整兼容性验收。路线已定，实际验证尚未执行。见 [边缘缩放先验证](issues/06-resize-before-switch.md)。
 - 降采样解码：image 0.25.10 不能边解码边缩小。实测峰值字节数未知。见 [降采样解码](issues/05-downsample-decode.md)。
+- 全分辨率解码：暂定保留 image，允许短暂全分辨率解码，缩到窗口物理像素尺寸（填充按覆盖尺寸）后释放整图；长期只留当前图与下一张的显示数据。用 Limits 拒绝过大输出，记录路径和超限原因后跳过，不承诺 100MP 一定显示，普通 1080p、2K、4K 图片仍须正常显示。50MB 约束解码、缩放及下一张预加载完成后的稳定工作集，连续轮播 1 小时无持续增长的要求不变。先做独立最小验证，通过后才正式实现；瞬时峰值上限和 Limits 阈值实测后由用户确认，不能把 Limits 当作进程内存硬上限。路线已定，验证尚未执行。见 [全分辨率解码](issues/07-full-res-decode.md)。
+
 ## Not yet specified
 
 - 无边框最小验证的实机结果仍未知。下一步单独准备验证程序、操作清单和日志，由用户在本机操作确认；[06](issues/06-resize-before-switch.md) 已关闭的是路线决定，不是验证执行。
-- 第 11 节里程碑怎么切成可执行的票。等 [边缘缩放先验证](issues/06-resize-before-switch.md)、[全分辨率解码](issues/07-full-res-decode.md) 关闭后再说，现在不预切。
+- 解码最小验证尚未执行，没有内存达标结果。下一步测普通图片与超大图的稳定工作集、瞬时峰值和拒绝行为，并提出峰值上限、Limits 阈值建议，由用户确认；[07](issues/07-full-res-decode.md) 已关闭的是路线决定，不是验证执行或验收通过。
+- 第 11 节里程碑怎么切成可执行的票。[边缘缩放先验证](issues/06-resize-before-switch.md)、[全分辨率解码](issues/07-full-res-decode.md) 的路线决定现已关闭；本轮只记录决定，不预切实现票。
 - 第 10 节里必须人在这台机器上点的验收（拖动、托盘、开机自启、任务管理器内存）谁点通过。
 
 ## Out of scope
