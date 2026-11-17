@@ -33,9 +33,11 @@ Label: wayfinder:map
 - 重启后续播：恢复当前图，本轮进度和历史分开并跨启动保存，不恢复洗牌袋。见 [ADR-0002](../../docs/adr/0002-persist-round-and-history.md) 和 [重启后续播](issues/02-resume-random.md)。
 - 设置窗边界：设置窗必做，但不出现悬停暂停、动画类型和显示文件名。三键按第 6 节默认写入，合法手改只保存，行为不跟。间隔是 3 到 99999999 秒。见 [ADR-0003](../../docs/adr/0003-settings-window-boundary.md) 和 [设置窗边界](issues/03-settings-boundary.md)。
 - 无边框窗口：eframe 0.37.0 不能把四条同时记成已证实。拖边缘未跑过。见 [无边框窗口能力](issues/04-borderless-window.md)。
+- 边缘缩放先验证：先在本机 Windows 11 x64（Build 26100）做独立最小验证，通过后才继续正式窗口实现并沿用 eframe/egui；失败先排查调用方式，确认仍不能满足要求后另开票，不直接换框架。验证含四边四角、120×120 逻辑最小尺寸、内容区移动、创建时不抢焦点、默认不置顶、DPI 与物理尺寸记录，以及最大化后恢复的移动和缩放。由用户手工确认；本机通过不是完整兼容性验收。路线已定，实际验证尚未执行。见 [边缘缩放先验证](issues/06-resize-before-switch.md)。
 - 降采样解码：image 0.25.10 不能边解码边缩小。实测峰值字节数未知。见 [降采样解码](issues/05-downsample-decode.md)。
 ## Not yet specified
 
+- 无边框最小验证的实机结果仍未知。下一步单独准备验证程序、操作清单和日志，由用户在本机操作确认；[06](issues/06-resize-before-switch.md) 已关闭的是路线决定，不是验证执行。
 - 第 11 节里程碑怎么切成可执行的票。等 [边缘缩放先验证](issues/06-resize-before-switch.md)、[全分辨率解码](issues/07-full-res-decode.md) 关闭后再说，现在不预切。
 - 第 10 节里必须人在这台机器上点的验收（拖动、托盘、开机自启、任务管理器内存）谁点通过。
 
