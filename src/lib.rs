@@ -1,7 +1,8 @@
-//! 工单 08 的独立窗口验证入口；不包含正式相框实现。
+//! 工单 08 / 09 的独立验证入口；不包含正式相框实现。
 
 use eframe::egui;
 
+pub mod decode_validation;
 pub mod diagnostics;
 
 /// 当前 winit 窗口的观测；每帧重新查询，不保存窗口句柄。

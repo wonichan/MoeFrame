@@ -43,6 +43,11 @@ pub struct SessionLog {
 
 impl SessionLog {
     pub fn create(directory: &Path, metadata: &str) -> io::Result<Self> {
+        Self::create_with_schema(directory, "window-validation-v1", metadata)
+    }
+
+    /// 工单 09 复用同一份逐行日志，用不同 schema 标识，避免两种验证的记录互相冒充。
+    pub fn create_with_schema(directory: &Path, schema: &str, metadata: &str) -> io::Result<Self> {
         fs::create_dir_all(directory)?;
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -64,7 +69,7 @@ impl SessionLog {
                 started: Instant::now(),
             };
             log.record("environment", &format!(
-                "schema=window-validation-v1; None means unknown; requests and observations are not human acceptance; {metadata}"
+                "schema={schema}; None means unknown; requests and observations are not human acceptance; {metadata}"
             ))?;
             return Ok(log);
         }

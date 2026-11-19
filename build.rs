@@ -96,6 +96,12 @@ fn main() {
         "glutin",
         "glutin-winit",
         "glow",
+        "image",
+        "png",
+        "zune-jpeg",
+        "zune-core",
+        "image-webp",
+        "bmp-rs",
     ];
     let mut name = "";
     let mut versions = Vec::new();
@@ -122,6 +128,10 @@ fn main() {
     assert!(
         versions.iter().any(|value| value == "eframe=0.37.0"),
         "missing pinned eframe in Cargo.lock"
+    );
+    assert!(
+        versions.iter().any(|value| value == "image=0.25.10"),
+        "missing pinned image in Cargo.lock"
     );
     emit("DEPENDENCIES", &versions.join(", "));
 }
