@@ -28,3 +28,5 @@
 ## Comments
 
 - 2026-11-19：审查遗留的预加载顺序已修复。`ValidationCycle::prime` 拆为 `prime_current` / `preload_next`，`advance` 只退役与提升；worker 新增 `PreloadNext` 命令与 `ReadyKind` 三段回包；UI 在当前图 `draw_submitted` 记录之后才发出预加载请求。先写两项接缝失败测试再实现，全量 40 项测试通过（Linux 副本执行，副本仅为跑测试启用 wayland/x11 特性）；Windows 目标 check/clippy 与 fmt 通过。详见 `.agents/notes/implemented/testing/2026-11-18-decode-memory-validation.md` 的 2026-11-19 后续节。本票状态不变：空载 50 MB 未通过、图像组与一小时趋势无数据、Limits 与峰值上限待用户确认，不得标完成。
+- 2026-11-19（用户反馈）：稳定工作集口径放宽——50 MB 不是硬线，**100 MB 以下即可接受**。原 ≤50 MB 验收行据此按 <100 MB 评估；图像组与一小时趋势仍须实测，Limits 与峰值上限仍待实测后确认。本票仍不标完成。
+- 2026-11-19：内存诊断启动。源码核对（eframe/epaint/fontique 0.37）：系统回退是后台枚举 + mmap 按需插入，不是启动全量加载；关字体组图集仅约 2 MB，约 60 MB 差值主体未定。验证器新增诊断臂 `--font-file`（只注册单个字体文件、关闭系统枚举），三组差分复测命令已写入 `docs/decode-validation.md`，待实机数据回来后定产品字体路线。

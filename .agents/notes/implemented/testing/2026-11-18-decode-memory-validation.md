@@ -38,3 +38,24 @@ Status: implemented
 - 宿主接线：worker 新增 `Command::PreloadNext`，`Ready` 以 `ReadyKind::{Current, Preload, Advanced}` 区分三段回包；UI 在 Current/Advanced 回包时先上传/确认当前图纹理，仅登记待发预加载；请求在本帧 `draw_submitted` 记录之后才真正发出（双轴审查 Spec 轴指出初版在同一帧内、绘制提交记录之前就发了请求，已按此修正），Preload 回包只上传下一张纹理。`display_rgba_bytes` 因此分两段更新（当前图一段、预加载完成后一段），稳定采样仍以 `pending` 结束与 QUIESCENT 阶段为准，口径未放宽。
 - 测试先行：在真实轮播接缝先加两项失败测试（`cycle_publishes_current_before_touching_the_next_image`、`advance_promotes_without_decoding_the_new_next_until_preload`，先以“方法不存在”形式确认 RED），再实现到 GREEN；原有 5 处使用 `prime` 的测试迁移到两段式调用，行为断言不变或更严（advance 后 `next` 必须为空、提升不重复解码）。
 - 验证：`cargo fmt --all -- --check` 通过；Windows 目标 `cargo check --all-targets` 与 `cargo clippy --all-targets` 通过（clippy 仅有 observation.rs / native.rs 既有的 FFI 结构体初始化警告，本次未新增）。测试执行在 Linux 副本上完成（副本仅为可执行测试而给 winit/eframe 启用 wayland/x11 特性，未提交）：全量 40 项通过（解码 17、CLI 4、诊断 6、窗口 13），`cargo test --doc` 通过。Windows 实机 GUI 复测仍未执行，本项不改变内存门结论：空载 50 MB 未通过、图像组与一小时趋势无数据、Limits 与峰值上限仍待用户确认，工单 09 不标完成。
+
+## 2026-11-19 用户口径：稳定工作集 <100 MB 可接受
+
+- 用户原话：50MB 也并非严格，只要是 100MB 以下都能接受。据此本票稳定工作集评估线改为 <100 MB（空载关字体回退组 73.6–80.0 MB 已在该线内，但图像组与一小时趋势仍无数据，且默认字体回退组 138.2–142.5 MB 仍在线外）。Limits 与峰值上限的确认程序不变：先实测、后确认，不拿本次放宽当作已确认阈值。
+
+## 2026-11-19 内存诊断（进行中）：差值构成假设与单字体实验臂
+
+按 diagnosing-bugs 流程推进。反馈环是实机差分复测（同一二进制、基线模式、独立日志目录），只能由用户在 Windows 上执行；已有的 font-off 组（73.6–80.0 MB）与默认组（138.2–142.5 MB）构成现成差分对。
+
+源码级事实（eframe/epaint/egui_system_font_provider 0.37 本地源码核对）：
+
+- 系统字体回退不是启动时全量加载字体文件。eframe 只注册一个 `SystemFontProvider`；它在后台线程用 fontique 枚举全部系统字体（DirectWrite），字体文件以 mmap 方式访问、按缺失字形逐簇查询，命中的字体以 `FontInsert` 插入并由 epaint 长期保留。
+- 关字体组的字体图集实测仅 16384×32（理论 RGBA 2 MB），图集不是约 60 MB 差值的主体。
+
+排序假设（均可证伪）：
+
+1. **枚举/数据库驻留**：fontique 的 Collection 枚举触及数百个字体面的表数据，CJK 系统字体多且大，被触及的 mmap 页与数据库元数据计入工作集。预测：默认组日志 `font_state` 的 `discovered_fallback_fonts` 为空或极少，而工作集仍约 140 MB；单字体组 ≈ 关字体组 + 该文件被触及部分。
+2. **插入字体保留**：实际渲染触发回退的字形簇把整份字体文件数据插入并保留（微软雅黑 TTC 约 19 MB，多个脚本/家族可叠加）。预测：`discovered_fallback_fonts` 非空且与工作集增量同量级；单字体组 ≈ 关字体组 + 约一个字体文件大小，且中文覆盖正常。
+3. **图集增长**：默认组图集显著大于关字体组。预测：两组 `font_state` 的 atlas_pixels 差值 ×4 字节能解释差值的主要部分（现有证据对关字体组不利此说，默认组图集尺寸待日志确认）。
+
+为此给验证器新增诊断臂 `--font-file FILE`：强制关闭系统字体枚举，只把指定单个字体文件注册为唯一回退（Proportional/Monospace 最低优先级），日志记 `font_file_registered` 路径与字节数；CLI 新增 1 项测试，全量 41 项通过，Windows 目标 check 通过。复测命令已写入 `docs/decode-validation.md`。三组数据回来后再定产品字体路线；在此之前不下“差值就是字体”的结论（两组原记录并非同二进制交错 A/B）。

@@ -1,7 +1,7 @@
 use moe_frame::decode_validation::{DecodeLimits, DisplayMode};
 use std::{ffi::OsString, fs, path::PathBuf, time::Duration};
 
-pub const HELP: &str = "decode-validation [options] -- <image paths>\n  --max-width N --max-height N --max-alloc-mib N  Required experimental Limits (not product defaults)\n  --mode fit|fill           Display mode (default fit)\n  --list FILE               UTF-8 image paths, relative to the list file\n  --interval-ms N           Switch delay after preparation (default 5000)\n  --sample-ms N             Windows process sampling period (default 25)\n  --duration-secs N         Auto-close after first prepared display; baseline starts at launch\n  --log-dir DIR             Default: system temp/MoeFrame-decode-validation\n  --baseline                Empty GUI only; no image paths or Limits\n  --no-system-font-fallback Diagnostic opt-out; font coverage differs, default enabled\n  --help                    Show this help\n";
+pub const HELP: &str = "decode-validation [options] -- <image paths>\n  --max-width N --max-height N --max-alloc-mib N  Required experimental Limits (not product defaults)\n  --mode fit|fill           Display mode (default fit)\n  --list FILE               UTF-8 image paths, relative to the list file\n  --interval-ms N           Switch delay after preparation (default 5000)\n  --sample-ms N             Windows process sampling period (default 25)\n  --duration-secs N         Auto-close after first prepared display; baseline starts at launch\n  --log-dir DIR             Default: system temp/MoeFrame-decode-validation\n  --baseline                Empty GUI only; no image paths or Limits\n  --no-system-font-fallback Diagnostic opt-out; font coverage differs, default enabled\n  --font-file FILE          Diagnostic: register this single font file as the only fallback (implies --no-system-font-fallback)\n  --help                    Show this help\n";
 
 #[derive(Debug)]
 pub struct Config {
@@ -14,6 +14,7 @@ pub struct Config {
     pub log_dir: PathBuf,
     pub baseline: bool,
     pub system_font_fallback: bool,
+    pub font_file: Option<PathBuf>,
 }
 
 impl Config {
@@ -28,6 +29,7 @@ impl Config {
         let mut log_dir = std::env::temp_dir().join("MoeFrame-decode-validation");
         let mut baseline = false;
         let mut system_font_fallback = true;
+        let mut font_file = None;
         while let Some(arg) = args.next() {
             if arg == "--" {
                 paths.extend(args.map(PathBuf::from));
@@ -81,6 +83,7 @@ impl Config {
                     duration = Some(Duration::from_secs(positive(&value, option)?))
                 }
                 "--log-dir" => log_dir = PathBuf::from(value),
+                "--font-file" => font_file = Some(PathBuf::from(value)),
                 "--list" => {
                     let list = PathBuf::from(value);
                     let contents = fs::read_to_string(&list)
@@ -116,6 +119,10 @@ impl Config {
                 max_alloc: alloc.ok_or("provide explicit --max-alloc-mib")?,
             })
         };
+        // A single registered fallback file replaces system enumeration entirely.
+        if font_file.is_some() {
+            system_font_fallback = false;
+        }
         Ok(Some(Self {
             paths,
             limits,
@@ -126,6 +133,7 @@ impl Config {
             log_dir,
             baseline,
             system_font_fallback,
+            font_file,
         }))
     }
 }
@@ -185,6 +193,22 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .system_font_fallback
+        );
+    }
+    #[test]
+    fn single_font_file_replaces_system_font_enumeration() {
+        let plain = parse(&["--baseline"]).unwrap().unwrap();
+        assert!(plain.font_file.is_none() && plain.system_font_fallback);
+        let single = parse(&["--baseline", "--font-file", "C:/Windows/Fonts/msyh.ttc"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            single.font_file.as_deref(),
+            Some(std::path::Path::new("C:/Windows/Fonts/msyh.ttc"))
+        );
+        assert!(
+            !single.system_font_fallback,
+            "registering one font file must not also enumerate the whole system"
         );
     }
     #[test]

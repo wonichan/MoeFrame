@@ -80,11 +80,40 @@ fn run(config: config::Config) -> Result<(), Box<dyn std::error::Error>> {
         system_font_fallback: config.system_font_fallback,
         ..Default::default()
     };
+    let font_insert = match &config.font_file {
+        Some(path) => Some((
+            path.clone(),
+            std::fs::read(path)
+                .map_err(|e| format!("cannot read --font-file {}: {e}", path.display()))?,
+        )),
+        None => None,
+    };
     let app_observation = observation.clone();
     let result = eframe::run_native(
         "MoeFrame decode memory validation",
         options,
         Box::new(move |cc| {
+            if let Some((path, bytes)) = font_insert {
+                let byte_count = bytes.len();
+                cc.egui_ctx.add_font(egui::FontInsert {
+                    name: "single-file-fallback".to_owned(),
+                    data: egui::FontData::from_owned(bytes),
+                    families: vec![
+                        egui::InsertFontFamily {
+                            family: egui::FontFamily::Proportional,
+                            priority: egui::FontPriority::Lowest,
+                        },
+                        egui::InsertFontFamily {
+                            family: egui::FontFamily::Monospace,
+                            priority: egui::FontPriority::Lowest,
+                        },
+                    ],
+                });
+                app_observation.record(
+                    "font_file_registered",
+                    &format!("path={path:?}; bytes={byte_count}"),
+                );
+            }
             if let Some(gl) = &cc.gl {
                 use eframe::glow::HasContext;
                 // Query GL metadata without reading pixels or creating diagnostic textures.

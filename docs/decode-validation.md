@@ -44,7 +44,10 @@ cargo run --release --example generate_decode_validation_samples -- $cases
 ```powershell
 & .\target\release\decode-validation.exe --baseline --duration-secs 90 --log-dir target/decode-memory-validation/baseline-new
 & .\target\release\decode-validation.exe --baseline --no-system-font-fallback --duration-secs 90 --log-dir target/decode-memory-validation/font-off-new
+& .\target\release\decode-validation.exe --baseline --font-file C:\Windows\Fonts\msyh.ttc --duration-secs 90 --log-dir target/decode-memory-validation/font-single-new
 ```
+
+第三组为单字体文件诊断：关闭系统字体枚举，只注册指定的一个字体文件作为回退（日志记 `font_file_registered` 的路径与字节数）。与默认组对比时同时看各组日志的 `font_state` 行：`discovered_fallback_fonts` 为空而工作集仍高，说明开销在系统字体枚举/数据库本身；非空则说明开销在实际插入并保留的回退字体。
 
 先独立确认普通图片四格式能显示，再检查混合错误；Fit 与 Fill 分组：
 
@@ -94,6 +97,8 @@ Windows 指标来自 `GetProcessMemoryInfo`：
 | 显式关闭系统字体回退 | 90 秒 | 73617408 / 79328327.81 / 80019456 | 80162816 | 未通过 50 MB |
 
 两次记录不是同一二进制下交错重复的严格 A/B；关闭字体组仍超过 50 MB，但不能把两组差值全部归因于字体。默认字体回退未改变，可选关闭会影响字符覆盖。
+
+2026-11-19 用户口径更新：稳定工作集 100 MB 以下即可接受（见工单 09 Comments）。按新口径，关闭字体回退组（73.6–80.0 MB）已在线内，默认系统字体回退组（138.2–142.5 MB）仍在线外；上表结论列保留测量当时的 50 MB 口径不改写。关字体组实测的字体图集仅 16384×32（理论 2 MB），图集本身不足以解释两组约 60 MB 的差值；差值构成待单字体文件组与各组 `font_state` 的 `discovered_fallback_fonts` 对照后确认。
 
 本机环境：Windows NT 10.0.26200 x64，480×320 逻辑/720×480 物理客户端，DPI 1.5；关闭字体组 GL 记录 `NVIDIA GeForce RTX 4070 Ti SUPER/PCIe/SSE2`、`3.3.0 NVIDIA 616.64`、最大纹理边 32768。字体图集为 16384×32、理论 RGBA 字节 2097152，非整个字体或进程内存。
 
