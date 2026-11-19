@@ -277,24 +277,30 @@ impl ValidationCycle {
         }
     }
 
-    pub fn prime(&mut self, mut observe: impl FnMut(CycleEvent)) -> CycleSnapshot {
+    /// 只准备当前图并立即发布快照，不触碰下一张；
+    /// 宿主在当前图显示提交后才调用 preload_next（父规格：当前图显示后预加载下一张）。
+    pub fn prime_current(&mut self, mut observe: impl FnMut(CycleEvent)) -> CycleSnapshot {
         if self.current.is_none() {
             self.current = self.load_available(DecodeRole::Current, &mut observe);
         }
+        self.snapshot()
+    }
+
+    /// 当前图发布后才准备下一张；没有当前图或下一张已就绪时不做遍历。
+    pub fn preload_next(&mut self, mut observe: impl FnMut(CycleEvent)) -> CycleSnapshot {
         if self.current.is_some() && self.next.is_none() {
             self.next = self.load_available(DecodeRole::Next, &mut observe);
         }
         self.snapshot()
     }
 
+    /// 只完成退役与提升并立即发布，不解码新的下一张；
+    /// 宿主在提升后的当前图显示提交后调用 preload_next。
     pub fn advance(&mut self, mut observe: impl FnMut(CycleEvent)) -> CycleSnapshot {
         Self::retire(&mut self.current, &mut observe);
         self.current = self.next.take();
         if self.current.is_none() {
             self.current = self.load_available(DecodeRole::Current, &mut observe);
-        }
-        if self.current.is_some() {
-            self.next = self.load_available(DecodeRole::Next, &mut observe);
         }
         self.snapshot()
     }

@@ -192,7 +192,8 @@ fn malformed_palette_decoder_panic_is_rejected_and_the_real_cycle_continues() {
     let mut cycle =
         ValidationCycle::new(vec![bad.clone(), good.clone()], request(DisplayMode::Fit));
     let mut events = Vec::new();
-    let snapshot = cycle.prime(|event| events.push(event));
+    cycle.prime_current(|event| events.push(event));
+    let snapshot = cycle.preload_next(|event| events.push(event));
     assert_eq!(snapshot.current.as_ref().unwrap().path, good);
     assert_eq!(snapshot.next.as_ref().unwrap().path, good);
     assert!(events.iter().any(|e| matches!(e, CycleEvent::Rejected { error, .. } if error.path == bad && error.reason.contains("decoder panic"))));
@@ -274,7 +275,8 @@ fn real_cycle_preloads_one_next_and_promotes_it_without_decoding_it_again() {
     let mut policy = request(DisplayMode::Fit);
     policy.target_pixels = [16, 16];
     let mut cycle = ValidationCycle::new(vec![first.clone(), second.clone()], policy);
-    let ready = cycle.prime(|_| {});
+    cycle.prime_current(|_| {});
+    let ready = cycle.preload_next(|_| {});
     assert_eq!(ready.current.as_ref().unwrap().path, first);
     assert_eq!(ready.next.as_ref().unwrap().path, second);
     assert_eq!(ready.resident_rgba_bytes(), 1024);
@@ -284,11 +286,14 @@ fn real_cycle_preloads_one_next_and_promotes_it_without_decoding_it_again() {
     let advanced = cycle.advance(|e| events.push(e));
 
     assert_eq!(advanced.current.as_ref().unwrap().path, second);
-    assert_eq!(advanced.next.as_ref().unwrap().path, first);
-    assert_eq!(advanced.resident_rgba_bytes(), 1024);
+    assert!(advanced.next.is_none());
     assert!(!events
         .iter()
         .any(|e| matches!(e, CycleEvent::Phase { path, .. } if path == &second)));
+    drop(advanced);
+    let repreloaded = cycle.preload_next(|_| {});
+    assert_eq!(repreloaded.next.as_ref().unwrap().path, first);
+    assert_eq!(repreloaded.resident_rgba_bytes(), 1024);
 }
 
 #[test]
@@ -307,7 +312,8 @@ fn cycle_releases_retired_and_cleared_images_when_snapshot_owners_leave() {
     let mut policy = request(DisplayMode::Fit);
     policy.target_pixels = [16, 16];
     let mut cycle = ValidationCycle::new(vec![first, second], policy);
-    let ready = cycle.prime(|_| {});
+    cycle.prime_current(|_| {});
+    let ready = cycle.preload_next(|_| {});
     let old = Arc::downgrade(ready.current.as_ref().unwrap());
     let advanced = cycle.advance(|_| {});
     assert!(
@@ -319,9 +325,11 @@ fn cycle_releases_retired_and_cleared_images_when_snapshot_owners_leave() {
         old.upgrade().is_none(),
         "retired pixels must not be kept in a history cache"
     );
-    let current = Arc::downgrade(advanced.current.as_ref().unwrap());
-    let next = Arc::downgrade(advanced.next.as_ref().unwrap());
+    let repreloaded = cycle.preload_next(|_| {});
+    let current = Arc::downgrade(repreloaded.current.as_ref().unwrap());
+    let next = Arc::downgrade(repreloaded.next.as_ref().unwrap());
     drop(advanced);
+    drop(repreloaded);
     let mut events = Vec::new();
 
     cycle.clear(|e| events.push(e));
@@ -376,7 +384,8 @@ fn cycle_reports_real_bad_paths_and_keeps_preloading_good_png_and_jpeg() {
     );
     let mut events = Vec::new();
 
-    let ready = cycle.prime(|e| events.push(e));
+    cycle.prime_current(|e| events.push(e));
+    let ready = cycle.preload_next(|e| events.push(e));
 
     assert_eq!(ready.current.as_ref().unwrap().path, first);
     assert_eq!(ready.next.as_ref().unwrap().path, second);
@@ -396,7 +405,9 @@ fn cycle_reports_real_bad_paths_and_keeps_preloading_good_png_and_jpeg() {
     drop(ready);
     let advanced = cycle.advance(|_| {});
     assert_eq!(advanced.current.as_ref().unwrap().path, second);
-    assert_eq!(advanced.next.as_ref().unwrap().path, first);
+    drop(advanced);
+    let repreloaded = cycle.preload_next(|_| {});
+    assert_eq!(repreloaded.next.as_ref().unwrap().path, first);
 }
 
 #[test]
@@ -412,7 +423,7 @@ fn all_bad_inputs_finish_one_bounded_traversal_without_a_resident_image() {
     );
     let mut failures = Vec::new();
 
-    let empty = cycle.prime(|event| {
+    let empty = cycle.prime_current(|event| {
         if let CycleEvent::Rejected { error, .. } = event {
             failures.push(error);
         }
@@ -451,14 +462,94 @@ fn repeated_real_switches_do_not_keep_display_history() {
     let mut policy = request(DisplayMode::Fit);
     policy.target_pixels = [16, 16];
     let mut cycle = ValidationCycle::new(vec![first, second], policy);
-    let mut ready = cycle.prime(|_| {});
+    cycle.prime_current(|_| {});
+    let mut ready = cycle.preload_next(|_| {});
 
     for _ in 0..200 {
         let old = Arc::downgrade(ready.current.as_ref().unwrap());
         drop(ready);
-        ready = cycle.advance(|_| {});
+        let advanced = cycle.advance(|_| {});
         assert!(old.upgrade().is_none());
+        ready = cycle.preload_next(|_| {});
+        drop(advanced);
         assert!(ready.current.is_some() && ready.next.is_some());
         assert_eq!(ready.resident_rgba_bytes(), 1024);
     }
+}
+
+#[test]
+fn cycle_publishes_current_before_touching_the_next_image() {
+    use moe_frame::decode_validation::{CycleEvent, ValidationCycle};
+    let directory = TempDirectory::new();
+    let first = directory.0.join("first.png");
+    let second = directory.0.join("second.png");
+    RgbImage::from_pixel(64, 32, Rgb([20, 40, 80]))
+        .save(&first)
+        .unwrap();
+    RgbImage::from_pixel(64, 32, Rgb([80, 40, 20]))
+        .save(&second)
+        .unwrap();
+    let mut policy = request(DisplayMode::Fit);
+    policy.target_pixels = [16, 16];
+    let mut cycle = ValidationCycle::new(vec![first.clone(), second.clone()], policy);
+    let mut events = Vec::new();
+
+    let published = cycle.prime_current(|e| events.push(e));
+
+    assert_eq!(published.current.as_ref().unwrap().path, first);
+    assert!(
+        published.next.is_none(),
+        "publishing the current image must not wait for the next image"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e,
+            CycleEvent::Phase { path, .. } | CycleEvent::Prepared { path, .. }
+            if path == &second
+        )),
+        "the next image must not be opened or decoded before the current one is published"
+    );
+    drop(published);
+
+    let preloaded = cycle.preload_next(|_| {});
+
+    assert_eq!(preloaded.next.as_ref().unwrap().path, second);
+}
+
+#[test]
+fn advance_promotes_without_decoding_the_new_next_until_preload() {
+    use moe_frame::decode_validation::{CycleEvent, ValidationCycle};
+    let directory = TempDirectory::new();
+    let first = directory.0.join("first.png");
+    let second = directory.0.join("second.png");
+    RgbImage::from_pixel(64, 32, Rgb([20, 40, 80]))
+        .save(&first)
+        .unwrap();
+    RgbImage::from_pixel(64, 32, Rgb([80, 40, 20]))
+        .save(&second)
+        .unwrap();
+    let mut policy = request(DisplayMode::Fit);
+    policy.target_pixels = [16, 16];
+    let mut cycle = ValidationCycle::new(vec![first.clone(), second.clone()], policy);
+    cycle.prime_current(|_| {});
+    cycle.preload_next(|_| {});
+    let mut events = Vec::new();
+
+    let advanced = cycle.advance(|e| events.push(e));
+
+    assert_eq!(advanced.current.as_ref().unwrap().path, second);
+    assert!(
+        advanced.next.is_none(),
+        "promotion must be publishable before the new next image is decoded"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, CycleEvent::Phase { path, .. } if path == &first)),
+        "advance must not decode the new next image"
+    );
+    drop(advanced);
+
+    let preloaded = cycle.preload_next(|_| {});
+
+    assert_eq!(preloaded.next.as_ref().unwrap().path, first);
 }

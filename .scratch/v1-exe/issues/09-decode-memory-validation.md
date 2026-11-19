@@ -24,3 +24,7 @@
 父规格：[V1 可运行程序规格](../spec.md)，重点为后台加载、资源边界与解码最小验证。
 
 原[全分辨率解码](07-full-res-decode.md)关闭的是路线决定，不是实测或验收。本票与 [08: 无边框窗口最小验证](08-window-validation.md)可独立开始，不修改原路线票。
+
+## Comments
+
+- 2026-11-19：审查遗留的预加载顺序已修复。`ValidationCycle::prime` 拆为 `prime_current` / `preload_next`，`advance` 只退役与提升；worker 新增 `PreloadNext` 命令与 `ReadyKind` 三段回包；UI 在当前图 `draw_submitted` 记录之后才发出预加载请求。先写两项接缝失败测试再实现，全量 40 项测试通过（Linux 副本执行，副本仅为跑测试启用 wayland/x11 特性）；Windows 目标 check/clippy 与 fmt 通过。详见 `.agents/notes/implemented/testing/2026-11-18-decode-memory-validation.md` 的 2026-11-19 后续节。本票状态不变：空载 50 MB 未通过、图像组与一小时趋势无数据、Limits 与峰值上限待用户确认，不得标完成。

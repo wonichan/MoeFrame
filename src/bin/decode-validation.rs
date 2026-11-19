@@ -137,6 +137,7 @@ struct Validator {
     worker: worker::Worker,
     request: Option<DecodeRequest>,
     pending: bool,
+    preload_after_draw: bool,
     current: Option<Texture>,
     next: Option<Texture>,
     last_ready: Option<Instant>,
@@ -157,6 +158,7 @@ impl Validator {
             worker,
             request: None,
             pending: false,
+            preload_after_draw: false,
             current: None,
             next: None,
             last_ready: None,
@@ -264,44 +266,54 @@ impl Validator {
         ctx.request_repaint();
     }
     fn apply(&mut self, ready: worker::Ready, ctx: &egui::Context) {
-        let Some(image) = &ready.snapshot.current else {
-            self.observation.record(
-                "empty_cycle",
-                "all paths rejected; no display; close without a passing verdict",
-            );
-            self.observation
-                .fail("all input images were rejected".into());
-            return;
-        };
-        if ready.advanced {
-            if !self
-                .current
-                .as_ref()
-                .is_some_and(|t| t.path == image.path && t.display == image.display_pixels)
-            {
-                self.observation
-                    .fail("worker/texture promotion mismatch".into());
-                return;
+        match ready.kind {
+            worker::ReadyKind::Current | worker::ReadyKind::Advanced => {
+                let Some(image) = &ready.snapshot.current else {
+                    self.observation.record(
+                        "empty_cycle",
+                        "all paths rejected; no display; close without a passing verdict",
+                    );
+                    self.observation
+                        .fail("all input images were rejected".into());
+                    return;
+                };
+                if ready.kind == worker::ReadyKind::Advanced {
+                    if !self
+                        .current
+                        .as_ref()
+                        .is_some_and(|t| t.path == image.path && t.display == image.display_pixels)
+                    {
+                        self.observation
+                            .fail("worker/texture promotion mismatch".into());
+                        return;
+                    }
+                } else {
+                    self.clear_textures();
+                    self.current = Some(self.upload(ctx, image, "current"));
+                    self.draw_pending = true;
+                    self.publish_texture_bytes();
+                }
+                // 当前图先发布；预加载请求等本帧绘制提交后再发出（见 ui 的 draw_submitted 处）。
+                self.pending = true;
+                self.preload_after_draw = true;
+                self.last_ready = Some(Instant::now());
             }
-        } else {
-            self.clear_textures();
-            self.current = Some(self.upload(ctx, image, "current"));
-            self.draw_pending = true;
+            worker::ReadyKind::Preload => {
+                let old_next = self.next.take();
+                self.retire(old_next);
+                self.next = ready
+                    .snapshot
+                    .next
+                    .as_ref()
+                    .map(|image| self.upload(ctx, image, "next"));
+                self.publish_texture_bytes();
+                self.pending = false;
+                // The snapshot (RGBA owners) drops here. Only the worker keeps current/next pixel buffers.
+                self.observation
+                    .phase
+                    .store(observation::SETTLING, Ordering::Relaxed);
+            }
         }
-        let old_next = self.next.take();
-        self.retire(old_next);
-        self.next = ready
-            .snapshot
-            .next
-            .as_ref()
-            .map(|image| self.upload(ctx, image, "next"));
-        self.publish_texture_bytes();
-        self.pending = false;
-        self.last_ready = Some(Instant::now());
-        // The snapshot (RGBA owners) drops here. Only the worker keeps current/next pixel buffers.
-        self.observation
-            .phase
-            .store(observation::SETTLING, Ordering::Relaxed);
     }
     fn observe_fonts(&mut self, ctx: &egui::Context) {
         if self
@@ -423,6 +435,13 @@ impl eframe::App for Validator {
                         "first image draw submitted; duration starts here",
                     );
                 }
+            }
+            if self.preload_after_draw {
+                self.preload_after_draw = false;
+                // 当前图绘制已提交，此刻才请求预加载下一张；submit 会清 last_ready，先保留再恢复。
+                let ready_at = self.last_ready;
+                self.submit(worker::Command::PreloadNext);
+                self.last_ready = ready_at;
             }
         } else if self.config.baseline && self.run_started.is_none() {
             self.run_started = Some(Instant::now());

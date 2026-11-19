@@ -15,11 +15,21 @@ use std::{
 
 pub enum Command {
     Configure(DecodeRequest),
+    PreloadNext,
     Advance,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ReadyKind {
+    /// 当前图已备好，可以先显示；下一张尚未触碰。
+    Current,
+    /// 当前图显示后请求的下一张已备好。
+    Preload,
+    /// 已提升预加载图为当前图；新的下一张尚未解码。
+    Advanced,
 }
 pub struct Ready {
     pub snapshot: CycleSnapshot,
-    pub advanced: bool,
+    pub kind: ReadyKind,
 }
 
 /// One in-flight UI request and capacity-one replies; no full-size pixels enter either channel.
@@ -58,22 +68,29 @@ impl Worker {
                 observation.sample();
             };
             while let Ok(command) = receive.recv() {
-                let (snapshot, advanced) = match command {
+                let (snapshot, kind) = match command {
                     Command::Configure(request) => {
                         if let Some(old) = &mut cycle {
                             old.clear(observe);
                         }
                         let mut new = ValidationCycle::new(paths.clone(), request);
-                        let snapshot = new.prime(observe);
+                        let snapshot = new.prime_current(observe);
                         cycle = Some(new);
-                        (snapshot, false)
+                        (snapshot, ReadyKind::Current)
+                    }
+                    Command::PreloadNext => {
+                        let Some(cycle) = &mut cycle else {
+                            observation.fail("preload before configure".into());
+                            break;
+                        };
+                        (cycle.preload_next(observe), ReadyKind::Preload)
                     }
                     Command::Advance => {
                         let Some(cycle) = &mut cycle else {
                             observation.fail("advance before configure".into());
                             break;
                         };
-                        (cycle.advance(observe), true)
+                        (cycle.advance(observe), ReadyKind::Advanced)
                     }
                 };
                 observation
@@ -82,7 +99,7 @@ impl Worker {
                 observation
                     .phase
                     .store(observation::AWAITING_UPLOAD, Ordering::Relaxed);
-                if send.send(Ready { snapshot, advanced }).is_err() {
+                if send.send(Ready { snapshot, kind }).is_err() {
                     break;
                 }
                 ctx.request_repaint();

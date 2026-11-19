@@ -31,3 +31,10 @@ Status: implemented
 - 代价是仍有短时全分辨率解码，以及后台线程、当前/下一张 CPU 显示数据和 GUI 上传副本。库 Limits 是尽力约束，不能约束整个进程、所有解码器内部临时分配、abort 或 OOM；系统进程峰值也不是 GPU 内存或单次解码峰值。
 - 可选 `--no-system-font-fallback` 只帮助诊断，会改变字体覆盖；默认仍启用，不作产品选择。空载已超过 50 MB，因此仅收紧图片 Limits 不能据此宣布普通图片达标，不通过修剪工作集或扣除空载基线改口径。
 - 实机长测与两项用户确认仍是工单 09 的完成门：不采纳实验 Limits 或峰值作为正式安全线，不将工单标完成。若统一口径实测仍失败，保留证据再讨论备选验证票，不在本票擅自切换框架或解码器。
+
+## 2026-11-19 后续：预加载顺序修复（审查遗留 P2）
+
+- 接缝变更：`ValidationCycle::prime` 拆为 `prime_current`（只准备并发布当前图，不触碰下一张）与 `preload_next`（当前图发布后才准备下一张）；`advance` 只做退役与提升并立即发布，不再同步解码新的下一张。旧的合并式 `prime` 已删除，宿主无法再走“当前图等下一张”的起始路径。
+- 宿主接线：worker 新增 `Command::PreloadNext`，`Ready` 以 `ReadyKind::{Current, Preload, Advanced}` 区分三段回包；UI 在 Current/Advanced 回包时先上传/确认当前图纹理，仅登记待发预加载；请求在本帧 `draw_submitted` 记录之后才真正发出（双轴审查 Spec 轴指出初版在同一帧内、绘制提交记录之前就发了请求，已按此修正），Preload 回包只上传下一张纹理。`display_rgba_bytes` 因此分两段更新（当前图一段、预加载完成后一段），稳定采样仍以 `pending` 结束与 QUIESCENT 阶段为准，口径未放宽。
+- 测试先行：在真实轮播接缝先加两项失败测试（`cycle_publishes_current_before_touching_the_next_image`、`advance_promotes_without_decoding_the_new_next_until_preload`，先以“方法不存在”形式确认 RED），再实现到 GREEN；原有 5 处使用 `prime` 的测试迁移到两段式调用，行为断言不变或更严（advance 后 `next` 必须为空、提升不重复解码）。
+- 验证：`cargo fmt --all -- --check` 通过；Windows 目标 `cargo check --all-targets` 与 `cargo clippy --all-targets` 通过（clippy 仅有 observation.rs / native.rs 既有的 FFI 结构体初始化警告，本次未新增）。测试执行在 Linux 副本上完成（副本仅为可执行测试而给 winit/eframe 启用 wayland/x11 特性，未提交）：全量 40 项通过（解码 17、CLI 4、诊断 6、窗口 13），`cargo test --doc` 通过。Windows 实机 GUI 复测仍未执行，本项不改变内存门结论：空载 50 MB 未通过、图像组与一小时趋势无数据、Limits 与峰值上限仍待用户确认，工单 09 不标完成。
