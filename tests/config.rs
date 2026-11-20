@@ -164,3 +164,18 @@ fn special_character_folder_path_round_trips() {
     let reloaded = ConfigStore::load(&path);
     assert_eq!(reloaded.config().image_folder.as_deref(), Some(folder));
 }
+
+#[test]
+fn saving_the_interval_changes_only_that_field() {
+    let path = temp_config("interval-save");
+    let mut store = ConfigStore::load(&path);
+    store.set_image_folder(Some("D:\\图库")).unwrap();
+    store.set_interval_secs(600).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("interval_secs = 600"), "{text}");
+    assert!(text.contains("mode = \"random\""), "{text}");
+    let reloaded = ConfigStore::load(&path);
+    assert_eq!(reloaded.config().playback.interval_secs, 600);
+    assert_eq!(reloaded.config().image_folder.as_deref(), Some("D:\\图库"));
+    assert_eq!(reloaded.config().window.width, 480);
+}

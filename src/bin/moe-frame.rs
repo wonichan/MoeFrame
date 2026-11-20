@@ -14,7 +14,7 @@ mod worker;
 use eframe::egui;
 #[cfg(windows)]
 use moe_frame::{
-    app_core::{Effect, FrameCore, Intent},
+    app_core::{Effect, FrameCore, Intent, View},
     config::ConfigStore,
     decode_validation::DisplayMode,
     loading::LoadRequest,
@@ -47,6 +47,12 @@ fn main() {
     }
 }
 
+/// 宿主 UI 时钟的单调毫秒值，是核心唯一的计时来源。
+#[cfg(windows)]
+fn now_ms(ctx: &egui::Context) -> u64 {
+    (ctx.input(|input| input.time) * 1000.0) as u64
+}
+
 #[cfg(windows)]
 fn app_directory() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("MoeFrame"))
@@ -60,6 +66,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let store = ConfigStore::load(&config_path);
     let saved_folder = store.config().image_folder.as_ref().map(PathBuf::from);
     let fit_mode = store.config().display.fit_mode;
+    let interval_secs = store.config().playback.interval_secs;
     let window = store.config().window.clone();
     // 配置里存有窗口位置时按存档开窗；没有（首次启动）才走右下角内缩放置。
     let saved_position = match (window.x, window.y) {
@@ -100,7 +107,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             cc.egui_ctx.set_zoom_factor(1.0);
             let (command_tx, reply_rx) = worker::spawn(log_path);
             Ok(Box::new(FrameApp {
-                core: FrameCore::new(saved_folder),
+                core: FrameCore::new(saved_folder, interval_secs),
                 store,
                 fit_mode,
                 command_tx,
@@ -110,6 +117,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 texture: None,
                 load_seq: 0,
                 load_in_flight: false,
+                wheel_acc: 0.0,
             }))
         }),
     )?;
@@ -129,6 +137,8 @@ struct FrameApp {
     /// 当前一轮加载的序号；新一轮扫描开始即作废在飞的旧加载结果。
     load_seq: u64,
     load_in_flight: bool,
+    /// 滚轮平滑滚动量的累积，攒够一格才触发一次切换。
+    wheel_acc: f32,
 }
 
 #[cfg(windows)]
@@ -157,15 +167,23 @@ impl FrameApp {
                     self.load_seq += 1;
                     let _ = self.command_tx.send(Command::Scan { folder });
                 }
-                Effect::LoadFirst { candidates } => {
+                Effect::Load { candidates } => {
                     self.load_seq += 1;
                     self.load_in_flight = true;
                     let request = LoadRequest::product(self.physical_target(ctx), self.fit_mode);
-                    let _ = self.command_tx.send(Command::LoadFirst {
+                    let _ = self.command_tx.send(Command::Load {
                         seq: self.load_seq,
                         candidates,
                         request,
                     });
+                }
+                Effect::Preload { path } => {
+                    let request = LoadRequest::product(self.physical_target(ctx), self.fit_mode);
+                    let _ = self.command_tx.send(Command::Preload { path, request });
+                }
+                Effect::SaveInterval(secs) => {
+                    // A failed config write must not crash the frame; the menu re-reads the core value.
+                    let _ = self.store.set_interval_secs(secs);
                 }
                 Effect::Exit => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -199,11 +217,16 @@ impl FrameApp {
                     let shown = image.as_ref().map(|image| image.path.clone());
                     if let Some(image) = image {
                         self.upload(ctx, image);
-                    } else {
+                    }
+                    let effects = self.core.handle(Intent::LoadCompleted {
+                        shown,
+                        now_ms: now_ms(ctx),
+                    });
+                    self.dispatch(ctx, effects);
+                    // 导航全失败时核心保留当前图，纹理不动；只有核心回到无图状态才清纹理。
+                    if self.core.view() == View::Empty {
                         self.texture = None;
                     }
-                    let effects = self.core.handle(Intent::LoadCompleted(shown));
-                    self.dispatch(ctx, effects);
                 }
             }
         }
@@ -247,6 +270,10 @@ impl eframe::App for FrameApp {
         }
         self.drain_replies(&ctx);
         self.place_bottom_right(&ctx);
+        let now = now_ms(&ctx);
+        let tick_effects = self.core.handle(Intent::Tick { now_ms: now });
+        self.dispatch(&ctx, tick_effects);
+        self.handle_keys_and_wheel(&ctx, now);
 
         let mut menu_intent: Option<Intent> = None;
         let panel = egui::CentralPanel::default()
@@ -275,11 +302,44 @@ impl eframe::App for FrameApp {
                     );
                 }
             });
+        let playing = self.core.is_playing();
+        let current_interval = self.core.interval_secs();
         panel.response.context_menu(|ui| {
             if ui.button("选择文件夹…").clicked() {
                 menu_intent = Some(Intent::FolderPickRequested);
                 ui.close();
             }
+            ui.separator();
+            if ui.button("上一张").clicked() {
+                menu_intent = Some(Intent::PrevRequested);
+                ui.close();
+            }
+            if ui.button("下一张").clicked() {
+                menu_intent = Some(Intent::NextRequested);
+                ui.close();
+            }
+            if ui.button(if playing { "暂停" } else { "播放" }).clicked() {
+                menu_intent = Some(Intent::PlayPauseToggled { now_ms: now });
+                ui.close();
+            }
+            ui.menu_button("切换间隔", |ui| {
+                for (label, secs) in [
+                    ("10 秒", 10),
+                    ("30 秒", 30),
+                    ("1 分钟", 60),
+                    ("5 分钟", 300),
+                    ("10 分钟", 600),
+                    ("30 分钟", 1800),
+                ] {
+                    if ui
+                        .selectable_label(secs == current_interval, label)
+                        .clicked()
+                    {
+                        menu_intent = Some(Intent::IntervalSelected { secs, now_ms: now });
+                        ui.close();
+                    }
+                }
+            });
             ui.separator();
             if ui.button("退出").clicked() {
                 menu_intent = Some(Intent::ExitRequested);
@@ -293,6 +353,50 @@ impl eframe::App for FrameApp {
         }
         if self.load_in_flight {
             ctx.request_repaint_after(Duration::from_millis(50));
+        } else if let Some(deadline) = self.core.next_deadline_ms() {
+            // 睡到下一次自动切换时刻再唤醒，避免空转重绘。
+            ctx.request_repaint_after(Duration::from_millis(deadline.saturating_sub(now)));
+        }
+    }
+}
+
+#[cfg(windows)]
+impl FrameApp {
+    /// 聚焦时的左右方向键/空格与滚轮：与菜单共用同一组导航意图（工单 11）。
+    fn handle_keys_and_wheel(&mut self, ctx: &egui::Context, now: u64) {
+        let (prev, next, toggle) = ctx.input(|input| {
+            (
+                input.key_pressed(egui::Key::ArrowLeft),
+                input.key_pressed(egui::Key::ArrowRight),
+                input.key_pressed(egui::Key::Space),
+            )
+        });
+        let mut intents = Vec::new();
+        if prev {
+            intents.push(Intent::PrevRequested);
+        }
+        if next {
+            intents.push(Intent::NextRequested);
+        }
+        if toggle {
+            intents.push(Intent::PlayPauseToggled { now_ms: now });
+        }
+        // 滚轮：平滑量攒够一格触发一次；向上（正）为上一张，向下为下一张。
+        const WHEEL_NOTCH: f32 = 24.0;
+        let scroll = ctx.input(|input| input.smooth_scroll_delta.y);
+        if scroll != 0.0 {
+            self.wheel_acc += scroll;
+            if self.wheel_acc >= WHEEL_NOTCH {
+                intents.push(Intent::PrevRequested);
+                self.wheel_acc = 0.0;
+            } else if self.wheel_acc <= -WHEEL_NOTCH {
+                intents.push(Intent::NextRequested);
+                self.wheel_acc = 0.0;
+            }
+        }
+        for intent in intents {
+            let effects = self.core.handle(intent);
+            self.dispatch(ctx, effects);
         }
     }
 }

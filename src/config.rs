@@ -188,6 +188,13 @@ impl ConfigStore {
         self.write()
     }
 
+    /// 保存轮播间隔（工单 11）：只改 playback.interval_secs，其余字段原样保留。
+    pub fn set_interval_secs(&mut self, secs: i64) -> io::Result<()> {
+        self.document["playback"]["interval_secs"] = value(secs);
+        self.config.playback.interval_secs = secs;
+        self.write()
+    }
+
     fn write(&self) -> io::Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
