@@ -59,3 +59,33 @@ Status: implemented
 3. **图集增长**：默认组图集显著大于关字体组。预测：两组 `font_state` 的 atlas_pixels 差值 ×4 字节能解释差值的主要部分（现有证据对关字体组不利此说，默认组图集尺寸待日志确认）。
 
 为此给验证器新增诊断臂 `--font-file FILE`：强制关闭系统字体枚举，只把指定单个字体文件注册为唯一回退（Proportional/Monospace 最低优先级），日志记 `font_file_registered` 路径与字节数；CLI 新增 1 项测试，全量 41 项通过，Windows 目标 check 通过。复测命令已写入 `docs/decode-validation.md`。三组数据回来后再定产品字体路线；在此之前不下“差值就是字体”的结论（两组原记录并非同二进制交错 A/B）。
+
+
+## 2026-11-20 实机复测尝试：GUI 启动受阻
+
+- 本地 `main` 同步至 `77eb9ff`；`cargo build --release --bin decode-validation` 在 release 配置下成功（3 分 18 秒），没有产品代码改动。
+- 旧默认回退日志 `target/decode-memory-validation/baseline/validation-1795018044594454100-11420-0.log` 不含 `font_state` 行，因此无法从旧记录摘取 `discovered_fallback_fonts` 或 `atlas_pixels`，假设 1/2 仍未区分。原 60 秒组稳定工作集为 138240000 / 142154140.63 / 142499840 字节，生命周期峰值 142499840 字节；旧记录来自不同提交/脏工作树，不等价于本轮同二进制 A/B。
+- 通过桌面驱动按原会话与默认后台方式启动 77eb9ff release 基线两次，均返回 `Launched (pid 0) in background`。随后窗口/进程观察未发现验证器或原生确认窗口，`target/decode-memory-validation/baseline-77eb9ff` 未创建；桌面截图接口两次返回 `The execution outcome is unknown`。因此新实测没有开始，不用 shell 启动，不更改会话标签或 delivery 模式。
+- 默认、关系统字体、单字体三组新基线及 ordinary/fit、mixed/fill 的四个图像组均未跑；中文文件名覆盖截图未取得。Limits、工作集与峰值无新数据；一小时轮播按本轮计划不跑。工单保持未完成，等待桌面驱动能正常启动 GUI 后续测。
+
+
+## 2026-11-20 后续实机复测：同二进制字体与图像组
+
+- 构建与口径：本轮未改产品代码；Windows release `decode-validation.exe` 来自 `77eb9ff44ae94c0936cb463fca747719b496926d`（dirty=false），SHA-256 `A14D8D751291C78C4C6474422C52074F30EC32C0EF3E271061AE84DEE8F05DD0`。三组基线和四组图片均使用该二进制；基线各 90 秒，图片各 90 秒、25 ms 采样、5 秒轮播。图片组统一使用实验输入 12000×12000 / 96 MiB（100663296 字节），未经批准，不代表产品 Limits。未修剪工作集、未扣除空载基线。原始日志均保留在忽略目录 `target/decode-memory-validation/`。
+- 默认系统字体回退基线：稳定工作集 min/mean/max `69853184 / 73965951 / 74399744 B`，生命周期峰值 `74461184 B`；`font_state` 为 `atlas_pixels=[16384, 32]`、`discovered_fallback_fonts=[]`；`run_end prepared=0; rejected=0; failure=None`。日志：`baseline-manual-77eb9ff/validation-1795178353688206700-11436-0.log`。
+- 关闭系统字体回退基线：`68792320 / 72910201 / 73351168 B`，峰值 `73420800 B`；`font_state` 同为 `[16384, 32]`、空 fallback 列表；`run_end prepared=0; rejected=0; failure=None`。日志：`font-off-manual-77eb9ff/validation-1795178723695772300-18088-0.log`。
+- 单字体基线：`88711168 / 92820817 / 93245440 B`，峰值 `93315072 B`；`font_file_registered` 记录 `C:\Windows\Fonts\msyh.ttc`、`19704352` 字节，`font_state` 仍为 `[16384, 32]`、空 system-fallback 列表；`run_end prepared=0; rejected=0; failure=None`。日志：`font-single-manual-77eb9ff/validation-1795178835431071100-21424-0.log`。
+- 字体差分：同二进制下默认回退比关闭回退的 mean 高约 `1.06 MB`；显式注册微软雅黑比关闭回退高约 `19.91 MB`，与 TTC 文件 `19.70 MB` 接近。当前默认组未发现插入的 system fallback 字体；图集尺寸三组相同。旧默认组日志没有 `font_state`，无法补出旧值；旧组稳定工作集 `138240000 / 142154140.63 / 142499840 B`，与本轮结果差异明显且并非同二进制，故不能据此把旧约 60 MB 差额归因到枚举或字体保留。
+- 图片组（格式为 stable min/mean/max B；peak B）：
+  - 普通 Fit / 默认回退：`80289792 / 84571155 / 86233088`；峰值 `143040512`；`prepared=19; rejected=0; draw_submissions=18; failure=None`。日志目录 `ordinary-fit-default-manual-77eb9ff/`，首张 `draw_submitted` 为 1080p PNG / Fit。
+  - 普通 Fit / 单字体：`99024896 / 103489475 / 105127936`；峰值 `160964608`；`prepared=19; rejected=0; draw_submissions=18; failure=None`。首张中文名 PNG 的 `draw_submitted` 成功；同组 `font_file_registered` 为 `19704352` 字节。日志目录 `ordinary-fit-single-font-manual-77eb9ff/`。
+  - Mixed Fill / 默认回退：`80797696 / 85595382 / 86978560`；峰值 `142524416`；`prepared=19; rejected=12; draw_submissions=18; failure=None`。日志目录 `mixed-fill-default-manual-77eb9ff/`。
+  - Mixed Fill / 单字体：`99639296 / 104123833 / 104910848`；峰值 `161382400`；`prepared=19; rejected=12; draw_submissions=18; failure=None`。日志目录 `mixed-fill-single-font-manual-77eb9ff/`。
+- 两个 mixed 组各有 6 类样本重复拒绝两次：损坏 PLTE（stderr 的 png 0.18.1 panic 文本为 `range end index 3 out of range for slice of length 1`，日志记为带路径拒绝）、100MP（`Memory limit exceeded`）、截断、极端长宽比、坏图片头、扩展名/头不匹配；进程持续显示后续图并以 `failure=None` 结束。普通组均 `rejected=0`。不改动已知 `load_display` 编码大小/max_alloc 误拒风险或 Standards 轴命名问题；本次普通组未复现前一风险。
+- 中文覆盖：单字体 Fit 的截图 `target/decode-memory-validation/chinese-coverage-single-font-retry-180s-77eb9ff/chinese-label.png` 显示标签 `中文样本-1080p.png` 为正常中文字形、非方框；图片 1920×1080 → 720×405。截图覆盖检查窗口当时显示 `Ws 103.8 MB; process peak 109.9 MB; prepared 15; rejected 0`，这是单图显示检查的实时覆盖，不并入四组 90 秒汇总。
+- 当前结论与门槛：本轮默认回退两组图片的稳定工作集最大值均低于 100 MB；单字体两组的 mean/max 超过 100 MB，单字体虽显示中文正常，但内存代价与 TTC 体量接近。该结果支持继续评估默认字体路线，但不能替代一小时轮播，也不确认产品 Limits 或生命周期峰值上限；本轮按计划未跑一小时，工单 09 不完成，等待用户确认阈值和后续字体路线。
+
+## 2026-11-20 用户决定：工单 09 验收范围调整
+
+- 工单 09 不执行一小时轮播，也不提出或确认产品 Limits 与峰值上限；稳定工作集 <100 MB 口径和其他验收项保留。细节见[工单 09 验收范围调整](2026-11-20-issue-09-acceptance-scope.md)。
+- 该范围调整仅适用于工单 09；V1 正式图片加载前的项目级 Limits / 峰值门仍按 [V1 终点决策](../process/2026-11-16-v1-destination-exe.md) 保留。本票的 90 秒测量不代表一小时趋势或已批准的产品阈值。
