@@ -41,6 +41,15 @@ pub enum PlaybackMode {
     Random,
 }
 
+impl PlaybackMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PlaybackMode::Sequential => "sequential",
+            PlaybackMode::Random => "random",
+        }
+    }
+}
+
 /// P1 切换动画（`animation` 配置键）：只保存，不驱动行为。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Animation {
@@ -173,26 +182,44 @@ impl ConfigStore {
         &self.config
     }
 
+    /// 单字段保存的共用骨架：改文档与内存模型后写回，其余字段原样保留。
+    fn update(
+        &mut self,
+        apply: impl FnOnce(&mut toml_edit::DocumentMut, &mut Config),
+    ) -> io::Result<()> {
+        apply(&mut self.document, &mut self.config);
+        self.write()
+    }
+
     /// 保存图片文件夹（首次选择或菜单重选时调用），其余字段不动。
     pub fn set_image_folder(&mut self, folder: Option<&str>) -> io::Result<()> {
-        match folder {
+        let folder = folder.map(str::to_owned);
+        self.update(|document, config| match &folder {
             Some(folder) => {
-                self.document["image_folder"] = value(folder);
-                self.config.image_folder = Some(folder.to_owned());
+                document["image_folder"] = value(folder.clone());
+                config.image_folder = Some(folder.clone());
             }
             None => {
-                self.document.remove("image_folder");
-                self.config.image_folder = None;
+                document.remove("image_folder");
+                config.image_folder = None;
             }
-        }
-        self.write()
+        })
+    }
+
+    /// 保存播放模式（工单 12）：只改 playback.mode，其余字段原样保留。
+    pub fn set_playback_mode(&mut self, mode: PlaybackMode) -> io::Result<()> {
+        self.update(|document, config| {
+            document["playback"]["mode"] = value(mode.as_str());
+            config.playback.mode = mode;
+        })
     }
 
     /// 保存轮播间隔（工单 11）：只改 playback.interval_secs，其余字段原样保留。
     pub fn set_interval_secs(&mut self, secs: i64) -> io::Result<()> {
-        self.document["playback"]["interval_secs"] = value(secs);
-        self.config.playback.interval_secs = secs;
-        self.write()
+        self.update(|document, config| {
+            document["playback"]["interval_secs"] = value(secs);
+            config.playback.interval_secs = secs;
+        })
     }
 
     fn write(&self) -> io::Result<()> {

@@ -179,3 +179,17 @@ fn saving_the_interval_changes_only_that_field() {
     assert_eq!(reloaded.config().image_folder.as_deref(), Some("D:\\图库"));
     assert_eq!(reloaded.config().window.width, 480);
 }
+
+#[test]
+fn saving_the_playback_mode_changes_only_that_field() {
+    let path = temp_config("mode-save");
+    let mut store = ConfigStore::load(&path);
+    assert_eq!(store.config().playback.mode, PlaybackMode::Random);
+    store.set_playback_mode(PlaybackMode::Sequential).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("mode = \"sequential\""), "{text}");
+    assert!(text.contains("interval_secs = 30"), "{text}");
+    let reloaded = ConfigStore::load(&path);
+    assert_eq!(reloaded.config().playback.mode, PlaybackMode::Sequential);
+    assert_eq!(reloaded.config().playback.interval_secs, 30);
+}

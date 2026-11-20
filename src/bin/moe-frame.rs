@@ -15,9 +15,10 @@ use eframe::egui;
 #[cfg(windows)]
 use moe_frame::{
     app_core::{Effect, FrameCore, Intent, View},
-    config::ConfigStore,
+    config::{ConfigStore, PlaybackMode},
     decode_validation::DisplayMode,
     loading::LoadRequest,
+    playlist::RandomSource,
     resize_cursor, resize_direction,
 };
 #[cfg(windows)]
@@ -53,6 +54,25 @@ fn now_ms(ctx: &egui::Context) -> u64 {
     (ctx.input(|input| input.time) * 1000.0) as u64
 }
 
+/// 系统随机源：行为核心的洗牌经此接缝取随机性（工单 12）。
+#[cfg(windows)]
+struct SystemRandom(rand::rngs::ThreadRng);
+
+#[cfg(windows)]
+impl SystemRandom {
+    fn new() -> Self {
+        Self(rand::rng())
+    }
+}
+
+#[cfg(windows)]
+impl RandomSource for SystemRandom {
+    fn next_below(&mut self, bound: usize) -> usize {
+        use rand::RngExt;
+        self.0.random_range(0..bound)
+    }
+}
+
 #[cfg(windows)]
 fn app_directory() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("MoeFrame"))
@@ -67,6 +87,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let saved_folder = store.config().image_folder.as_ref().map(PathBuf::from);
     let fit_mode = store.config().display.fit_mode;
     let interval_secs = store.config().playback.interval_secs;
+    let playback_mode = store.config().playback.mode;
     let window = store.config().window.clone();
     // 配置里存有窗口位置时按存档开窗；没有（首次启动）才走右下角内缩放置。
     let saved_position = match (window.x, window.y) {
@@ -107,7 +128,12 @@ fn run() -> Result<(), Box<dyn Error>> {
             cc.egui_ctx.set_zoom_factor(1.0);
             let (command_tx, reply_rx) = worker::spawn(log_path);
             Ok(Box::new(FrameApp {
-                core: FrameCore::new(saved_folder, interval_secs),
+                core: FrameCore::new(
+                    saved_folder,
+                    interval_secs,
+                    playback_mode,
+                    Box::new(SystemRandom::new()),
+                ),
                 store,
                 fit_mode,
                 command_tx,
@@ -184,6 +210,9 @@ impl FrameApp {
                 Effect::SaveInterval(secs) => {
                     // A failed config write must not crash the frame; the menu re-reads the core value.
                     let _ = self.store.set_interval_secs(secs);
+                }
+                Effect::SavePlaybackMode(mode) => {
+                    let _ = self.store.set_playback_mode(mode);
                 }
                 Effect::Exit => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -304,6 +333,7 @@ impl eframe::App for FrameApp {
             });
         let playing = self.core.is_playing();
         let current_interval = self.core.interval_secs();
+        let current_mode = self.core.playback_mode();
         panel.response.context_menu(|ui| {
             if ui.button("选择文件夹…").clicked() {
                 menu_intent = Some(Intent::FolderPickRequested);
@@ -322,6 +352,17 @@ impl eframe::App for FrameApp {
                 menu_intent = Some(Intent::PlayPauseToggled { now_ms: now });
                 ui.close();
             }
+            ui.menu_button("播放模式", |ui| {
+                for (label, mode) in [
+                    ("顺序", PlaybackMode::Sequential),
+                    ("随机", PlaybackMode::Random),
+                ] {
+                    if ui.selectable_label(mode == current_mode, label).clicked() {
+                        menu_intent = Some(Intent::PlaybackModeSelected(mode));
+                        ui.close();
+                    }
+                }
+            });
             ui.menu_button("切换间隔", |ui| {
                 for (label, secs) in [
                     ("10 秒", 10),

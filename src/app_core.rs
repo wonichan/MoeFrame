@@ -3,9 +3,13 @@
 //! 宿主（二进制）负责执行效果（弹文件夹选择框、扫描、后台加载、保存配置、退出），
 //! 并把结果作为意图送回。核心本身不做任何 IO，因此行为测试可完整驱动这条接缝。
 //! 时间由意图携带的单调毫秒值推进（宿主取其 UI 时钟），核心不读系统时间。
-//! 本票只实现顺序模式：配置里的播放模式键（`playback.mode`）先存后用，随机模式由工单 12 接入。
+//! 顺序与随机（工单 12）共用同一套计时与失败语义；随机性经 `RandomSource` 接缝注入，
+//! 宿主提供系统随机，测试提供确定性实现。
 
-use crate::playlist::{Direction, Playlist};
+use crate::{
+    config::PlaybackMode,
+    playlist::{Direction, Playlist, RandomSource},
+};
 use std::path::PathBuf;
 
 /// 用户与宿主送入的意图/结果。
@@ -31,6 +35,8 @@ pub enum Intent {
     PlayPauseToggled { now_ms: u64 },
     /// 在菜单里选定新的轮播间隔（秒）。
     IntervalSelected { secs: i64, now_ms: u64 },
+    /// 在菜单里切换播放模式（顺序/随机二选一）。
+    PlaybackModeSelected(PlaybackMode),
     /// 宿主的周期时钟推进，驱动自动轮播判定。
     Tick { now_ms: u64 },
     /// 菜单「退出」。
@@ -52,6 +58,7 @@ pub enum Effect {
         path: PathBuf,
     },
     SaveInterval(i64),
+    SavePlaybackMode(PlaybackMode),
     Exit,
 }
 
@@ -63,13 +70,21 @@ pub enum View {
     Showing(PathBuf),
 }
 
+/// 导航的落位方式：新鲜选择记账，历史回看/返回只动游标。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavKind {
+    Fresh,
+    Back,
+    Forward,
+}
+
 /// 一次在飞加载的性质，决定失败回送如何收尾。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pending {
     /// 扫描后的首图加载：全失败即无图状态。
     Initial,
     /// 导航加载：全失败保留当前图；auto 区分自动轮播与手动切换的计时处理。
-    Navigate { auto: bool },
+    Navigate { auto: bool, kind: NavKind },
 }
 
 pub struct FrameCore {
@@ -85,19 +100,26 @@ pub struct FrameCore {
     queued_nav: Option<Direction>,
     /// 在飞期间改过间隔：失败收尾时也要按新间隔重计（成功与自动失败路径天然重计）。
     recount_on_settle: bool,
+    rng: Box<dyn RandomSource>,
 }
 
 impl FrameCore {
-    pub fn new(saved_folder: Option<PathBuf>, interval_secs: i64) -> Self {
+    pub fn new(
+        saved_folder: Option<PathBuf>,
+        interval_secs: i64,
+        mode: PlaybackMode,
+        rng: Box<dyn RandomSource>,
+    ) -> Self {
         Self {
             folder: saved_folder,
-            playlist: Playlist::default(),
+            playlist: Playlist::new(Vec::new(), mode),
             playing: true,
             interval_secs,
             deadline_ms: None,
             pending: None,
             queued_nav: None,
             recount_on_settle: false,
+            rng,
         }
     }
 
@@ -120,6 +142,10 @@ impl FrameCore {
         self.interval_secs
     }
 
+    pub fn playback_mode(&self) -> PlaybackMode {
+        self.playlist.mode()
+    }
+
     /// 下一次自动切换时刻，供宿主安排重绘唤醒。
     pub fn next_deadline_ms(&self) -> Option<u64> {
         self.deadline_ms
@@ -137,11 +163,27 @@ impl FrameCore {
             }
             return Vec::new();
         }
-        let candidates = self.playlist.rotation_candidates(direction);
+        let (candidates, kind) = match (self.playlist.mode(), direction) {
+            (PlaybackMode::Sequential, _) => {
+                (self.playlist.rotation_candidates(direction), NavKind::Fresh)
+            }
+            (PlaybackMode::Random, Direction::Prev) => {
+                (self.playlist.history_back_candidates(), NavKind::Back)
+            }
+            (PlaybackMode::Random, Direction::Next) => {
+                // 回看中先沿历史返回最新端；无路可返时才作新鲜选择。
+                let forward = self.playlist.history_forward_candidates();
+                if self.playlist.history_cursor().is_some() && !forward.is_empty() {
+                    (forward, NavKind::Forward)
+                } else {
+                    (self.playlist.bag_candidates(&mut *self.rng), NavKind::Fresh)
+                }
+            }
+        };
         if candidates.is_empty() {
             return Vec::new();
         }
-        self.pending = Some(Pending::Navigate { auto });
+        self.pending = Some(Pending::Navigate { auto, kind });
         vec![Effect::Load { candidates }]
     }
 
@@ -169,7 +211,7 @@ impl FrameCore {
             // 取消不改变任何现状：无图时停在无图状态，显示中则继续显示，且不再自动弹窗。
             Intent::FolderPickCancelled => Vec::new(),
             Intent::ScanCompleted(paths) => {
-                self.playlist = Playlist::new(paths);
+                self.playlist = Playlist::new(paths, self.playlist.mode());
                 self.deadline_ms = None;
                 self.queued_nav = None;
                 self.recount_on_settle = false;
@@ -178,9 +220,12 @@ impl FrameCore {
                     Vec::new()
                 } else {
                     self.pending = Some(Pending::Initial);
-                    vec![Effect::Load {
-                        candidates: self.playlist.items().to_vec(),
-                    }]
+                    // 随机模式的首图也是新选择：候选来自洗牌袋，而非自然序（工单 12）。
+                    let candidates = match self.playlist.mode() {
+                        PlaybackMode::Random => self.playlist.bag_candidates(&mut *self.rng),
+                        PlaybackMode::Sequential => self.playlist.items().to_vec(),
+                    };
+                    vec![Effect::Load { candidates }]
                 }
             }
             Intent::LoadCompleted { shown, now_ms } => {
@@ -188,7 +233,19 @@ impl FrameCore {
                 let recount = std::mem::take(&mut self.recount_on_settle);
                 let mut effects = match shown {
                     Some(path) => {
-                        if !self.playlist.set_current(&path) {
+                        // 落位方式由在飞导航的性质决定：新鲜选择记账，历史往返只动游标。
+                        let landed = match pending {
+                            Pending::Navigate {
+                                kind: NavKind::Back,
+                                ..
+                            } => self.playlist.land_history(&path, Direction::Prev),
+                            Pending::Navigate {
+                                kind: NavKind::Forward,
+                                ..
+                            } => self.playlist.land_history(&path, Direction::Next),
+                            _ => self.playlist.record_fresh(&path, &mut *self.rng),
+                        };
+                        if !landed {
                             self.playlist.clear_current();
                             self.deadline_ms = None;
                             Vec::new()
@@ -199,7 +256,7 @@ impl FrameCore {
                             } else {
                                 None
                             };
-                            match self.playlist.next_path() {
+                            match self.playlist.preload_target(&mut *self.rng) {
                                 Some(next) => vec![Effect::Preload { path: next }],
                                 None => Vec::new(),
                             }
@@ -211,14 +268,14 @@ impl FrameCore {
                             self.deadline_ms = None;
                             Vec::new()
                         }
-                        Pending::Navigate { auto: true } => {
+                        Pending::Navigate { auto: true, .. } => {
                             // 自动轮播全失败：保留当前图，隔满一个间隔再试，不忙循环。
                             if self.playing {
                                 self.deadline_ms = Some(now_ms + self.interval_ms());
                             }
                             Vec::new()
                         }
-                        Pending::Navigate { auto: false } => {
+                        Pending::Navigate { auto: false, .. } => {
                             // 手动切换全失败：不算成功切换，计时保持原样；
                             // 但在飞期间改过间隔时，按新间隔从收尾时刻重计。
                             if recount && self.playing {
@@ -258,6 +315,14 @@ impl FrameCore {
                     self.recount_on_settle = true;
                 }
                 vec![Effect::SaveInterval(secs)]
+            }
+            Intent::PlaybackModeSelected(mode) => {
+                if self.playlist.mode() == mode {
+                    return Vec::new();
+                }
+                // 切模式不额外重置计时：截止时刻原样保留（父规格 §3/工单 12）。
+                self.playlist.set_mode(mode);
+                vec![Effect::SavePlaybackMode(mode)]
             }
             Intent::Tick { now_ms } => {
                 if !self.playing || self.pending.is_some() || self.playlist.len() < 2 {
