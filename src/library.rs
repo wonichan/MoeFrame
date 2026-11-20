@@ -23,6 +23,23 @@ pub fn scan_library(root: &std::path::Path) -> Vec<PathBuf> {
     paths
 }
 
+/// 在自然序列表中找一个缺失路径的后继位置：第一个自然序严格大于它的路径下标，
+/// 没有时回到开头（工单 13 顺序模式恢复：当前图缺失时从它的下一张起循环寻找）。
+pub fn natural_successor_index(sorted: &[PathBuf], missing: &std::path::Path) -> usize {
+    let key = path_key(missing);
+    sorted
+        .iter()
+        .position(|path| natural_cmp(&path_key(path), &key) == Ordering::Greater)
+        .unwrap_or(0)
+}
+
+/// 从给定下标起绕一圈的全部路径（顺序模式缺失恢复的候选顺序）。
+pub fn rotation_from(sorted: &[PathBuf], start: usize) -> Vec<PathBuf> {
+    (0..sorted.len())
+        .map(|step| sorted[(start + step) % sorted.len()].clone())
+        .collect()
+}
+
 fn is_image_path(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())

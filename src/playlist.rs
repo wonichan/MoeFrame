@@ -63,11 +63,15 @@ impl Playlist {
         }
     }
 
-    /// 按已保存的本轮进度与历史恢复（工单 13 的构造路径；本轮进度先按当前图库过滤，
-    /// 历史原样保留、回看时跳过不在图库的路径）。当前图取历史中最后一个仍在图库的路径。
+    /// 按已保存的当前图、本轮进度与历史恢复（工单 13；本轮进度先按当前图库过滤，
+    /// 历史原样保留、回看时跳过不在图库的路径）。当前图给出且仍在图库时就位，
+    /// 游标停在它在历史中的最后位置（不在历史中则视为在最新端之外，上一张可
+    /// 回看整段历史）；当前图缺失（已不在图库，或字段缺失/损坏被丢弃）时不落位，
+    /// 首图由核心按模式另行决定——按缺失处理，不拿历史尾部冒充（工单 02 决定 10）。
     pub fn restored(
         items: Vec<PathBuf>,
         mode: PlaybackMode,
+        current: Option<PathBuf>,
         seen: Vec<PathBuf>,
         history: Vec<PathBuf>,
     ) -> Self {
@@ -85,20 +89,41 @@ impl Playlist {
             history,
             history_cursor: None,
         };
-        let found = list
-            .history
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, entry)| list.items.contains(entry))
-            .map(|(index, entry)| (index, entry.clone()));
-        if let Some((index, entry)) = found {
-            list.set_current(&entry);
-            if index + 1 != list.history.len() {
-                list.history_cursor = Some(index);
+        if let Some(path) = current {
+            if list.items.contains(&path) {
+                list.land_restored(&path);
             }
         }
         list
+    }
+
+    /// 恢复显示的落位：只落位并把游标停在该路径在历史中的最后位置，不记账、
+    /// 不动本轮进度（恢复当前图是防重复例外，工单 02 决定 1）。路径不在历史中
+    /// 时游标停在最新端之外（Some(len)），上一张可回看整段历史。路径不在
+    /// 图库时返回 false。
+    pub fn land_restored(&mut self, path: &PathBuf) -> bool {
+        if !self.set_current(path) {
+            return false;
+        }
+        self.history_cursor = if self.history.is_empty() {
+            None
+        } else {
+            match self.history.iter().rposition(|entry| entry == path) {
+                Some(index) if index + 1 == self.history.len() => None,
+                Some(index) => Some(index),
+                None => Some(self.history.len()),
+            }
+        };
+        true
+    }
+
+    /// 本轮进度按图库自然序导出（跨启动保存用）。
+    pub fn seen_paths(&self) -> Vec<PathBuf> {
+        self.items
+            .iter()
+            .filter(|path| self.seen.contains(*path))
+            .cloned()
+            .collect()
     }
 
     pub fn len(&self) -> usize {
@@ -262,8 +287,9 @@ impl Playlist {
         match self.mode {
             PlaybackMode::Sequential => self.next_path(),
             PlaybackMode::Random => {
-                if self.history_cursor.is_some() {
-                    self.history_forward_candidates().into_iter().next()
+                let forward = self.history_forward_candidates();
+                if self.history_cursor.is_some() && !forward.is_empty() {
+                    forward.into_iter().next()
                 } else {
                     self.ensure_bag(rng);
                     self.bag.first().cloned()

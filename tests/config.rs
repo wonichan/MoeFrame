@@ -193,3 +193,60 @@ fn saving_the_playback_mode_changes_only_that_field() {
     assert_eq!(reloaded.config().playback.mode, PlaybackMode::Sequential);
     assert_eq!(reloaded.config().playback.interval_secs, 30);
 }
+
+#[test]
+fn resume_state_round_trips_across_two_loads() {
+    let path = temp_config("resume-round-trip");
+    let seen = vec!["D:\\图库\\a.png".to_string(), "D:\\图库\\b.png".to_string()];
+    let history = vec!["D:\\图库\\a.png".to_string(), "D:\\图库\\b.png".to_string()];
+    {
+        let mut store = ConfigStore::load(&path);
+        store
+            .save_resume_state(Some("D:\\图库\\b.png"), &seen, &history)
+            .unwrap();
+    }
+    // 第二次启动：三份状态原样读回，其他偏好不受影响。
+    let store = ConfigStore::load(&path);
+    assert_eq!(
+        store.config().general.current_image.as_deref(),
+        Some("D:\\图库\\b.png")
+    );
+    assert_eq!(store.config().general.round_seen, seen);
+    assert_eq!(store.config().general.history, history);
+    assert_eq!(store.config().playback.interval_secs, 30);
+}
+
+#[test]
+fn a_corrupt_resume_field_is_dropped_without_touching_the_others() {
+    let path = temp_config("resume-field-repair");
+    let text = "[general]\ncurrent_image = \"D:\\\\图库\\\\b.png\"\nround_seen = \"不是数组\"\nhistory = [\"D:\\\\图库\\\\a.png\", 42]\n";
+    fs::write(&path, text).unwrap();
+    let store = ConfigStore::load(&path);
+    // round_seen 不是数组、history 混入非字符串：各自丢弃；current_image 合法保留。
+    assert_eq!(
+        store.config().general.current_image.as_deref(),
+        Some("D:\\图库\\b.png")
+    );
+    assert!(store.config().general.round_seen.is_empty());
+    assert!(store.config().general.history.is_empty());
+    let rewritten = fs::read_to_string(&path).unwrap();
+    assert!(!rewritten.contains("round_seen"), "{rewritten}");
+    assert!(!rewritten.contains("42"), "{rewritten}");
+}
+
+#[test]
+fn an_overlong_saved_history_is_trimmed_to_the_newest_512() {
+    let path = temp_config("resume-history-trim");
+    let entries: Vec<String> = (0..600).map(|i| format!("D:\\图库\\{i}.png")).collect();
+    let array = entries
+        .iter()
+        .map(|e| format!("\"{}\"", e.replace('\\', "\\\\")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    fs::write(&path, format!("[general]\nhistory = [{array}]\n")).unwrap();
+    let store = ConfigStore::load(&path);
+    let history = &store.config().general.history;
+    assert_eq!(history.len(), 512);
+    assert_eq!(history.first().unwrap(), "D:\\图库\\88.png");
+    assert_eq!(history.last().unwrap(), "D:\\图库\\599.png");
+}

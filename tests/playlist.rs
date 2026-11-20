@@ -179,10 +179,11 @@ mod random_tests {
     #[test]
     fn history_walk_skips_paths_no_longer_in_the_library() {
         // 恢复场景（工单 13 的构造路径）：历史里混有已不在图库的路径；
-        // restored 以历史最后一条在图库内的路径为当前图。
+        // 工单 13 起 restored 接收显式当前图；此处当前图正是历史尾部在图库内的 c。
         let list = Playlist::restored(
             paths(&["a.jpg", "c.jpg"]),
             PlaybackMode::Random,
+            Some(PathBuf::from("c.jpg")),
             paths(&["a.jpg", "c.jpg"]),
             paths(&["a.jpg", "gone.jpg", "c.jpg"]),
         );
@@ -226,5 +227,98 @@ mod random_tests {
         assert!(list
             .bag_candidates(&mut rng)
             .contains(&PathBuf::from("c.jpg")));
+    }
+}
+
+// ---------- 工单 13：跨启动恢复的播放序列构造 ----------
+
+mod resume_tests {
+    use moe_frame::{config::PlaybackMode, playlist::Playlist};
+    use std::path::PathBuf;
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn restored_positions_at_the_saved_current_inside_history() {
+        let list = Playlist::restored(
+            paths(&["a.jpg", "b.jpg", "c.jpg"]),
+            PlaybackMode::Random,
+            Some(PathBuf::from("b.jpg")),
+            paths(&["a.jpg", "b.jpg"]),
+            paths(&["a.jpg", "b.jpg", "c.jpg"]),
+        );
+        assert_eq!(list.current_path(), Some(&PathBuf::from("b.jpg")));
+        // 游标停在 b 的历史位置：向后只剩 a，向前还有 c。
+        assert_eq!(list.history_back_candidates(), paths(&["a.jpg"]));
+        assert_eq!(list.history_forward_candidates(), paths(&["c.jpg"]));
+        // 本轮进度按当前图库过滤后保留。
+        assert!(list.is_seen(&PathBuf::from("a.jpg")));
+        assert!(!list.is_seen(&PathBuf::from("c.jpg")));
+        assert_eq!(list.seen_paths(), paths(&["a.jpg", "b.jpg"]));
+    }
+
+    #[test]
+    fn restored_current_outside_history_walks_the_whole_history_backwards() {
+        let list = Playlist::restored(
+            paths(&["a.jpg", "b.jpg", "c.jpg"]),
+            PlaybackMode::Random,
+            Some(PathBuf::from("c.jpg")),
+            paths(&["c.jpg"]),
+            paths(&["a.jpg", "b.jpg"]),
+        );
+        assert_eq!(list.current_path(), Some(&PathBuf::from("c.jpg")));
+        assert_eq!(list.history_back_candidates(), paths(&["b.jpg", "a.jpg"]));
+        assert!(list.history_forward_candidates().is_empty());
+    }
+
+    #[test]
+    fn a_missing_saved_current_suppresses_the_history_tail_fallback() {
+        // 当前图字段在、但路径已不在图库：不拿历史尾部冒充当前图（工单 13 准则 4/5
+        // 由核心按模式另行决定首图），本轮进度仍按图库过滤。
+        let list = Playlist::restored(
+            paths(&["a.jpg", "b.jpg"]),
+            PlaybackMode::Random,
+            Some(PathBuf::from("gone.jpg")),
+            paths(&["a.jpg", "gone.jpg"]),
+            paths(&["a.jpg", "b.jpg"]),
+        );
+        assert_eq!(list.current_path(), None);
+        assert!(list.is_seen(&PathBuf::from("a.jpg")));
+        assert!(!list.is_seen(&PathBuf::from("gone.jpg")));
+    }
+
+    #[test]
+    fn an_absent_current_positions_nothing() {
+        // 当前图字段缺失/损坏被丢弃时按缺失处理（工单 02 决定 10）：
+        // 不拿历史尾部冒充当前图，首图由核心按模式另行决定；
+        // 本轮进度与历史本身仍按各自字段恢复。
+        let list = Playlist::restored(
+            paths(&["a.jpg", "b.jpg"]),
+            PlaybackMode::Random,
+            None,
+            paths(&["a.jpg"]),
+            paths(&["a.jpg", "gone.jpg", "b.jpg"]),
+        );
+        assert_eq!(list.current_path(), None);
+        assert!(list.is_seen(&PathBuf::from("a.jpg")));
+        assert_eq!(list.history().len(), 3);
+    }
+
+    #[test]
+    fn landing_the_restored_image_records_nothing() {
+        let mut list = Playlist::restored(
+            paths(&["a.jpg", "b.jpg", "c.jpg"]),
+            PlaybackMode::Random,
+            Some(PathBuf::from("b.jpg")),
+            paths(&["a.jpg", "b.jpg"]),
+            paths(&["a.jpg", "b.jpg", "c.jpg"]),
+        );
+        assert!(list.land_restored(&PathBuf::from("b.jpg")));
+        // 恢复显示不重复记账：历史不追加、本轮进度不变，游标仍停在 b 处。
+        assert_eq!(list.history(), paths(&["a.jpg", "b.jpg", "c.jpg"]));
+        assert_eq!(list.seen_paths(), paths(&["a.jpg", "b.jpg"]));
+        assert_eq!(list.history_back_candidates(), paths(&["a.jpg"]));
     }
 }

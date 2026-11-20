@@ -4,7 +4,7 @@
 //! 整个文件不可解析时恢复为合法默认配置，不崩溃。三个 P1 键（`pause_on_hover`、
 //! `animation`、`show_filename`）只保存与修复，不驱动行为。
 
-use crate::decode_validation::DisplayMode;
+use crate::{decode_validation::DisplayMode, playlist::HISTORY_LIMIT};
 use std::{fs, io, path::Path};
 use toml_edit::{value, DocumentMut, Item, Table};
 
@@ -97,8 +97,12 @@ pub struct DisplayConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeneralConfig {
     pub autostart: bool,
-    /// 上次播放到的图片；工单 10 只保留该字段，跨启动恢复由后续票实现。
+    /// 上次成功显示的图片（工单 13 跨启动恢复）。
     pub current_image: Option<String>,
+    /// 本轮进度：本轮成功显示过的路径（工单 13，与历史分开保存，ADR-0002）。
+    pub round_seen: Vec<String>,
+    /// 实际历史：成功显示顺序，最近 512 条（工单 13）。
+    pub history: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,6 +140,8 @@ impl Default for Config {
             general: GeneralConfig {
                 autostart: false,
                 current_image: None,
+                round_seen: Vec::new(),
+                history: Vec::new(),
             },
         }
     }
@@ -211,6 +217,38 @@ impl ConfigStore {
         self.update(|document, config| {
             document["playback"]["mode"] = value(mode.as_str());
             config.playback.mode = mode;
+        })
+    }
+
+    /// 保存跨启动恢复状态（工单 13）：当前图、本轮进度与历史一并落盘（同属
+    /// 一次成功显示的提交），历史只留最近 512 条；其余字段原样保留。
+    pub fn save_resume_state(
+        &mut self,
+        current: Option<&str>,
+        seen: &[String],
+        history: &[String],
+    ) -> io::Result<()> {
+        let current = current.map(str::to_owned);
+        let seen = seen.to_vec();
+        let mut history = history.to_vec();
+        keep_newest_history(&mut history);
+        self.update(|document, config| {
+            let seen_item = string_array_item(&seen);
+            let history_item = string_array_item(&history);
+            let Some(general) = document["general"].as_table_mut() else {
+                return;
+            };
+            match &current {
+                Some(path) => general["current_image"] = value(path.clone()),
+                None => {
+                    general.remove("current_image");
+                }
+            }
+            general["round_seen"] = seen_item;
+            general["history"] = history_item;
+            config.general.current_image = current;
+            config.general.round_seen = seen;
+            config.general.history = history;
         })
     }
 
@@ -331,6 +369,14 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
         },
         None => None,
     };
+    // 本轮进度与历史分别校验：一个字段损坏只丢弃它自己（工单 13 准则 7）。
+    let round_seen = repair_path_list(general_table, "round_seen", repaired);
+    let mut history = repair_path_list(general_table, "history", repaired);
+    if history.len() > HISTORY_LIMIT {
+        keep_newest_history(&mut history);
+        general_table["history"] = string_array_item(&history);
+        *repaired = true;
+    }
 
     Config {
         image_folder,
@@ -349,8 +395,59 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
         general: GeneralConfig {
             autostart,
             current_image,
+            round_seen,
+            history,
         },
     }
+}
+
+/// 历史只留最近 512 条（保存与修复共用同一条上限规则）。
+fn keep_newest_history(history: &mut Vec<String>) {
+    if history.len() > HISTORY_LIMIT {
+        let overflow = history.len() - HISTORY_LIMIT;
+        history.drain(..overflow);
+    }
+}
+
+/// 路径列表字段（本轮进度/历史）的修复：缺失即空；不是字符串数组时整字段
+/// 丢弃并按缺失处理，不牵连其他字段。
+fn repair_path_list(table: &mut Table, key: &str, repaired: &mut bool) -> Vec<String> {
+    let parsed: Option<Vec<String>> = match table.get(key) {
+        None => return Vec::new(),
+        Some(item) => match item.as_array() {
+            Some(array) => {
+                let mut values = Vec::with_capacity(array.len());
+                let mut valid = true;
+                for entry in array.iter() {
+                    match entry.as_str() {
+                        Some(text) => values.push(text.to_owned()),
+                        None => {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+                valid.then_some(values)
+            }
+            None => None,
+        },
+    };
+    match parsed {
+        Some(values) => values,
+        None => {
+            table.remove(key);
+            *repaired = true;
+            Vec::new()
+        }
+    }
+}
+
+fn string_array_item(values: &[String]) -> Item {
+    let mut array = toml_edit::Array::new();
+    for value in values {
+        array.push(value.as_str());
+    }
+    Item::Value(toml_edit::Value::Array(array))
 }
 
 fn ensure_table<'a>(root: &'a mut Table, key: &str, repaired: &mut bool) -> &'a mut Table {

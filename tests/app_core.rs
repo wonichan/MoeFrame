@@ -4,7 +4,7 @@
 mod common;
 
 use common::{IdentityRng, ZeroRng};
-use moe_frame::app_core::{Effect, FrameCore, Intent, View};
+use moe_frame::app_core::{Effect, FrameCore, Intent, ResumeData, View};
 use moe_frame::config::PlaybackMode;
 use std::path::PathBuf;
 
@@ -31,6 +31,7 @@ fn showing_core_mode(
         interval_secs,
         mode,
         Box::new(IdentityRng),
+        None,
     );
     core.handle(Intent::Started);
     let list: Vec<PathBuf> = names.iter().map(|name| img(name)).collect();
@@ -46,7 +47,13 @@ fn showing_core_mode(
 
 #[test]
 fn first_run_without_a_saved_folder_prompts_once_and_cancel_stays_empty() {
-    let mut core = FrameCore::new(None, 30, PlaybackMode::Sequential, Box::new(IdentityRng));
+    let mut core = FrameCore::new(
+        None,
+        30,
+        PlaybackMode::Sequential,
+        Box::new(IdentityRng),
+        None,
+    );
     assert_eq!(core.handle(Intent::Started), vec![Effect::PickFolder]);
     assert_eq!(core.handle(Intent::FolderPickCancelled), vec![]);
     assert_eq!(core.view(), View::Empty);
@@ -54,7 +61,13 @@ fn first_run_without_a_saved_folder_prompts_once_and_cancel_stays_empty() {
 
 #[test]
 fn picking_a_folder_saves_scans_loads_and_shows_the_first_image() {
-    let mut core = FrameCore::new(None, 30, PlaybackMode::Sequential, Box::new(IdentityRng));
+    let mut core = FrameCore::new(
+        None,
+        30,
+        PlaybackMode::Sequential,
+        Box::new(IdentityRng),
+        None,
+    );
     core.handle(Intent::Started);
     let folder = path("D:\\图库");
     assert_eq!(
@@ -71,7 +84,14 @@ fn picking_a_folder_saves_scans_loads_and_shows_the_first_image() {
             shown: Some(img("a.png")),
             now_ms: 0,
         }),
-        vec![Effect::Preload { path: img("b.png") }]
+        vec![
+            Effect::Preload { path: img("b.png") },
+            Effect::SaveResumeState {
+                current: img("a.png"),
+                seen: vec![img("a.png")],
+                history: vec![img("a.png")],
+            },
+        ]
     );
     assert_eq!(core.view(), View::Showing(img("a.png")));
 }
@@ -83,6 +103,7 @@ fn a_saved_folder_skips_the_prompt_on_the_next_launch() {
         30,
         PlaybackMode::Sequential,
         Box::new(IdentityRng),
+        None,
     );
     assert_eq!(
         core.handle(Intent::Started),
@@ -97,6 +118,7 @@ fn an_empty_scan_enters_the_empty_state_without_loading() {
         30,
         PlaybackMode::Sequential,
         Box::new(IdentityRng),
+        None,
     );
     core.handle(Intent::Started);
     assert_eq!(core.handle(Intent::ScanCompleted(vec![])), vec![]);
@@ -110,6 +132,7 @@ fn when_every_candidate_fails_the_frame_stays_operable_and_empty() {
         30,
         PlaybackMode::Sequential,
         Box::new(IdentityRng),
+        None,
     );
     core.handle(Intent::Started);
     core.handle(Intent::ScanCompleted(vec![path("D:\\坏图库\\x.png")]));
@@ -137,7 +160,13 @@ fn cancelling_a_menu_repick_keeps_the_current_image() {
 
 #[test]
 fn exit_is_an_explicit_effect() {
-    let mut core = FrameCore::new(None, 30, PlaybackMode::Sequential, Box::new(IdentityRng));
+    let mut core = FrameCore::new(
+        None,
+        30,
+        PlaybackMode::Sequential,
+        Box::new(IdentityRng),
+        None,
+    );
     assert_eq!(core.handle(Intent::ExitRequested), vec![Effect::Exit]);
 }
 
@@ -158,7 +187,14 @@ fn auto_advance_fires_exactly_at_the_deadline() {
             shown: Some(img("b.png")),
             now_ms: 30_000,
         }),
-        vec![Effect::Preload { path: img("c.png") }]
+        vec![
+            Effect::Preload { path: img("c.png") },
+            Effect::SaveResumeState {
+                current: img("b.png"),
+                seen: vec![img("a.png"), img("b.png")],
+                history: vec![img("a.png"), img("b.png")],
+            },
+        ]
     );
     assert_eq!(core.handle(Intent::Tick { now_ms: 59_999 }), vec![]);
     assert_eq!(
@@ -223,7 +259,14 @@ fn pause_stops_auto_advance_but_not_manual_navigation_and_resume_recounts() {
             shown: Some(img("b.png")),
             now_ms: 20_000,
         }),
-        vec![Effect::Preload { path: img("c.png") }]
+        vec![
+            Effect::Preload { path: img("c.png") },
+            Effect::SaveResumeState {
+                current: img("b.png"),
+                seen: vec![img("a.png"), img("b.png")],
+                history: vec![img("a.png"), img("b.png")],
+            },
+        ]
     );
     assert_eq!(core.handle(Intent::Tick { now_ms: 999_999 }), vec![]);
     // 恢复播放：从恢复时刻计满一个间隔。
@@ -333,7 +376,14 @@ fn a_failed_auto_advance_retries_after_a_full_interval_instead_of_spinning() {
 #[test]
 fn a_single_image_never_advances_navigates_or_preloads() {
     let (mut core, effects) = showing_core(&["a.png"], 30);
-    assert_eq!(effects, vec![]);
+    assert_eq!(
+        effects,
+        vec![Effect::SaveResumeState {
+            current: img("a.png"),
+            seen: vec![img("a.png")],
+            history: vec![img("a.png")],
+        }]
+    );
     assert_eq!(core.handle(Intent::Tick { now_ms: 10_000_000 }), vec![]);
     assert_eq!(core.handle(Intent::NextRequested), vec![]);
     assert_eq!(core.handle(Intent::PrevRequested), vec![]);
@@ -361,6 +411,11 @@ fn a_navigation_pressed_during_a_load_runs_after_it_settles() {
         }),
         vec![
             Effect::Preload { path: img("c.png") },
+            Effect::SaveResumeState {
+                current: img("b.png"),
+                seen: vec![img("a.png"), img("b.png")],
+                history: vec![img("a.png"), img("b.png")],
+            },
             Effect::Load {
                 candidates: vec![img("a.png"), img("c.png")],
             },
@@ -399,8 +454,18 @@ fn an_interval_changed_during_a_failed_manual_navigation_still_recounts() {
 fn random_next_draws_only_unseen_and_a_new_round_avoids_the_last_image() {
     let (mut core, effects) =
         showing_core_mode(&["a.png", "b.png", "c.png"], 30, PlaybackMode::Random);
-    // 首图显示后预加载的是袋首（未看路径）。
-    assert_eq!(effects, vec![Effect::Preload { path: img("b.png") }]);
+    // 首图显示后预加载的是袋首（未看路径），并落盘本次成功显示。
+    assert_eq!(
+        effects,
+        vec![
+            Effect::Preload { path: img("b.png") },
+            Effect::SaveResumeState {
+                current: img("a.png"),
+                seen: vec![img("a.png")],
+                history: vec![img("a.png")],
+            },
+        ]
+    );
     assert_eq!(
         core.handle(Intent::NextRequested),
         vec![Effect::Load {
@@ -530,6 +595,7 @@ fn a_random_first_image_is_drawn_from_the_shuffle_bag() {
         30,
         PlaybackMode::Random,
         Box::new(ZeroRng),
+        None,
     );
     core.handle(Intent::Started);
     // ZeroRng 洗牌 [a,b,c] → [b,c,a]：首图候选是袋序，不是自然序。
@@ -541,6 +607,238 @@ fn a_random_first_image_is_drawn_from_the_shuffle_bag() {
         ])),
         vec![Effect::Load {
             candidates: vec![img("b.png"), img("c.png"), img("a.png")],
+        }]
+    );
+}
+
+// ---------- 工单 13：跨启动恢复 ----------
+
+fn resumed_core(mode: PlaybackMode, resume: ResumeData) -> FrameCore {
+    let mut core = FrameCore::new(
+        Some(path("D:\\图库")),
+        30,
+        mode,
+        Box::new(IdentityRng),
+        Some(resume),
+    );
+    core.handle(Intent::Started);
+    core
+}
+
+#[test]
+fn random_resume_restores_the_current_image_and_continues_with_unseen() {
+    let mut core = resumed_core(
+        PlaybackMode::Random,
+        ResumeData {
+            current: Some(img("b.png")),
+            seen: vec![img("a.png"), img("b.png")],
+            history: vec![img("a.png"), img("b.png")],
+        },
+    );
+    // 首图先恢复 b；b 加载失败时才轮到未看的 c。
+    assert_eq!(
+        core.handle(Intent::ScanCompleted(vec![
+            img("a.png"),
+            img("b.png"),
+            img("c.png"),
+        ])),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("c.png")],
+        }]
+    );
+    let effects = core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 0,
+    });
+    assert_eq!(core.view(), View::Showing(img("b.png")));
+    // 恢复显示照常落盘，但不重复记账：进度与历史与保存时一致。
+    assert!(effects.contains(&Effect::SaveResumeState {
+        current: img("b.png"),
+        seen: vec![img("a.png"), img("b.png")],
+        history: vec![img("a.png"), img("b.png")],
+    }));
+    // 继续播放只抽未看的 c：防重复跨启动生效。
+    assert_eq!(
+        core.handle(Intent::NextRequested),
+        vec![Effect::Load {
+            candidates: vec![img("c.png")],
+        }]
+    );
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("c.png")),
+        now_ms: 100,
+    });
+    // 上一张仍能按恢复的历史回看。
+    assert_eq!(
+        core.handle(Intent::PrevRequested),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("a.png")],
+        }]
+    );
+}
+
+#[test]
+fn random_resume_with_a_missing_current_starts_a_new_round() {
+    let mut core = resumed_core(
+        PlaybackMode::Random,
+        ResumeData {
+            current: Some(img("gone.png")),
+            seen: vec![img("a.png"), img("gone.png")],
+            history: vec![img("a.png"), img("gone.png")],
+        },
+    );
+    // 旧本轮进度清空：首图候选是全图库的洗牌袋（恒等洗牌下即自然序）。
+    assert_eq!(
+        core.handle(Intent::ScanCompleted(vec![img("a.png"), img("b.png")])),
+        vec![Effect::Load {
+            candidates: vec![img("a.png"), img("b.png")],
+        }]
+    );
+    let effects = core.handle(Intent::LoadCompleted {
+        shown: Some(img("a.png")),
+        now_ms: 0,
+    });
+    // 新一轮只记新图；缺失旧路径不被追加（它原有的旧条目保留，回看时跳过）。
+    assert!(effects.contains(&Effect::SaveResumeState {
+        current: img("a.png"),
+        seen: vec![img("a.png")],
+        history: vec![img("a.png"), img("gone.png"), img("a.png")],
+    }));
+}
+
+#[test]
+fn sequential_resume_restores_the_position_without_re_recording() {
+    let mut core = resumed_core(
+        PlaybackMode::Sequential,
+        ResumeData {
+            current: Some(img("b.png")),
+            seen: vec![img("a.png"), img("b.png")],
+            history: vec![img("a.png"), img("b.png")],
+        },
+    );
+    assert_eq!(
+        core.handle(Intent::ScanCompleted(vec![
+            img("a.png"),
+            img("b.png"),
+            img("c.png"),
+        ])),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("c.png"), img("a.png")],
+        }]
+    );
+    let effects = core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 0,
+    });
+    // 历史不因恢复显示再追加一条 b。
+    assert!(effects.contains(&Effect::SaveResumeState {
+        current: img("b.png"),
+        seen: vec![img("a.png"), img("b.png")],
+        history: vec![img("a.png"), img("b.png")],
+    }));
+    assert_eq!(
+        core.handle(Intent::NextRequested),
+        vec![Effect::Load {
+            candidates: vec![img("c.png"), img("a.png")],
+        }]
+    );
+}
+
+#[test]
+fn sequential_resume_with_a_missing_current_takes_the_natural_successor() {
+    let mut core = resumed_core(
+        PlaybackMode::Sequential,
+        ResumeData {
+            current: Some(img("b.png")),
+            seen: Vec::new(),
+            history: Vec::new(),
+        },
+    );
+    // b 已不在图库：从自然序中它的下一张 c 起循环寻找。
+    assert_eq!(
+        core.handle(Intent::ScanCompleted(vec![
+            img("a.png"),
+            img("c.png"),
+            img("d.png"),
+        ])),
+        vec![Effect::Load {
+            candidates: vec![img("c.png"), img("d.png"), img("a.png")],
+        }]
+    );
+    let effects = core.handle(Intent::LoadCompleted {
+        shown: Some(img("c.png")),
+        now_ms: 0,
+    });
+    assert_eq!(core.view(), View::Showing(img("c.png")));
+    assert!(effects.contains(&Effect::SaveResumeState {
+        current: img("c.png"),
+        seen: vec![img("c.png")],
+        history: vec![img("c.png")],
+    }));
+}
+
+#[test]
+fn playback_state_survives_across_two_launches() {
+    // 第一次启动：随机模式看过 a、b 后退出，落盘状态被第二次启动接手。
+    let mut first = FrameCore::new(
+        Some(path("D:\\图库")),
+        30,
+        PlaybackMode::Random,
+        Box::new(IdentityRng),
+        None,
+    );
+    first.handle(Intent::Started);
+    first.handle(Intent::ScanCompleted(vec![
+        img("a.png"),
+        img("b.png"),
+        img("c.png"),
+    ]));
+    first.handle(Intent::LoadCompleted {
+        shown: Some(img("a.png")),
+        now_ms: 0,
+    });
+    first.handle(Intent::NextRequested);
+    let effects = first.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 100,
+    });
+    let saved = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::SaveResumeState {
+                current,
+                seen,
+                history,
+            } => Some(ResumeData {
+                current: Some(current.clone()),
+                seen: seen.clone(),
+                history: history.clone(),
+            }),
+            _ => None,
+        })
+        .expect("a successful display saves resume state");
+
+    let mut second = resumed_core(PlaybackMode::Random, saved);
+    assert_eq!(
+        second.handle(Intent::ScanCompleted(vec![
+            img("a.png"),
+            img("b.png"),
+            img("c.png"),
+        ])),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("c.png")],
+        }]
+    );
+    second.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 0,
+    });
+    assert_eq!(second.view(), View::Showing(img("b.png")));
+    // 第二次启动继续只抽未看的 c。
+    assert_eq!(
+        second.handle(Intent::NextRequested),
+        vec![Effect::Load {
+            candidates: vec![img("c.png")],
         }]
     );
 }

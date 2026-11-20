@@ -14,7 +14,7 @@ mod worker;
 use eframe::egui;
 #[cfg(windows)]
 use moe_frame::{
-    app_core::{Effect, FrameCore, Intent, View},
+    app_core::{Effect, FrameCore, Intent, ResumeData, View},
     config::{ConfigStore, PlaybackMode},
     decode_validation::DisplayMode,
     loading::LoadRequest,
@@ -54,6 +54,15 @@ fn now_ms(ctx: &egui::Context) -> u64 {
     (ctx.input(|input| input.time) * 1000.0) as u64
 }
 
+/// 路径列表转可落盘的字符串列表；无法表示为 UTF-8 的路径跳过。
+#[cfg(windows)]
+fn paths_to_strings(paths: &[PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .filter_map(|path| path.to_str().map(str::to_owned))
+        .collect()
+}
+
 /// 系统随机源：行为核心的洗牌经此接缝取随机性（工单 12）。
 #[cfg(windows)]
 struct SystemRandom(rand::rngs::ThreadRng);
@@ -88,6 +97,20 @@ fn run() -> Result<(), Box<dyn Error>> {
     let fit_mode = store.config().display.fit_mode;
     let interval_secs = store.config().playback.interval_secs;
     let playback_mode = store.config().playback.mode;
+    // 跨启动恢复（工单 13）：配置里保存的当前图、本轮进度与历史交给行为核心。
+    let general = &store.config().general;
+    let resume = if general.current_image.is_some()
+        || !general.round_seen.is_empty()
+        || !general.history.is_empty()
+    {
+        Some(ResumeData {
+            current: general.current_image.clone().map(PathBuf::from),
+            seen: general.round_seen.iter().map(PathBuf::from).collect(),
+            history: general.history.iter().map(PathBuf::from).collect(),
+        })
+    } else {
+        None
+    };
     let window = store.config().window.clone();
     // 配置里存有窗口位置时按存档开窗；没有（首次启动）才走右下角内缩放置。
     let saved_position = match (window.x, window.y) {
@@ -133,6 +156,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     interval_secs,
                     playback_mode,
                     Box::new(SystemRandom::new()),
+                    resume,
                 ),
                 store,
                 fit_mode,
@@ -213,6 +237,18 @@ impl FrameApp {
                 }
                 Effect::SavePlaybackMode(mode) => {
                     let _ = self.store.set_playback_mode(mode);
+                }
+                Effect::SaveResumeState {
+                    current,
+                    seen,
+                    history,
+                } => {
+                    // 路径以字符串落盘；无法表示为 UTF-8 的路径跳过保存，不崩溃。
+                    if let Some(current) = current.to_str() {
+                        let seen = paths_to_strings(&seen);
+                        let history = paths_to_strings(&history);
+                        let _ = self.store.save_resume_state(Some(current), &seen, &history);
+                    }
                 }
                 Effect::Exit => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
