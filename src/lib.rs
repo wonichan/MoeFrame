@@ -2,8 +2,12 @@
 
 use eframe::egui;
 
+pub mod app_core;
+pub mod config;
 pub mod decode_validation;
 pub mod diagnostics;
+pub mod library;
+pub mod loading;
 
 /// 当前 winit 窗口的观测；每帧重新查询，不保存窗口句柄。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,7 +156,7 @@ fn key_pressed(ctx: &egui::Context, key: egui::Key) -> bool {
     }))
 }
 
-fn resize_cursor(direction: egui::ResizeDirection) -> egui::CursorIcon {
+pub fn resize_cursor(direction: egui::ResizeDirection) -> egui::CursorIcon {
     use egui::ResizeDirection::*;
     match direction {
         North | South => egui::CursorIcon::ResizeVertical,
@@ -163,7 +167,8 @@ fn resize_cursor(direction: egui::ResizeDirection) -> egui::CursorIcon {
 }
 
 // Coordinates and the eight-point hit band are logical egui points, not physical pixels.
-fn resize_direction(rect: egui::Rect, pos: egui::Pos2) -> Option<egui::ResizeDirection> {
+// Shared with the product frame (ticket 10), which reuses the validated hit geometry.
+pub fn resize_direction(rect: egui::Rect, pos: egui::Pos2) -> Option<egui::ResizeDirection> {
     use egui::ResizeDirection::*;
     let left = pos.x - rect.left() < 8.0;
     let right = rect.right() - pos.x < 8.0;

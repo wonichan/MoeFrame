@@ -11,14 +11,23 @@ path = "src/bin/window-validation.rs"
 [[bin]]
 name = "decode-validation"
 path = "src/bin/decode-validation.rs"
+
+[[bin]]
+name = "MoeFrame"
+path = "src/bin/moe-frame.rs"
 [dependencies]
 # eframe/egui 是需求文档 8.3 的 GUI 类别。下面三个直接依赖超出 8.3 清单，仅为工单 08 的
 # 独立窗口验证程序读取原生窗口状态；正式相框如不需要实机 Win32 观测，应删除它们。
 eframe = { version = "=0.37.0", default-features = false, features = ["default_fonts", "glow", "system_fonts"] }
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
-# image 只服务工单 09 的解码验证程序。默认关闭输入/输出以外的编解码能力，保留产品要求的四种格式。
-# 这是新增直接依赖，超出需求文档 8.3 的 GUI 类别清单；正式相框落地后应评估是否保留。
-image = { version = "=0.25.10", default-features = false, features = ["bmp", "jpeg", "png", "webp"] }
+# image 服务工单 09 的解码验证与正式相框（工单 10 起）。默认关闭输入/输出以外的编解码能力，
+# 保留产品要求的格式；gif 仅取第一帧，不实现动图播放。
+image = { version = "=0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+# 以下为需求文档 8.3 列出的类别：toml_edit（配置序列化，编辑式保留手改与未知键）、
+# walkdir（目录遍历）、rfd（文件夹选择框，仅正式相框二进制使用）。
+toml_edit = "=0.22.27"
+walkdir = "=2.5.0"
+rfd = "=0.15.4"
 
 [target.'cfg(windows)'.dependencies]
 # raw-window-handle/windows-sys 只服务诊断日志的 Win32 观测：客户区、DPI 感知、窗口样式、前台窗口、
