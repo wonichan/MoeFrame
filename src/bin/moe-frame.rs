@@ -24,7 +24,9 @@ use moe_frame::{
     loading::LoadRequest,
     playlist::{Direction, RandomSource},
     resize_cursor, resize_direction,
-    settings_draft::{settle_path_draft, settle_seconds_draft, DraftSettle},
+    settings_session::{
+        EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
+    },
     window_geom::{aspect_locked_size, bottom_right_position, offscreen_position, MIN_WINDOW_SIDE},
 };
 #[cfg(windows)]
@@ -206,14 +208,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 startup_clamp_done: false,
                 autostart: autostart_sync,
                 autostart_store: RegAutostartStore,
-                path_draft: String::new(),
-                path_base: String::new(),
-                seconds_draft: String::new(),
-                seconds_base: 0,
-                pending_commit: None,
-                path_was_focused: false,
-                seconds_was_focused: false,
-                settings_was_focused: false,
+                session: SettingsSession::new(),
             }))
         }),
     )?;
@@ -418,26 +413,23 @@ fn settings_viewport_id() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("moe-frame-settings")
 }
 
-/// 输入字段的焦点跟踪（工单 19）：回车记 enter 并把焦点抢回框内
-/// （回车提交后焦点留在输入框）；焦点离开记 blurred。两个草稿字段共用。
+/// 输入字段的焦点跟踪（工单 19）：返回（回车，失焦）——回车记 enter
+/// 并把焦点抢回框内（回车提交后焦点留在输入框）；焦点离开记 blurred。
+/// 事件的时序裁决在库 settings_session，这里只做 egui 焦点机制。
 #[cfg(windows)]
 fn track_draft_field(
     response: &egui::Response,
     was_focused: &mut bool,
     enter: bool,
-    field: DraftField,
-    enter_field: &mut Option<DraftField>,
-    blurred: &mut Option<DraftField>,
-) {
+) -> (bool, bool) {
     if enter && (*was_focused || response.lost_focus()) {
-        *enter_field = Some(field);
         response.request_focus();
         *was_focused = true;
+        (true, false)
     } else {
-        if (*was_focused && !response.has_focus()) || response.lost_focus() {
-            *blurred = Some(field);
-        }
+        let blurred = (*was_focused && !response.has_focus()) || response.lost_focus();
         *was_focused = response.has_focus();
+        (false, blurred)
     }
 }
 
@@ -471,14 +463,6 @@ impl<T: PartialEq> Debounce<T> {
     fn clear(&mut self) {
         self.candidate = None;
     }
-}
-
-/// 设置窗里带草稿的输入字段（工单 19）。
-#[cfg(windows)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DraftField {
-    Path,
-    Seconds,
 }
 
 /// 一段进行中的滑动转场（工单 14）：方向与起始时刻（egui UI 时钟，秒）。
@@ -539,19 +523,10 @@ struct FrameApp {
     /// 经接缝注入，切换失败时状态不动（回滚）。
     autostart: AutostartSync,
     autostart_store: RegAutostartStore,
-    /// 设置窗草稿（工单 19）：path_draft/seconds_draft 是输入框文字，
-    /// path_base/seconds_base 是草稿播种时的生效值——生效值被别处（菜单、
-    /// 预设）改动时草稿作废重播种。打开设置窗时统一播种。
-    path_draft: String,
-    path_base: String,
-    seconds_draft: String,
-    seconds_base: i64,
-    /// 失焦待提交的字段：延迟一帧结算，给「重新扫描」按钮的点击留否决窗。
-    pending_commit: Option<DraftField>,
-    path_was_focused: bool,
-    seconds_was_focused: bool,
-    /// 设置窗视口上一帧是否持有系统焦点：焦点移走（点相框等）算失焦。
-    settings_was_focused: bool,
+    /// 设置窗会话（工单 19 的时序，architecture-deepening 工单 02 起归
+    /// 库 settings_session）：草稿、基线、待结算与焦点记忆都在其中，
+    /// 宿主只采样事件、渲染、执行它返回的动作。
+    session: SettingsSession,
 }
 
 #[cfg(windows)]
@@ -689,47 +664,25 @@ impl FrameApp {
 
     /// 打开设置窗或把它带到前台（工单 18）：只有一块，已开时只聚焦，
     /// 不重置位置（位置不保存、也不随相框移动）。从托盘打开不唤出相框。
+    /// 开/不开的裁决与播种在会话里（工单 02），这里只执行窗口动作。
     fn request_settings(&mut self, ctx: &egui::Context) {
-        if self.settings_open {
-            ctx.send_viewport_cmd_to(settings_viewport_id(), egui::ViewportCommand::Focus);
-        } else {
-            self.settings_open = true;
-            self.settings_positioned = false;
-            // 草稿播种为当前生效值（工单 19）：每次打开都从生效值开始，
-            // 上次关闭丢弃的未提交文字不会残留。
-            self.reseed_draft(DraftField::Path, true);
-            self.reseed_draft(DraftField::Seconds, true);
-            self.pending_commit = None;
-            self.path_was_focused = false;
-            self.seconds_was_focused = false;
-            self.settings_was_focused = false;
+        match self.session.open_requested(&self.effective_values()) {
+            OpenDecision::FocusOnly => {
+                ctx.send_viewport_cmd_to(settings_viewport_id(), egui::ViewportCommand::Focus);
+            }
+            OpenDecision::Opened => {
+                self.settings_open = true;
+                self.settings_positioned = false;
+            }
         }
     }
 
-    /// 把一个字段的草稿重播种为当前生效值：force 时无条件（打开设置窗），
-    /// 否则只在生效值已偏离基线时（被菜单/预设改动）作废草稿（工单 19）。
-    fn reseed_draft(&mut self, field: DraftField, force: bool) {
-        match field {
-            DraftField::Path => {
-                let effective = self.effective_folder_text();
-                if force || effective != self.path_base {
-                    self.path_base = effective.clone();
-                    self.path_draft = effective;
-                    if self.pending_commit == Some(DraftField::Path) {
-                        self.pending_commit = None;
-                    }
-                }
-            }
-            DraftField::Seconds => {
-                let effective = self.core.interval_secs();
-                if force || effective != self.seconds_base {
-                    self.seconds_base = effective;
-                    self.seconds_draft = effective.to_string();
-                    if self.pending_commit == Some(DraftField::Seconds) {
-                        self.pending_commit = None;
-                    }
-                }
-            }
+    /// 当前生效值快照（工单 02）：每帧递交会话做作废比对与结算。
+    fn effective_values(&self) -> EffectiveValues {
+        EffectiveValues {
+            folder_text: self.effective_folder_text(),
+            interval_secs: self.core.interval_secs(),
+            mode: self.core.playback_mode(),
         }
     }
 
@@ -741,47 +694,71 @@ impl FrameApp {
             .unwrap_or_default()
     }
 
-    /// 结算一个字段的草稿（工单 19）：决策在库的 settings_draft 结算
-    /// 函数里（可测），这里只把提交结果派发给核心。
-    fn commit_draft(&mut self, ctx: &egui::Context, field: DraftField, now: u64) {
-        match field {
-            DraftField::Path => {
-                let effective = self.effective_folder_text();
-                let (outcome, display, base) =
-                    settle_path_draft(&self.path_draft, &self.path_base, &effective);
-                self.path_draft = display;
-                self.path_base = base;
-                if let DraftSettle::CommitFolder(text) = outcome {
+    /// 执行会话返回的本帧动作（工单 02）：顺序由会话定，这里只把每个
+    /// 动作落到核心意图或宿主机制上。落盘类动作暂直执（显示方式写
+    /// config、自启写镜像），工单 04 落地时改走 config_sync。
+    fn execute_session_actions(
+        &mut self,
+        ctx: &egui::Context,
+        actions: Vec<SessionAction>,
+        now: u64,
+    ) {
+        for action in actions {
+            match action {
+                SessionAction::CommitFolder(text) => {
                     let effects = self.core.handle(Intent::FolderPicked(PathBuf::from(text)));
                     self.dispatch(ctx, effects);
                 }
-            }
-            DraftField::Seconds => {
-                let effective = self.core.interval_secs();
-                let (outcome, display, base) =
-                    settle_seconds_draft(&self.seconds_draft, self.seconds_base, effective);
-                self.seconds_draft = display;
-                self.seconds_base = base;
-                if let DraftSettle::CommitInterval(secs) = outcome {
+                SessionAction::CommitInterval(secs) | SessionAction::ApplyIntervalPreset(secs) => {
                     let effects = self
                         .core
                         .handle(Intent::IntervalSelected { secs, now_ms: now });
                     self.dispatch(ctx, effects);
                 }
+                SessionAction::ApplyMode(mode) => {
+                    let effects = self.core.handle(Intent::PlaybackModeSelected(mode));
+                    self.dispatch(ctx, effects);
+                }
+                SessionAction::ApplyFitMode(mode) => {
+                    self.apply_fit_mode(ctx, mode);
+                }
+                SessionAction::ApplyAspectLock(locked) => {
+                    if locked {
+                        // 打开那一刻捕获当前窗口比例（工单 20），不固定成默认比例。
+                        self.locked_aspect = Some(if self.last_inner[1] > 0.0 {
+                            self.last_inner[0] / self.last_inner[1]
+                        } else {
+                            DEFAULT_FRAME_SIZE[0] / DEFAULT_FRAME_SIZE[1]
+                        });
+                    } else {
+                        self.locked_aspect = None;
+                    }
+                    let _ = self.store.set_lock_aspect(locked);
+                }
+                SessionAction::RestoreDefaultGeometry => {
+                    self.restore_default_geometry(ctx);
+                }
+                SessionAction::ApplyAutostart(target) => {
+                    self.apply_autostart(target);
+                }
+                SessionAction::Rescan => {
+                    let effects = self.core.handle(Intent::RescanRequested);
+                    self.dispatch(ctx, effects);
+                }
+                SessionAction::CloseWindow => {
+                    self.settings_open = false;
+                }
             }
         }
     }
 
-    /// 设置窗本体（工单 18/19）：非模态独立视口。播放模式、六档间隔预设、
-    /// 适应或填充点选即刻生效（与相框菜单同一入口）；文件夹路径与自定义
-    /// 秒数是草稿字段——打字不生效，失焦或回车才提交（回车后焦点留框内），
-    /// 重新扫描只扫已生效路径且不提交草稿，关闭丢弃未提交文字，菜单/预设
-    /// 改同一项时草稿作废。几何控件是工单 20、自启是工单 21，不摆占位；
+    /// 设置窗本体（工单 18/19）：非模态独立视口。会话语义（草稿时序、
+    /// 点选顺序、关闭/重扫否决）在库 settings_session（工单 02）；这里
+    /// 只采样 egui 事件、借会话的草稿文字渲染、把点选收集成 Picks，
+    /// 帧尾执行会话返回的动作。定位居中留在这里（工单 18 口径）。
     /// 三项 P1 控件不出现（ADR-0003）。
     fn show_settings(&mut self, ctx: &egui::Context, now: u64) {
-        // 生效值被别处改动（菜单选文件夹/预设改间隔）时，未提交草稿作废。
-        self.reseed_draft(DraftField::Path, false);
-        self.reseed_draft(DraftField::Seconds, false);
+        self.session.begin_frame(&self.effective_values());
         let mut builder = egui::ViewportBuilder::default()
             .with_title("萌框设置")
             .with_inner_size(SETTINGS_SIZE)
@@ -802,44 +779,36 @@ impl FrameApp {
         let fit_now = self.fit_mode;
         let lock_now = self.locked_aspect.is_some();
         let autostart_now = self.autostart.enabled();
-        let path_draft = &mut self.path_draft;
-        let seconds_draft = &mut self.seconds_draft;
-        let path_was = &mut self.path_was_focused;
-        let seconds_was = &mut self.seconds_was_focused;
-        let mut close = false;
-        let mut picked_mode: Option<PlaybackMode> = None;
-        let mut picked_interval: Option<i64> = None;
-        let mut picked_fit: Option<DisplayMode> = None;
-        let mut rescan_clicked = false;
-        let mut picked_lock: Option<bool> = None;
-        let mut picked_autostart: Option<bool> = None;
-        let mut restore_clicked = false;
-        let mut blurred: Option<DraftField> = None;
-        let mut enter_field: Option<DraftField> = None;
+        let mut picks = Picks::default();
         let mut viewport_focused_now = true;
+        let session = &mut self.session;
+        let picks_ref = &mut picks;
+        let focused_ref = &mut viewport_focused_now;
         ctx.show_viewport_immediate(settings_viewport_id(), builder, |ui, _class| {
             let sctx = ui.ctx().clone();
             if sctx.input(|input| input.viewport().close_requested())
                 || sctx.input(|input| input.key_pressed(egui::Key::Escape))
             {
-                close = true;
+                picks_ref.close = true;
             }
             let enter = sctx.input(|input| input.key_pressed(egui::Key::Enter));
-            viewport_focused_now = sctx.input(|input| input.viewport().focused).unwrap_or(true);
+            *focused_ref = sctx.input(|input| input.viewport().focused).unwrap_or(true);
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.label("图库文件夹");
-                let path_resp = ui
-                    .add(egui::TextEdit::singleline(&mut *path_draft).desired_width(f32::INFINITY));
-                track_draft_field(
-                    &path_resp,
-                    path_was,
-                    enter,
-                    DraftField::Path,
-                    &mut enter_field,
-                    &mut blurred,
+                let path_resp = ui.add(
+                    egui::TextEdit::singleline(session.path_text_mut())
+                        .desired_width(f32::INFINITY),
                 );
+                let (entered, blurred) =
+                    track_draft_field(&path_resp, session.path_focus_mut(), enter);
+                if entered {
+                    session.note_enter(Field::Path);
+                }
+                if blurred {
+                    session.note_blur(Field::Path);
+                }
                 if ui.button("重新扫描").clicked() {
-                    rescan_clicked = true;
+                    picks_ref.rescan = true;
                 }
                 ui.separator();
                 ui.label("播放模式");
@@ -848,32 +817,33 @@ impl FrameApp {
                         .radio(mode_now == PlaybackMode::Sequential, "顺序")
                         .clicked()
                     {
-                        picked_mode = Some(PlaybackMode::Sequential);
+                        picks_ref.mode = Some(PlaybackMode::Sequential);
                     }
                     if ui.radio(mode_now == PlaybackMode::Random, "随机").clicked() {
-                        picked_mode = Some(PlaybackMode::Random);
+                        picks_ref.mode = Some(PlaybackMode::Random);
                     }
                 });
                 ui.separator();
                 ui.label("切换间隔");
                 for (label, secs) in INTERVAL_PRESETS {
                     if ui.radio(interval_now == secs, label).clicked() {
-                        picked_interval = Some(secs);
+                        picks_ref.interval = Some(secs);
                     }
                 }
                 ui.horizontal(|ui| {
                     ui.label("自定义");
-                    let seconds_resp = ui
-                        .add(egui::TextEdit::singleline(&mut *seconds_draft).desired_width(110.0));
-                    ui.label("秒");
-                    track_draft_field(
-                        &seconds_resp,
-                        seconds_was,
-                        enter,
-                        DraftField::Seconds,
-                        &mut enter_field,
-                        &mut blurred,
+                    let seconds_resp = ui.add(
+                        egui::TextEdit::singleline(session.seconds_text_mut()).desired_width(110.0),
                     );
+                    ui.label("秒");
+                    let (entered, blurred) =
+                        track_draft_field(&seconds_resp, session.seconds_focus_mut(), enter);
+                    if entered {
+                        session.note_enter(Field::Seconds);
+                    }
+                    if blurred {
+                        session.note_blur(Field::Seconds);
+                    }
                 });
                 ui.separator();
                 ui.label("窗口");
@@ -882,99 +852,30 @@ impl FrameApp {
                     .checkbox(&mut lock_checked, "宽高比锁定（按当前比例）")
                     .clicked()
                 {
-                    picked_lock = Some(lock_checked);
+                    picks_ref.aspect_lock = Some(lock_checked);
                 }
                 if ui.button("恢复默认位置与大小").clicked() {
-                    restore_clicked = true;
+                    picks_ref.restore_default = true;
                 }
                 ui.separator();
                 ui.label("显示方式");
                 ui.horizontal(|ui| {
                     if ui.radio(fit_now == DisplayMode::Fit, "适应").clicked() {
-                        picked_fit = Some(DisplayMode::Fit);
+                        picks_ref.fit = Some(DisplayMode::Fit);
                     }
                     if ui.radio(fit_now == DisplayMode::Fill, "填充").clicked() {
-                        picked_fit = Some(DisplayMode::Fill);
+                        picks_ref.fit = Some(DisplayMode::Fill);
                     }
                 });
                 ui.separator();
                 let mut autostart_checked = autostart_now;
                 if ui.checkbox(&mut autostart_checked, "开机自启").clicked() {
-                    picked_autostart = Some(autostart_checked);
+                    picks_ref.autostart = Some(autostart_checked);
                 }
             });
         });
-        // 点相框（另一个系统窗口）算失焦（工单 19）：设置窗视口失去系统
-        // 焦点、而某个输入框还持有焦点记忆时，按该字段失焦处理。
-        let viewport_lost = self.settings_was_focused && !viewport_focused_now;
-        self.settings_was_focused = viewport_focused_now;
-        if viewport_lost && blurred.is_none() && enter_field.is_none() {
-            if self.path_was_focused {
-                blurred = Some(DraftField::Path);
-            } else if self.seconds_was_focused {
-                blurred = Some(DraftField::Seconds);
-            }
-        }
-        if let Some(field) = enter_field {
-            if self.pending_commit == Some(field) {
-                self.pending_commit = None;
-            }
-            self.commit_draft(ctx, field, now);
-        }
-        if let Some(mode) = picked_mode {
-            if mode != mode_now {
-                let effects = self.core.handle(Intent::PlaybackModeSelected(mode));
-                self.dispatch(ctx, effects);
-            }
-        }
-        if let Some(secs) = picked_interval {
-            let effects = self
-                .core
-                .handle(Intent::IntervalSelected { secs, now_ms: now });
-            self.dispatch(ctx, effects);
-        }
-        if let Some(mode) = picked_fit {
-            self.apply_fit_mode(ctx, mode);
-        }
-        if let Some(locked) = picked_lock {
-            if locked {
-                // 打开那一刻捕获当前窗口比例（工单 20），不固定成默认比例。
-                self.locked_aspect = Some(if self.last_inner[1] > 0.0 {
-                    self.last_inner[0] / self.last_inner[1]
-                } else {
-                    DEFAULT_FRAME_SIZE[0] / DEFAULT_FRAME_SIZE[1]
-                });
-            } else {
-                self.locked_aspect = None;
-            }
-            let _ = self.store.set_lock_aspect(locked);
-        }
-        if restore_clicked {
-            self.restore_default_geometry(ctx);
-        }
-        if let Some(target) = picked_autostart {
-            self.apply_autostart(target);
-        }
-        if close {
-            // 关闭丢弃未提交文字（工单 19）：待提交一并作废，重开时重新播种，
-            // 不借关闭造成的失焦提交。
-            self.settings_open = false;
-            self.pending_commit = None;
-        } else if rescan_clicked {
-            // 重新扫描只扫已生效路径：它造成的失焦不提交任何草稿（工单 19）。
-            self.pending_commit = None;
-            let effects = self.core.handle(Intent::RescanRequested);
-            self.dispatch(ctx, effects);
-        } else {
-            if let Some(field) = self.pending_commit.take() {
-                self.commit_draft(ctx, field, now);
-            }
-            if let Some(field) = blurred {
-                if self.pending_commit.is_none() {
-                    self.pending_commit = Some(field);
-                }
-            }
-        }
+        let actions = self.session.end_frame(picks, viewport_focused_now);
+        self.execute_session_actions(ctx, actions, now);
     }
 
     /// 当前纹理的显示数据过期时刷新当前图（工单 18/20 的行为，记账与
