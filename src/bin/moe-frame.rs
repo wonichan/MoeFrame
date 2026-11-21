@@ -18,7 +18,7 @@ use moe_frame::{
     config::{ConfigStore, PlaybackMode},
     decode_validation::DisplayMode,
     loading::LoadRequest,
-    playlist::RandomSource,
+    playlist::{Direction, RandomSource},
     resize_cursor, resize_direction,
 };
 #[cfg(windows)]
@@ -165,6 +165,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                 started: false,
                 placed: saved_position.is_some(),
                 texture: None,
+                incoming: None,
+                slide: None,
                 load_seq: 0,
                 load_in_flight: false,
                 wheel_acc: 0.0,
@@ -172,6 +174,18 @@ fn run() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     Ok(())
+}
+
+/// 滑动转场时长（秒）：约 300ms、ease-out（父规格 §5）。
+#[cfg(windows)]
+const SLIDE_SECONDS: f64 = 0.3;
+
+/// 一段进行中的滑动转场（工单 14）：方向与起始时刻（egui UI 时钟，秒）。
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct Slide {
+    direction: Direction,
+    started_secs: f64,
 }
 
 #[cfg(windows)]
@@ -184,6 +198,10 @@ struct FrameApp {
     started: bool,
     placed: bool,
     texture: Option<egui::TextureHandle>,
+    /// 刚加载完成、等待核心决定直接提交还是开始转场的目标图纹理（工单 14）。
+    incoming: Option<egui::TextureHandle>,
+    /// 进行中的滑动转场渲染状态；源图是 texture、目标图是 incoming（工单 14）。
+    slide: Option<Slide>,
     /// 当前一轮加载的序号；新一轮扫描开始即作废在飞的旧加载结果。
     load_seq: u64,
     load_in_flight: bool,
@@ -213,9 +231,19 @@ impl FrameApp {
                     let _ = self.store.set_image_folder(Some(&text));
                 }
                 Effect::Scan(folder) => {
-                    // 新一轮扫描开始：在飞的旧加载结果从此作废。
+                    // 新一轮扫描开始：在飞的旧加载结果从此作废；
+                    // 进行中的转场一并取消，画面回到核心仍在显示的源图。
                     self.load_seq += 1;
+                    self.slide = None;
+                    self.incoming = None;
                     let _ = self.command_tx.send(Command::Scan { folder });
+                }
+                Effect::StartTransition { direction, .. } => {
+                    self.slide = Some(Slide {
+                        direction,
+                        started_secs: ctx.input(|input| input.time),
+                    });
+                    ctx.request_repaint();
                 }
                 Effect::Load { candidates } => {
                     self.load_seq += 1;
@@ -288,6 +316,11 @@ impl FrameApp {
                         now_ms: now_ms(ctx),
                     });
                     self.dispatch(ctx, effects);
+                    // 核心决定起转场时（dispatch 已置 slide）目标图留在 incoming
+                    // 里滑动；否则（首图或直接提交）立即成为当前图（工单 14）。
+                    if self.slide.is_none() && self.incoming.is_some() {
+                        self.texture = self.incoming.take();
+                    }
                     // 导航全失败时核心保留当前图，纹理不动；只有核心回到无图状态才清纹理。
                     if self.core.view() == View::Empty {
                         self.texture = None;
@@ -303,8 +336,9 @@ impl FrameApp {
             image.display_pixels[1] as usize,
         ];
         let color = egui::ColorImage::from_rgba_unmultiplied(size, &image.rgba);
-        self.texture =
-            Some(ctx.load_texture("moe-frame-current", color, egui::TextureOptions::LINEAR));
+        // 先放 incoming：是否滑动由核心在 LoadCompleted 的效果里决定（工单 14）。
+        self.incoming =
+            Some(ctx.load_texture("moe-frame-incoming", color, egui::TextureOptions::LINEAR));
     }
 
     fn place_bottom_right(&mut self, ctx: &egui::Context) {
@@ -339,6 +373,21 @@ impl eframe::App for FrameApp {
         let tick_effects = self.core.handle(Intent::Tick { now_ms: now });
         self.dispatch(&ctx, tick_effects);
         self.handle_keys_and_wheel(&ctx, now);
+        // 滑动转场推进（工单 14）：到时先把目标图转正并通知核心提交，再绘制。
+        if let Some(slide) = self.slide {
+            let elapsed = ctx.input(|input| input.time) - slide.started_secs;
+            if elapsed >= SLIDE_SECONDS {
+                self.slide = None;
+                // 切走图的纹理随旧 handle 一并释放；目标图成为当前图。
+                self.texture = self.incoming.take();
+                let effects = self
+                    .core
+                    .handle(Intent::TransitionCompleted { now_ms: now });
+                self.dispatch(&ctx, effects);
+            } else {
+                ctx.request_repaint();
+            }
+        }
 
         let mut menu_intent: Option<Intent> = None;
         let panel = egui::CentralPanel::default()
@@ -346,17 +395,40 @@ impl eframe::App for FrameApp {
             .show(ui, |ui| {
                 let rect = ui.max_rect();
                 let painter = ui.painter();
-                if let Some(texture) = &self.texture {
-                    // 适应：无论窗口如何缩放，整图按比例完整放进窗口，余白即黑边。
+                // 适应：无论窗口如何缩放，整图按比例完整放进窗口，余白即黑边。
+                let fitted = |texture: &egui::TextureHandle| {
                     let tex = egui::vec2(texture.size()[0] as f32, texture.size()[1] as f32);
                     let scale = (rect.width() / tex.x).min(rect.height() / tex.y);
-                    let image_rect = egui::Rect::from_center_size(rect.center(), tex * scale);
+                    egui::Rect::from_center_size(rect.center(), tex * scale)
+                };
+                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                if let (Some(slide), Some(outgoing), Some(incoming)) =
+                    (self.slide, &self.texture, &self.incoming)
+                {
+                    // 转场中：源图与目标图按 ease-out 进度同向滑动（工单 14）。
+                    let t = ((ctx.input(|input| input.time) - slide.started_secs) / SLIDE_SECONDS)
+                        .clamp(0.0, 1.0) as f32;
+                    let eased = 1.0 - (1.0 - t).powi(3);
+                    let shift = rect.width() * eased;
+                    let (out_dx, in_dx) = match slide.direction {
+                        Direction::Next => (-shift, rect.width() - shift),
+                        Direction::Prev => (shift, shift - rect.width()),
+                    };
+                    let painter = ui.painter_at(rect);
                     painter.image(
-                        texture.id(),
-                        image_rect,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        outgoing.id(),
+                        fitted(outgoing).translate(egui::vec2(out_dx, 0.0)),
+                        uv,
                         egui::Color32::WHITE,
                     );
+                    painter.image(
+                        incoming.id(),
+                        fitted(incoming).translate(egui::vec2(in_dx, 0.0)),
+                        uv,
+                        egui::Color32::WHITE,
+                    );
+                } else if let Some(texture) = &self.texture {
+                    painter.image(texture.id(), fitted(texture), uv, egui::Color32::WHITE);
                 } else {
                     painter.text(
                         rect.center(),

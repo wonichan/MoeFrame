@@ -8,6 +8,9 @@
 //! 跨启动恢复（工单 13）：启动时宿主把配置里保存的当前图、本轮进度与历史经
 //! `ResumeData` 送入，首次扫描后按模式与当前图是否仍在图库决定首图；每次成功
 //! 显示都经 `SaveResumeState` 效果请宿主落盘（预加载与失败不落盘）。
+//! 滑动转场（工单 14）：导航加载成功后核心先发 `StartTransition`，宿主渲染约
+//! 300ms 滑动并以 `TransitionCompleted` 回送，核心在完成时才提交这次显示
+//! （记账、落盘、重计间隔都在完成时）；转场期间的新导航意图只保留最后一个。
 
 use crate::{
     config::PlaybackMode,
@@ -39,6 +42,8 @@ pub enum Intent {
     ScanCompleted(Vec<PathBuf>),
     /// 宿主执行完加载的效果回送：成功显示的路径，或全部候选失败。
     LoadCompleted { shown: Option<PathBuf>, now_ms: u64 },
+    /// 宿主渲染完一段滑动转场的效果回送：核心此刻才提交这次显示（工单 14）。
+    TransitionCompleted { now_ms: u64 },
     /// 上一张（菜单、左方向键、滚轮向上共用同一意图）。
     PrevRequested,
     /// 下一张（菜单、右方向键、滚轮向下共用同一意图）。
@@ -69,6 +74,13 @@ pub enum Effect {
     Preload {
         path: PathBuf,
     },
+    /// 目标图已就绪：宿主开始渲染从当前图到目标图的滑动转场（工单 14）。
+    /// 方向来自导航方向：Next 时目标从右向左进入，Prev 相反。
+    StartTransition {
+        from: PathBuf,
+        to: PathBuf,
+        direction: Direction,
+    },
     SaveInterval(i64),
     SavePlaybackMode(PlaybackMode),
     /// 一次成功显示已提交：把当前图、本轮进度与历史落盘（工单 13）。
@@ -88,21 +100,35 @@ pub enum View {
     Showing(PathBuf),
 }
 
-/// 导航的落位方式：新鲜选择记账，历史回看/返回只动游标。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NavKind {
-    Fresh,
-    Back,
-    Forward,
-}
-
 /// 一次在飞加载的性质，决定失败回送如何收尾。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pending {
     /// 扫描后的首图加载：全失败即无图状态。
     Initial,
     /// 导航加载：全失败保留当前图；auto 区分自动轮播与手动切换的计时处理。
-    Navigate { auto: bool, kind: NavKind },
+    Navigate {
+        auto: bool,
+        kind: Landing,
+        direction: Direction,
+    },
+}
+
+/// 一段已开始、等待宿主渲染完成的滑动转场（工单 14）：目标图已就绪但尚未
+/// 提交显示，记账、落盘与重计都等 `TransitionCompleted`。
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Transition {
+    target: PathBuf,
+    kind: Landing,
+}
+
+/// 显示的落位方式：新鲜选择记账、历史往返只动游标、恢复只落位不记账。
+/// 导航在产生候选时就定下，转场与提交沿用同一份。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Landing {
+    Fresh,
+    Back,
+    Forward,
+    Restored,
 }
 
 pub struct FrameCore {
@@ -114,7 +140,9 @@ pub struct FrameCore {
     /// 下一次自动切换的触发时刻；暂停或无图时为 None。
     deadline_ms: Option<u64>,
     pending: Option<Pending>,
-    /// 加载在飞时新到的导航意图只留最后一个，加载收尾后接着执行。
+    /// 进行中的滑动转场；转场期间不提交显示、不触发自动轮播。
+    transition: Option<Transition>,
+    /// 加载或转场在飞时新到的导航意图只留最后一个，收尾后接着执行。
     queued_nav: Option<Direction>,
     /// 在飞期间改过间隔：失败收尾时也要按新间隔重计（成功与自动失败路径天然重计）。
     recount_on_settle: bool,
@@ -140,6 +168,7 @@ impl FrameCore {
             interval_secs,
             deadline_ms: None,
             pending: None,
+            transition: None,
             queued_nav: None,
             recount_on_settle: false,
             rng,
@@ -181,8 +210,9 @@ impl FrameCore {
     }
 
     fn navigate(&mut self, direction: Direction, auto: bool) -> Vec<Effect> {
-        if self.pending.is_some() {
-            // 加载期间保留当前图；手动导航不丢弃，留最后一个，收尾后执行。
+        if self.pending.is_some() || self.transition.is_some() {
+            // 加载或转场期间保留当前图；手动导航不丢弃，留最后一个，收尾后执行，
+            // 不并行开启第二段转场（工单 14）。
             if !auto {
                 self.queued_nav = Some(direction);
             }
@@ -190,26 +220,71 @@ impl FrameCore {
         }
         let (candidates, kind) = match (self.playlist.mode(), direction) {
             (PlaybackMode::Sequential, _) => {
-                (self.playlist.rotation_candidates(direction), NavKind::Fresh)
+                (self.playlist.rotation_candidates(direction), Landing::Fresh)
             }
             (PlaybackMode::Random, Direction::Prev) => {
-                (self.playlist.history_back_candidates(), NavKind::Back)
+                (self.playlist.history_back_candidates(), Landing::Back)
             }
             (PlaybackMode::Random, Direction::Next) => {
                 // 回看中先沿历史返回最新端；无路可返时才作新鲜选择。
                 let forward = self.playlist.history_forward_candidates();
                 if self.playlist.history_cursor().is_some() && !forward.is_empty() {
-                    (forward, NavKind::Forward)
+                    (forward, Landing::Forward)
                 } else {
-                    (self.playlist.bag_candidates(&mut *self.rng), NavKind::Fresh)
+                    (self.playlist.bag_candidates(&mut *self.rng), Landing::Fresh)
                 }
             }
         };
         if candidates.is_empty() {
             return Vec::new();
         }
-        self.pending = Some(Pending::Navigate { auto, kind });
+        self.pending = Some(Pending::Navigate {
+            auto,
+            kind,
+            direction,
+        });
         vec![Effect::Load { candidates }]
+    }
+
+    /// 一次成功显示的提交：按落位方式记账，从完成时刻计满一个间隔，
+    /// 并产出预加载与跨启动落盘效果。落位失败（路径不在图库）回到无图状态。
+    fn commit_display(&mut self, path: &PathBuf, landing: Landing, now_ms: u64) -> Vec<Effect> {
+        let landed = match landing {
+            Landing::Fresh => self.playlist.record_fresh(path, &mut *self.rng),
+            // 历史落位若因转场期间切换模式清了游标而落空，退到只落位不记账：
+            // 这张图已经成功显示，不能反而清成无图状态。
+            Landing::Back => {
+                self.playlist.land_history(path, Direction::Prev)
+                    || self.playlist.land_restored(path)
+            }
+            Landing::Forward => {
+                self.playlist.land_history(path, Direction::Next)
+                    || self.playlist.land_restored(path)
+            }
+            Landing::Restored => self.playlist.land_restored(path),
+        };
+        if !landed {
+            self.playlist.clear_current();
+            self.deadline_ms = None;
+            return Vec::new();
+        }
+        // 成功切换都从完成时刻计满一个间隔（转场提交以转场完成时为准）。
+        self.deadline_ms = if self.playing {
+            Some(now_ms + self.interval_ms())
+        } else {
+            None
+        };
+        let mut effects = match self.playlist.preload_target(&mut *self.rng) {
+            Some(next) => vec![Effect::Preload { path: next }],
+            None => Vec::new(),
+        };
+        // 成功显示即提交落盘：当前图、本轮进度与历史（工单 13）。
+        effects.push(Effect::SaveResumeState {
+            current: path.clone(),
+            seen: self.playlist.seen_paths(),
+            history: self.playlist.history().to_vec(),
+        });
+        effects
     }
 
     /// 加载收尾后执行排队中的导航（若有）。
@@ -241,6 +316,7 @@ impl FrameCore {
             Intent::ScanCompleted(paths) => {
                 self.deadline_ms = None;
                 self.queued_nav = None;
+                self.transition = None;
                 self.recount_on_settle = false;
                 let mode = self.playlist.mode();
                 let Some(resume) = self.resume.take() else {
@@ -310,45 +386,40 @@ impl FrameCore {
                 let restore_target = self.restore_target.take();
                 let mut effects = match shown {
                     Some(path) => {
-                        // 落位方式由在飞导航的性质决定：新鲜选择记账，历史往返只动游标，
-                        // 恢复图只落位不记账（防重复例外）。
-                        let landed = match pending {
+                        // 导航加载成功且已有当前图：先起滑动转场，完成时才提交显示
+                        //（工单 14）；首图加载与无当前图的防御路径直接提交。
+                        let start = match pending {
                             Pending::Navigate {
-                                kind: NavKind::Back,
-                                ..
-                            } => self.playlist.land_history(&path, Direction::Prev),
-                            Pending::Navigate {
-                                kind: NavKind::Forward,
-                                ..
-                            } => self.playlist.land_history(&path, Direction::Next),
-                            Pending::Initial if restore_target.as_ref() == Some(&path) => {
-                                self.playlist.land_restored(&path)
-                            }
-                            _ => self.playlist.record_fresh(&path, &mut *self.rng),
+                                kind, direction, ..
+                            } => self
+                                .playlist
+                                .current_path()
+                                .cloned()
+                                .map(|from| (from, kind, direction)),
+                            _ => None,
                         };
-                        if !landed {
-                            self.playlist.clear_current();
-                            self.deadline_ms = None;
-                            Vec::new()
-                        } else {
-                            // 成功切换（首图或导航）都从完成时刻计满一个间隔。
-                            self.deadline_ms = if self.playing {
-                                Some(now_ms + self.interval_ms())
-                            } else {
-                                None
-                            };
-                            let mut landed_effects =
-                                match self.playlist.preload_target(&mut *self.rng) {
-                                    Some(next) => vec![Effect::Preload { path: next }],
-                                    None => Vec::new(),
+                        match start {
+                            Some((from, kind, direction)) => {
+                                self.transition = Some(Transition {
+                                    target: path.clone(),
+                                    kind,
+                                });
+                                vec![Effect::StartTransition {
+                                    from,
+                                    to: path,
+                                    direction,
+                                }]
+                            }
+                            None => {
+                                let landing = match pending {
+                                    Pending::Navigate { kind, .. } => kind,
+                                    _ if restore_target.as_ref() == Some(&path) => {
+                                        Landing::Restored
+                                    }
+                                    _ => Landing::Fresh,
                                 };
-                            // 成功显示即提交落盘：当前图、本轮进度与历史（工单 13）。
-                            landed_effects.push(Effect::SaveResumeState {
-                                current: path.clone(),
-                                seen: self.playlist.seen_paths(),
-                                history: self.playlist.history().to_vec(),
-                            });
-                            landed_effects
+                                self.commit_display(&path, landing, now_ms)
+                            }
                         }
                     }
                     None => match pending {
@@ -374,6 +445,18 @@ impl FrameCore {
                         }
                     },
                 };
+                // 转场已开启时排队意图等转场完成再处理，不并行启动下一次加载。
+                if self.transition.is_none() {
+                    effects.extend(self.drain_queued_nav());
+                }
+                effects
+            }
+            Intent::TransitionCompleted { now_ms } => {
+                // 无转场在飞的回送（宿主在重扫后取消了渲染等）直接忽略。
+                let Some(transition) = self.transition.take() else {
+                    return Vec::new();
+                };
+                let mut effects = self.commit_display(&transition.target, transition.kind, now_ms);
                 effects.extend(self.drain_queued_nav());
                 effects
             }
@@ -414,7 +497,11 @@ impl FrameCore {
                 vec![Effect::SavePlaybackMode(mode)]
             }
             Intent::Tick { now_ms } => {
-                if !self.playing || self.pending.is_some() || self.playlist.len() < 2 {
+                if !self.playing
+                    || self.pending.is_some()
+                    || self.transition.is_some()
+                    || self.playlist.len() < 2
+                {
                     return Vec::new();
                 }
                 match self.deadline_ms {

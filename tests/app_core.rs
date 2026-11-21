@@ -6,6 +6,7 @@ mod common;
 use common::{IdentityRng, ZeroRng};
 use moe_frame::app_core::{Effect, FrameCore, Intent, ResumeData, View};
 use moe_frame::config::PlaybackMode;
+use moe_frame::playlist::Direction;
 use std::path::PathBuf;
 
 fn path(text: &str) -> PathBuf {
@@ -17,6 +18,11 @@ fn img(name: &str) -> PathBuf {
 }
 
 /// 驱动核心到「已显示第一张图」的状态（t=0 完成加载），返回核心与首图加载产生的效果。
+/// 导航加载成功后核心先起转场；这一步把转场结算掉，返回提交效果（工单 14）。
+fn settle_transition(core: &mut FrameCore, now_ms: u64) -> Vec<Effect> {
+    core.handle(Intent::TransitionCompleted { now_ms })
+}
+
 fn showing_core(names: &[&str], interval_secs: i64) -> (FrameCore, Vec<Effect>) {
     showing_core_mode(names, interval_secs, PlaybackMode::Sequential)
 }
@@ -182,11 +188,20 @@ fn auto_advance_fires_exactly_at_the_deadline() {
             candidates: vec![img("b.png"), img("c.png")],
         }]
     );
+    // 自动轮播同样先起转场（方向 Next），转场完成时才提交并重计。
     assert_eq!(
         core.handle(Intent::LoadCompleted {
             shown: Some(img("b.png")),
             now_ms: 30_000,
         }),
+        vec![Effect::StartTransition {
+            from: img("a.png"),
+            to: img("b.png"),
+            direction: Direction::Next,
+        }]
+    );
+    assert_eq!(
+        settle_transition(&mut core, 30_000),
         vec![
             Effect::Preload { path: img("c.png") },
             Effect::SaveResumeState {
@@ -218,6 +233,7 @@ fn manual_next_recounts_a_full_interval_from_the_successful_switch() {
         shown: Some(img("b.png")),
         now_ms: 12_000,
     });
+    settle_transition(&mut core, 12_000);
     assert_eq!(core.handle(Intent::Tick { now_ms: 41_999 }), vec![]);
     assert_eq!(
         core.handle(Intent::Tick { now_ms: 42_000 }),
@@ -259,6 +275,14 @@ fn pause_stops_auto_advance_but_not_manual_navigation_and_resume_recounts() {
             shown: Some(img("b.png")),
             now_ms: 20_000,
         }),
+        vec![Effect::StartTransition {
+            from: img("a.png"),
+            to: img("b.png"),
+            direction: Direction::Next,
+        }]
+    );
+    assert_eq!(
+        settle_transition(&mut core, 20_000),
         vec![
             Effect::Preload { path: img("c.png") },
             Effect::SaveResumeState {
@@ -404,11 +428,20 @@ fn a_navigation_pressed_during_a_load_runs_after_it_settles() {
     // 加载在飞时按的上一张不丢弃：当场无效果，收尾后接着执行（只留最后一个）。
     assert_eq!(core.handle(Intent::NextRequested), vec![]);
     assert_eq!(core.handle(Intent::PrevRequested), vec![]);
+    // 加载成功先起转场；排队中的上一张等转场提交后才执行。
     assert_eq!(
         core.handle(Intent::LoadCompleted {
             shown: Some(img("b.png")),
             now_ms: 5_000,
         }),
+        vec![Effect::StartTransition {
+            from: img("a.png"),
+            to: img("b.png"),
+            direction: Direction::Next,
+        }]
+    );
+    assert_eq!(
+        settle_transition(&mut core, 5_000),
         vec![
             Effect::Preload { path: img("c.png") },
             Effect::SaveResumeState {
@@ -476,6 +509,7 @@ fn random_next_draws_only_unseen_and_a_new_round_avoids_the_last_image() {
         shown: Some(img("b.png")),
         now_ms: 100,
     });
+    settle_transition(&mut core, 100);
     assert_eq!(
         core.handle(Intent::NextRequested),
         vec![Effect::Load {
@@ -486,6 +520,7 @@ fn random_next_draws_only_unseen_and_a_new_round_avoids_the_last_image() {
         shown: Some(img("c.png")),
         now_ms: 200,
     });
+    settle_transition(&mut core, 200);
     // 全看完：新一轮候选避开刚显示的 c。
     assert_eq!(
         core.handle(Intent::NextRequested),
@@ -504,6 +539,7 @@ fn random_prev_walks_history_and_next_returns_to_the_newest_first() {
             shown: Some(img(next)),
             now_ms: now,
         });
+        settle_transition(&mut core, now);
     }
     // 上一张按实际历史回看。
     assert_eq!(
@@ -516,6 +552,7 @@ fn random_prev_walks_history_and_next_returns_to_the_newest_first() {
         shown: Some(img("b.png")),
         now_ms: 300,
     });
+    settle_transition(&mut core, 300);
     assert_eq!(core.view(), View::Showing(img("b.png")));
     // 下一张先沿历史回到最新图，而不是抽新的随机图。
     assert_eq!(
@@ -528,6 +565,7 @@ fn random_prev_walks_history_and_next_returns_to_the_newest_first() {
         shown: Some(img("c.png")),
         now_ms: 400,
     });
+    settle_transition(&mut core, 400);
     // 回到最新端后，上一张仍可回看（历史未被回看改写）。
     assert_eq!(
         core.handle(Intent::PrevRequested),
@@ -668,6 +706,7 @@ fn random_resume_restores_the_current_image_and_continues_with_unseen() {
         shown: Some(img("c.png")),
         now_ms: 100,
     });
+    settle_transition(&mut core, 100);
     // 上一张仍能按恢复的历史回看。
     assert_eq!(
         core.handle(Intent::PrevRequested),
@@ -798,10 +837,11 @@ fn playback_state_survives_across_two_launches() {
         now_ms: 0,
     });
     first.handle(Intent::NextRequested);
-    let effects = first.handle(Intent::LoadCompleted {
+    first.handle(Intent::LoadCompleted {
         shown: Some(img("b.png")),
         now_ms: 100,
     });
+    let effects = settle_transition(&mut first, 100);
     let saved = effects
         .iter()
         .find_map(|effect| match effect {
@@ -841,4 +881,169 @@ fn playback_state_survives_across_two_launches() {
             candidates: vec![img("c.png")],
         }]
     );
+}
+
+// ---------- 工单 14：滑动转场 ----------
+
+#[test]
+fn transitions_report_direction_and_commit_only_on_completion() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    core.handle(Intent::NextRequested);
+    // 目标就绪先起转场：方向 Next，画面与记账都还没提交。
+    assert_eq!(
+        core.handle(Intent::LoadCompleted {
+            shown: Some(img("b.png")),
+            now_ms: 1_000,
+        }),
+        vec![Effect::StartTransition {
+            from: img("a.png"),
+            to: img("b.png"),
+            direction: Direction::Next,
+        }]
+    );
+    assert_eq!(core.view(), View::Showing(img("a.png")));
+    // 转场期间自动轮播不触发（旧截止时刻已过也不行）。
+    assert_eq!(core.handle(Intent::Tick { now_ms: 999_999 }), vec![]);
+    // 完成时才提交：落盘、记账与从完成时起计满间隔。
+    assert_eq!(
+        settle_transition(&mut core, 1_300),
+        vec![
+            Effect::Preload { path: img("c.png") },
+            Effect::SaveResumeState {
+                current: img("b.png"),
+                seen: vec![img("a.png"), img("b.png")],
+                history: vec![img("a.png"), img("b.png")],
+            },
+        ]
+    );
+    assert_eq!(core.view(), View::Showing(img("b.png")));
+    assert_eq!(core.handle(Intent::Tick { now_ms: 31_299 }), vec![]);
+    assert_eq!(
+        core.handle(Intent::Tick { now_ms: 31_300 }),
+        vec![Effect::Load {
+            candidates: vec![img("c.png"), img("a.png")],
+        }]
+    );
+    // 上一张的转场方向是 Prev。
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("c.png")),
+        now_ms: 31_300,
+    });
+    settle_transition(&mut core, 31_300);
+    core.handle(Intent::PrevRequested);
+    assert_eq!(
+        core.handle(Intent::LoadCompleted {
+            shown: Some(img("b.png")),
+            now_ms: 32_000,
+        }),
+        vec![Effect::StartTransition {
+            from: img("c.png"),
+            to: img("b.png"),
+            direction: Direction::Prev,
+        }]
+    );
+}
+
+#[test]
+fn intents_during_a_transition_keep_only_the_last_one() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    core.handle(Intent::NextRequested);
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 1_000,
+    });
+    // 转场中连按下一张又改上一张：只保留最后一个（上一张），不并行、不累积。
+    assert_eq!(core.handle(Intent::NextRequested), vec![]);
+    assert_eq!(core.handle(Intent::PrevRequested), vec![]);
+    assert_eq!(
+        settle_transition(&mut core, 1_300),
+        vec![
+            Effect::Preload { path: img("c.png") },
+            Effect::SaveResumeState {
+                current: img("b.png"),
+                seen: vec![img("a.png"), img("b.png")],
+                history: vec![img("a.png"), img("b.png")],
+            },
+            Effect::Load {
+                candidates: vec![img("a.png"), img("c.png")],
+            },
+        ]
+    );
+}
+
+#[test]
+fn pausing_during_a_transition_still_commits_the_display() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    core.handle(Intent::NextRequested);
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 1_000,
+    });
+    core.handle(Intent::PlayPauseToggled { now_ms: 1_100 });
+    // 转场照常提交显示与落盘，只是提交后不设计时。
+    let effects = settle_transition(&mut core, 1_300);
+    assert!(effects.contains(&Effect::SaveResumeState {
+        current: img("b.png"),
+        seen: vec![img("a.png"), img("b.png")],
+        history: vec![img("a.png"), img("b.png")],
+    }));
+    assert_eq!(core.view(), View::Showing(img("b.png")));
+    assert_eq!(core.handle(Intent::Tick { now_ms: 999_999 }), vec![]);
+}
+
+#[test]
+fn a_transition_completed_without_a_transition_is_ignored() {
+    let (mut core, _) = showing_core(&["a.png", "b.png"], 30);
+    assert_eq!(settle_transition(&mut core, 0), vec![]);
+    assert_eq!(core.view(), View::Showing(img("a.png")));
+}
+
+#[test]
+fn switching_mode_during_a_history_transition_never_blanks_the_frame() {
+    // 随机模式回看中段后向前返回，转场期间切到顺序模式（会清历史游标）：
+    // 提交时历史落位落空也不能把已成功显示的图清成无图（审查发现）。
+    let (mut core, _) = showing_core_mode(&["a.png", "b.png", "c.png"], 30, PlaybackMode::Random);
+    for (next, now) in [("b.png", 100), ("c.png", 200)] {
+        core.handle(Intent::NextRequested);
+        core.handle(Intent::LoadCompleted {
+            shown: Some(img(next)),
+            now_ms: now,
+        });
+        settle_transition(&mut core, now);
+    }
+    core.handle(Intent::PrevRequested);
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 300,
+    });
+    settle_transition(&mut core, 300);
+    core.handle(Intent::NextRequested);
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("c.png")),
+        now_ms: 400,
+    });
+    core.handle(Intent::PlaybackModeSelected(PlaybackMode::Sequential));
+    settle_transition(&mut core, 400);
+    assert_eq!(core.view(), View::Showing(img("c.png")));
+}
+
+#[test]
+fn a_failed_navigation_after_a_transition_keeps_the_new_image() {
+    // 转场提交后的一次导航全失败：不产生转场，画面停在刚提交的新图上。
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    core.handle(Intent::NextRequested);
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 100,
+    });
+    settle_transition(&mut core, 100);
+    core.handle(Intent::NextRequested);
+    assert_eq!(
+        core.handle(Intent::LoadCompleted {
+            shown: None,
+            now_ms: 200,
+        }),
+        vec![]
+    );
+    assert_eq!(core.view(), View::Showing(img("b.png")));
 }
