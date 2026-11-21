@@ -17,6 +17,7 @@ use moe_frame::{
     app_core::{Effect, FrameCore, Intent, ResumeData, View},
     config::{ConfigStore, PlaybackMode},
     decode_validation::DisplayMode,
+    display::display_size,
     gesture::GestureThresholds,
     loading::LoadRequest,
     playlist::{Direction, RandomSource},
@@ -177,6 +178,11 @@ fn run() -> Result<(), Box<dyn Error>> {
                 tray_tried: false,
                 tray_state: None,
                 exiting: false,
+                settings_open: false,
+                settings_positioned: false,
+                texture_mode: fit_mode,
+                load_mode: fit_mode,
+                reload_pending: None,
             }))
         }),
     )?;
@@ -190,6 +196,7 @@ struct TrayHandles {
     play_pause: tray_icon::menu::MenuItem,
     prev: tray_icon::menu::MenuItem,
     next: tray_icon::menu::MenuItem,
+    settings: tray_icon::menu::MenuItem,
     exit: tray_icon::menu::MenuItem,
 }
 
@@ -204,7 +211,7 @@ fn tray_icon_image() -> tray_icon::Icon {
 }
 
 /// 建托盘图标与右键菜单（工单 17）：菜单项与相框菜单走同一套核心意图；
-/// 「设置」入口等工单 18 接入设置窗后再加，不先摆无效项。失败返回 None，
+/// 「设置」打开工单 18 的设置窗（宿主窗口，不经核心）。失败返回 None，
 /// 相框本体照常运行（托盘是常驻入口，不是相框的前置条件）。
 fn build_tray(frame_visible: bool, playing: bool) -> Option<TrayHandles> {
     use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -222,6 +229,7 @@ fn build_tray(frame_visible: bool, playing: bool) -> Option<TrayHandles> {
     let play_pause = MenuItem::new(if playing { "暂停" } else { "播放" }, true, None);
     let prev = MenuItem::new("上一张", true, None);
     let next = MenuItem::new("下一张", true, None);
+    let settings = MenuItem::new("设置", true, None);
     let exit = MenuItem::new("退出", true, None);
     menu.append_items(&[
         &show_hide,
@@ -230,6 +238,7 @@ fn build_tray(frame_visible: bool, playing: bool) -> Option<TrayHandles> {
         &prev,
         &next,
         &PredefinedMenuItem::separator(),
+        &settings,
         &exit,
     ])
     .ok()?;
@@ -245,6 +254,7 @@ fn build_tray(frame_visible: bool, playing: bool) -> Option<TrayHandles> {
         play_pause,
         prev,
         next,
+        settings,
         exit,
     })
 }
@@ -296,6 +306,27 @@ fn system_gesture_thresholds(pixels_per_point: f32) -> GestureThresholds {
 #[cfg(windows)]
 const SLIDE_SECONDS: f64 = 0.3;
 
+/// 当前图重载（显示方式切换）的哨兵加载序号，与核心加载的递增序号分开（工单 18）。
+const RELOAD_SEQ: u64 = u64::MAX;
+
+/// 间隔六档预设（工单 11/18）：相框菜单与设置窗共用同一份，不各写一份。
+const INTERVAL_PRESETS: [(&str, i64); 6] = [
+    ("10 秒", 10),
+    ("30 秒", 30),
+    ("1 分钟", 60),
+    ("5 分钟", 300),
+    ("10 分钟", 600),
+    ("30 分钟", 1800),
+];
+
+/// 设置窗尺寸（工单 18）：建窗与屏幕居中计算共用。
+const SETTINGS_SIZE: [f32; 2] = [400.0, 330.0];
+
+/// 设置窗的视口标识（工单 18）：全程只有一块。
+fn settings_viewport_id() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("moe-frame-settings")
+}
+
 /// 一段进行中的滑动转场（工单 14）：方向与起始时刻（egui UI 时钟，秒）。
 #[cfg(windows)]
 #[derive(Clone, Copy)]
@@ -333,6 +364,16 @@ struct FrameApp {
     tray_state: Option<(bool, bool)>,
     /// 已明确选择退出（工单 17）：关闭请求不再拦截，托盘图标先行移除。
     exiting: bool,
+    /// 设置窗（工单 18）：是否打开、打开时是否已定位到屏幕中央。
+    settings_open: bool,
+    settings_positioned: bool,
+    /// 当前纹理的显示数据按哪种显示方式生成（工单 18）：与 fit_mode 不一致
+    /// 时要重载当前图（填充需要覆盖尺寸的数据，适应数据不够）。
+    texture_mode: DisplayMode,
+    /// 最近一次核心加载发出时用的显示方式：其纹理转正时记入 texture_mode。
+    load_mode: DisplayMode,
+    /// 显示方式切换后的当前图重载在飞（哨兵序号与核心加载分开，工单 18）。
+    reload_pending: Option<(PathBuf, DisplayMode)>,
 }
 
 #[cfg(windows)]
@@ -374,6 +415,7 @@ impl FrameApp {
                 Effect::Load { candidates } => {
                     self.load_seq += 1;
                     self.load_in_flight = true;
+                    self.load_mode = self.fit_mode;
                     let request = LoadRequest::product(self.physical_target(ctx), self.fit_mode);
                     let _ = self.command_tx.send(Command::Load {
                         seq: self.load_seq,
@@ -442,6 +484,136 @@ impl FrameApp {
         ]
     }
 
+    /// 应用显示方式（工单 18）：设置窗与相框菜单「显示方式」共用——改
+    /// 宿主状态、落盘、触发当前图按新方式重载；同值不动。
+    fn apply_fit_mode(&mut self, ctx: &egui::Context, mode: DisplayMode) {
+        if mode != self.fit_mode {
+            self.fit_mode = mode;
+            let _ = self.store.set_fit_mode(mode);
+            self.refresh_texture_mode(ctx);
+        }
+    }
+
+    /// 打开设置窗或把它带到前台（工单 18）：只有一块，已开时只聚焦，
+    /// 不重置位置（位置不保存、也不随相框移动）。从托盘打开不唤出相框。
+    fn request_settings(&mut self, ctx: &egui::Context) {
+        if self.settings_open {
+            ctx.send_viewport_cmd_to(settings_viewport_id(), egui::ViewportCommand::Focus);
+        } else {
+            self.settings_open = true;
+            self.settings_positioned = false;
+        }
+    }
+
+    /// 设置窗本体（工单 18）：非模态独立视口，只放已经打通的控件——播放
+    /// 模式、六档间隔预设、适应或填充（路径与自定义秒数是工单 19，几何
+    /// 控件是工单 20，自启是工单 21，都不先摆占位）。选择即刻生效：模式与
+    /// 间隔走核心意图（计时规则与相框菜单完全一致），显示方式落盘并触发
+    /// 当前图按新方式重载。关闭按钮、Alt+F4、Esc 只关本窗，不暂停轮播、
+    /// 不隐藏相框、不退出进程；三项 P1 控件不出现（ADR-0003）。
+    fn show_settings(&mut self, ctx: &egui::Context, now: u64) {
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title("萌框设置")
+            .with_inner_size(SETTINGS_SIZE)
+            .with_resizable(false);
+        if !self.settings_positioned {
+            self.settings_positioned = true;
+            // 默认在相框所在屏幕中央：egui 只给得到相框所在屏的尺寸，原点
+            // 按该屏左上角计（单屏精确）；拿不到尺寸就不指定位置。
+            if let Some(monitor) = ctx.input(|input| input.viewport().monitor_size) {
+                builder = builder.with_position([
+                    ((monitor.x - SETTINGS_SIZE[0]) / 2.0).max(0.0),
+                    ((monitor.y - SETTINGS_SIZE[1]) / 2.0).max(0.0),
+                ]);
+            }
+        }
+        let mode_now = self.core.playback_mode();
+        let interval_now = self.core.interval_secs();
+        let fit_now = self.fit_mode;
+        let mut close = false;
+        let mut picked_mode: Option<PlaybackMode> = None;
+        let mut picked_interval: Option<i64> = None;
+        let mut picked_fit: Option<DisplayMode> = None;
+        ctx.show_viewport_immediate(settings_viewport_id(), builder, |ui, _class| {
+            let sctx = ui.ctx().clone();
+            if sctx.input(|input| input.viewport().close_requested())
+                || sctx.input(|input| input.key_pressed(egui::Key::Escape))
+            {
+                close = true;
+            }
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.label("播放模式");
+                ui.horizontal(|ui| {
+                    if ui
+                        .radio(mode_now == PlaybackMode::Sequential, "顺序")
+                        .clicked()
+                    {
+                        picked_mode = Some(PlaybackMode::Sequential);
+                    }
+                    if ui.radio(mode_now == PlaybackMode::Random, "随机").clicked() {
+                        picked_mode = Some(PlaybackMode::Random);
+                    }
+                });
+                ui.separator();
+                ui.label("切换间隔");
+                for (label, secs) in INTERVAL_PRESETS {
+                    if ui.radio(interval_now == secs, label).clicked() {
+                        picked_interval = Some(secs);
+                    }
+                }
+                ui.separator();
+                ui.label("显示方式");
+                ui.horizontal(|ui| {
+                    if ui.radio(fit_now == DisplayMode::Fit, "适应").clicked() {
+                        picked_fit = Some(DisplayMode::Fit);
+                    }
+                    if ui.radio(fit_now == DisplayMode::Fill, "填充").clicked() {
+                        picked_fit = Some(DisplayMode::Fill);
+                    }
+                });
+            });
+        });
+        if close {
+            self.settings_open = false;
+        }
+        if let Some(mode) = picked_mode {
+            if mode != mode_now {
+                let effects = self.core.handle(Intent::PlaybackModeSelected(mode));
+                self.dispatch(ctx, effects);
+            }
+        }
+        if let Some(secs) = picked_interval {
+            let effects = self
+                .core
+                .handle(Intent::IntervalSelected { secs, now_ms: now });
+            self.dispatch(ctx, effects);
+        }
+        if let Some(mode) = picked_fit {
+            self.apply_fit_mode(ctx, mode);
+        }
+    }
+
+    /// 当前纹理的显示数据与生效显示方式不一致时，重载当前图（工单 18）：
+    /// 填充需要覆盖尺寸的显示数据，适应生成的数据一边不够。重载走工作线程
+    /// 的普通加载命令 + 哨兵序号，回送只换纹理，不经核心提交。
+    fn refresh_texture_mode(&mut self, ctx: &egui::Context) {
+        if self.reload_pending.is_some() || self.slide.is_some() {
+            return;
+        }
+        if self.texture_mode == self.fit_mode {
+            return;
+        }
+        if let View::Showing(path) = self.core.view() {
+            self.reload_pending = Some((path.clone(), self.fit_mode));
+            let request = LoadRequest::product(self.physical_target(ctx), self.fit_mode);
+            let _ = self.command_tx.send(Command::Load {
+                seq: RELOAD_SEQ,
+                candidates: vec![path],
+                request,
+            });
+        }
+    }
+
     fn drain_replies(&mut self, ctx: &egui::Context) {
         while let Ok(reply) = self.reply_rx.try_recv() {
             match reply {
@@ -456,6 +628,23 @@ impl FrameApp {
                     }
                 }
                 Reply::Loaded { seq, image } => {
+                    if seq == RELOAD_SEQ {
+                        // 显示方式切换后的当前图重载（工单 18）：只换纹理，
+                        // 不经核心、不算一次显示。画面已切走或转场中则丢弃，
+                        // 转正后会按新模式再触发一次（refresh_texture_mode）。
+                        let pending = self.reload_pending.take();
+                        if let (Some((path, mode)), Some(image)) = (pending, image) {
+                            if self.slide.is_none()
+                                && self.core.view() == View::Showing(image.path.clone())
+                                && image.path == path
+                            {
+                                self.upload(ctx, image);
+                                self.texture = self.incoming.take();
+                                self.texture_mode = mode;
+                            }
+                        }
+                        continue;
+                    }
                     if seq != self.load_seq {
                         // 旧一轮（换文件夹之前）的结果：直接丢弃，不碰当前画面与状态。
                         continue;
@@ -474,6 +663,7 @@ impl FrameApp {
                     // 里滑动；否则（首图或直接提交）立即成为当前图（工单 14）。
                     if self.slide.is_none() && self.incoming.is_some() {
                         self.texture = self.incoming.take();
+                        self.texture_mode = self.load_mode;
                     }
                     // 导航全失败时核心保留当前图，纹理不动；只有核心回到无图状态才清纹理。
                     if self.core.view() == View::Empty {
@@ -482,6 +672,7 @@ impl FrameApp {
                 }
             }
         }
+        self.refresh_texture_mode(ctx);
     }
 
     fn upload(&mut self, ctx: &egui::Context, image: moe_frame::decode_validation::DisplayImage) {
@@ -533,6 +724,7 @@ impl eframe::App for FrameApp {
             self.tray = build_tray(self.core.frame_visible(), self.core.is_playing());
         }
         let mut tray_intents: Vec<Intent> = Vec::new();
+        let mut tray_settings = false;
         while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
             if let tray_icon::TrayIconEvent::Click {
                 button: tray_icon::MouseButton::Left,
@@ -554,6 +746,8 @@ impl eframe::App for FrameApp {
                     tray_intents.push(Intent::PrevRequested);
                 } else if id == tray.next.id() {
                     tray_intents.push(Intent::NextRequested);
+                } else if id == tray.settings.id() {
+                    tray_settings = true;
                 } else if id == tray.exit.id() {
                     tray_intents.push(Intent::ExitRequested);
                 }
@@ -562,6 +756,9 @@ impl eframe::App for FrameApp {
         for intent in tray_intents {
             let effects = self.core.handle(intent);
             self.dispatch(&ctx, effects);
+        }
+        if tray_settings {
+            self.request_settings(&ctx);
         }
         // 关闭只隐藏（工单 17）：拦截窗口关闭请求（含 Alt+F4）改走核心的
         // 关闭即隐藏；明确退出已置 exiting 时不拦截，关窗即结束进程。
@@ -578,6 +775,7 @@ impl eframe::App for FrameApp {
                 self.slide = None;
                 // 切走图的纹理随旧 handle 一并释放；目标图成为当前图。
                 self.texture = self.incoming.take();
+                self.texture_mode = self.load_mode;
                 let effects = self
                     .core
                     .handle(Intent::TransitionCompleted { now_ms: now });
@@ -588,16 +786,20 @@ impl eframe::App for FrameApp {
         }
 
         let mut menu_intent: Option<Intent> = None;
+        let mut menu_settings = false;
+        let mut menu_fit: Option<DisplayMode> = None;
         let panel = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ui, |ui| {
                 let rect = ui.max_rect();
                 let painter = ui.painter();
-                // 适应：无论窗口如何缩放，整图按比例完整放进窗口，余白即黑边。
+                // 绘制几何（工单 18）：适应完整放入留黑边、填充覆盖居中
+                // 裁剪，与库共用同一份 display_size 计算。
+                let fit_mode = self.fit_mode;
                 let fitted = |texture: &egui::TextureHandle| {
-                    let tex = egui::vec2(texture.size()[0] as f32, texture.size()[1] as f32);
-                    let scale = (rect.width() / tex.x).min(rect.height() / tex.y);
-                    egui::Rect::from_center_size(rect.center(), tex * scale)
+                    let tex = [texture.size()[0] as f32, texture.size()[1] as f32];
+                    let size = display_size(fit_mode, [rect.width(), rect.height()], tex);
+                    egui::Rect::from_center_size(rect.center(), egui::vec2(size[0], size[1]))
                 };
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                 if let (Some(slide), Some(outgoing), Some(incoming)) =
@@ -607,21 +809,31 @@ impl eframe::App for FrameApp {
                     let t = ((ctx.input(|input| input.time) - slide.started_secs) / SLIDE_SECONDS)
                         .clamp(0.0, 1.0) as f32;
                     let eased = 1.0 - (1.0 - t).powi(3);
-                    let shift = rect.width() * eased;
+                    // 行程按各自矩形算（工单 18）：切入图从恰好整幅出框的
+                    // 位置进、切出图走到恰好整幅出框——填充图比窗口宽，
+                    // 整宽平移会在起始帧先露出一截切入图。
+                    let out_rect = fitted(outgoing);
+                    let in_rect = fitted(incoming);
                     let (out_dx, in_dx) = match slide.direction {
-                        Direction::Next => (-shift, rect.width() - shift),
-                        Direction::Prev => (shift, shift - rect.width()),
+                        Direction::Next => (
+                            -(out_rect.right() - rect.left()) * eased,
+                            (rect.right() - in_rect.left()) * (1.0 - eased),
+                        ),
+                        Direction::Prev => (
+                            (rect.right() - out_rect.left()) * eased,
+                            -(in_rect.right() - rect.left()) * (1.0 - eased),
+                        ),
                     };
                     let painter = ui.painter_at(rect);
                     painter.image(
                         outgoing.id(),
-                        fitted(outgoing).translate(egui::vec2(out_dx, 0.0)),
+                        out_rect.translate(egui::vec2(out_dx, 0.0)),
                         uv,
                         egui::Color32::WHITE,
                     );
                     painter.image(
                         incoming.id(),
-                        fitted(incoming).translate(egui::vec2(in_dx, 0.0)),
+                        in_rect.translate(egui::vec2(in_dx, 0.0)),
                         uv,
                         egui::Color32::WHITE,
                     );
@@ -678,14 +890,7 @@ impl eframe::App for FrameApp {
                 }
             });
             ui.menu_button("切换间隔", |ui| {
-                for (label, secs) in [
-                    ("10 秒", 10),
-                    ("30 秒", 30),
-                    ("1 分钟", 60),
-                    ("5 分钟", 300),
-                    ("10 分钟", 600),
-                    ("30 分钟", 1800),
-                ] {
+                for (label, secs) in INTERVAL_PRESETS {
                     if ui
                         .selectable_label(secs == current_interval, label)
                         .clicked()
@@ -712,7 +917,19 @@ impl eframe::App for FrameApp {
                     ui.close();
                 }
             }
+            ui.menu_button("显示方式", |ui| {
+                for (label, mode) in [("适应", DisplayMode::Fit), ("填充", DisplayMode::Fill)] {
+                    if ui.selectable_label(mode == self.fit_mode, label).clicked() {
+                        menu_fit = Some(mode);
+                        ui.close();
+                    }
+                }
+            });
             ui.separator();
+            if ui.button("设置").clicked() {
+                menu_settings = true;
+                ui.close();
+            }
             if ui.button("退出").clicked() {
                 menu_intent = Some(Intent::ExitRequested);
                 ui.close();
@@ -722,6 +939,15 @@ impl eframe::App for FrameApp {
         if let Some(intent) = menu_intent {
             let effects = self.core.handle(intent);
             self.dispatch(&ctx, effects);
+        }
+        if let Some(mode) = menu_fit {
+            self.apply_fit_mode(&ctx, mode);
+        }
+        if menu_settings {
+            self.request_settings(&ctx);
+        }
+        if self.settings_open {
+            self.show_settings(&ctx, now);
         }
         // 托盘菜单文案跟随核心的真实状态（工单 17），只在变化时更新。
         if let Some(tray) = &self.tray {

@@ -250,3 +250,22 @@ fn an_overlong_saved_history_is_trimmed_to_the_newest_512() {
     assert_eq!(history.first().unwrap(), "D:\\图库\\88.png");
     assert_eq!(history.last().unwrap(), "D:\\图库\\599.png");
 }
+
+#[test]
+fn set_fit_mode_round_trips_through_a_real_file() {
+    use moe_frame::decode_validation::DisplayMode;
+    let path = temp_config("fit-mode");
+    let mut store = ConfigStore::load(&path);
+    assert_eq!(store.config().display.fit_mode, DisplayMode::Fit);
+    store.set_fit_mode(DisplayMode::Fill).unwrap();
+    // 内存与重新读盘一致，且不伤其他字段。
+    assert_eq!(store.config().display.fit_mode, DisplayMode::Fill);
+    let reparsed = ConfigStore::load(&path);
+    assert_eq!(reparsed.config().display.fit_mode, DisplayMode::Fill);
+    assert_eq!(reparsed.config().playback.interval_secs, 30);
+    store.set_fit_mode(DisplayMode::Fit).unwrap();
+    assert_eq!(
+        ConfigStore::load(&path).config().display.fit_mode,
+        DisplayMode::Fit
+    );
+}

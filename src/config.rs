@@ -212,6 +212,19 @@ impl ConfigStore {
         })
     }
 
+    /// 设置窗「显示方式」（工单 18）：适应/填充即时落盘，字符串值是第 6 节
+    /// 定的配置契约（"fit"/"fill"）。
+    pub fn set_fit_mode(&mut self, mode: DisplayMode) -> io::Result<()> {
+        self.update(|document, config| {
+            let text = match mode {
+                DisplayMode::Fit => "fit",
+                DisplayMode::Fill => "fill",
+            };
+            document["display"]["fit_mode"] = value(text);
+            config.display.fit_mode = mode;
+        })
+    }
+
     /// 保存播放模式（工单 12）：只改 playback.mode，其余字段原样保留。
     pub fn set_playback_mode(&mut self, mode: PlaybackMode) -> io::Result<()> {
         self.update(|document, config| {
