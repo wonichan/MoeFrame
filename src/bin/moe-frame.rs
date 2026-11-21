@@ -19,6 +19,7 @@ use moe_frame::{
     config::{ConfigStore, PlaybackMode},
     decode_validation::DisplayMode,
     display::display_size,
+    display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
     gesture::GestureThresholds,
     loading::LoadRequest,
     playlist::{Direction, RandomSource},
@@ -189,8 +190,6 @@ fn run() -> Result<(), Box<dyn Error>> {
                 incoming: None,
                 slide: None,
                 press_window_pos: None,
-                load_seq: 0,
-                load_in_flight: false,
                 wheel_acc: 0.0,
                 tray: None,
                 tray_tried: false,
@@ -198,12 +197,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 exiting: false,
                 settings_open: false,
                 settings_positioned: false,
-                texture_mode: fit_mode,
-                load_mode: fit_mode,
-                reload_pending: None,
-                texture_target: [0, 0],
-                load_target: [0, 0],
-                target_candidate: Debounce::new(),
+                pipeline: DisplayPipeline::new(),
                 locked_aspect: locked_aspect_init,
                 last_inner: last_inner_init,
                 saved_geom: saved_geom_init,
@@ -402,9 +396,6 @@ fn system_gesture_thresholds(pixels_per_point: f32) -> GestureThresholds {
 #[cfg(windows)]
 const SLIDE_SECONDS: f64 = 0.3;
 
-/// 当前图重载（显示方式切换）的哨兵加载序号，与核心加载的递增序号分开（工单 18）。
-const RELOAD_SEQ: u64 = u64::MAX;
-
 /// 间隔六档预设（工单 11/18）：相框菜单与设置窗共用同一份，不各写一份。
 const INTERVAL_PRESETS: [(&str, i64); 6] = [
     ("10 秒", 10),
@@ -514,9 +505,6 @@ struct FrameApp {
     slide: Option<Slide>,
     /// 本次左键按下时窗口的外框位置：右键取消拖动时回滚到这里（工单 15）。
     press_window_pos: Option<egui::Pos2>,
-    /// 当前一轮加载的序号；新一轮扫描开始即作废在飞的旧加载结果。
-    load_seq: u64,
-    load_in_flight: bool,
     /// 滚轮平滑滚动量的累积，攒够一格才触发一次切换。
     wheel_acc: f32,
     /// 托盘（工单 17）：首帧懒建（须在事件循环内建）；建失败为 None，相框照常。
@@ -530,20 +518,9 @@ struct FrameApp {
     /// 设置窗（工单 18）：是否打开、打开时是否已定位到屏幕中央。
     settings_open: bool,
     settings_positioned: bool,
-    /// 当前纹理的显示数据按哪种显示方式生成（工单 18）：与 fit_mode 不一致
-    /// 时要重载当前图（填充需要覆盖尺寸的数据，适应数据不够）。
-    texture_mode: DisplayMode,
-    /// 最近一次核心加载发出时用的显示方式：其纹理转正时记入 texture_mode。
-    load_mode: DisplayMode,
-    /// 显示方式切换后的当前图重载在飞（哨兵序号与核心加载分开，工单 18）：
-    /// 路径、模式与目标物理尺寸（工单 20 起目标变化也走这条重载）。
-    reload_pending: Option<(PathBuf, DisplayMode, [u32; 2])>,
-    /// 当前纹理的显示数据按哪个物理目标尺寸生成（工单 20）。
-    texture_target: [u32; 2],
-    /// 最近一次核心加载发出时的目标尺寸：其纹理转正时记入 texture_target。
-    load_target: [u32; 2],
-    /// 目标尺寸变化的停稳防抖：停稳 250ms 才触发重载。
-    target_candidate: Debounce<[u32; 2]>,
+    /// 显示数据管线（architecture-deepening 工单 01）：纹理的记账、转正、
+    /// 过期判定与重载决策都在库 display_data 里，宿主只上传纹理与绘制。
+    pipeline: DisplayPipeline,
     /// 宽高比锁定（工单 20）：Some(比例) 为锁定中，比例在打开开关那一刻
     /// 捕获（或启动时由存档尺寸推导）；开关本身落盘在 config。
     locked_aspect: Option<f32>,
@@ -600,7 +577,8 @@ impl FrameApp {
                 Effect::Scan(folder) => {
                     // 新一轮扫描开始：在飞的旧加载结果从此作废；
                     // 进行中的转场一并取消，画面回到核心仍在显示的源图。
-                    self.load_seq += 1;
+                    self.pipeline.invalidate();
+                    self.pipeline.drop_incoming();
                     self.slide = None;
                     self.incoming = None;
                     let _ = self.command_tx.send(Command::Scan { folder });
@@ -613,20 +591,20 @@ impl FrameApp {
                     ctx.request_repaint();
                 }
                 Effect::Load { candidates } => {
-                    self.load_seq += 1;
-                    self.load_in_flight = true;
-                    self.load_mode = self.fit_mode;
-                    self.load_target = self.physical_target(ctx);
-                    let request = LoadRequest::product(self.load_target, self.fit_mode);
+                    // 序号与在飞口径记账归显示数据管线：回送按序号裁决，
+                    // 转正时当前槽记为这次加载的口径。
+                    let target = self.physical_target(ctx);
+                    let seq = self.pipeline.begin_load(self.fit_mode, target);
+                    let request = LoadRequest::product(target, self.fit_mode);
                     let _ = self.command_tx.send(Command::Load {
-                        seq: self.load_seq,
+                        seq,
                         candidates,
                         request,
                     });
                 }
                 Effect::Preload { path } => {
-                    let request = LoadRequest::product(self.physical_target(ctx), self.fit_mode);
-                    let _ = self.command_tx.send(Command::Preload { path, request });
+                    let key = DisplayKey::new(path, self.physical_target(ctx), self.fit_mode);
+                    let _ = self.command_tx.send(Command::Preload { key });
                 }
                 Effect::SaveInterval(secs) => {
                     // A failed config write must not crash the frame; the menu re-reads the core value.
@@ -994,44 +972,25 @@ impl FrameApp {
         }
     }
 
-    /// 当前纹理的显示数据过期时重载当前图：显示方式变了（工单 18，填充
-    /// 需要覆盖尺寸的数据），或窗口物理尺寸/DPI 变了（工单 20，按实际
-    /// 物理像素重新生成，旧数据随纹理替换释放）。重载走工作线程的普通
-    /// 加载命令 + 哨兵序号，回送只换纹理，不经核心提交。目标尺寸变化要
-    /// 停稳 250ms 才触发，避免拖动缩放中反复解码；在飞的核心加载若已按
-    /// 新模式/新目标发出，其转正会自行刷新记录，不重复重载。
+    /// 当前纹理的显示数据过期时重载当前图（工单 18/20 的行为，记账与
+    /// 决策在库 display_data）：宿主每帧把观察值喂给管线，它决定是否
+    /// 发起刷新；刷新走 worker 的独立 Refresh 类别，回送只换纹理、
+    /// 不经核心提交。apply_fit_mode 与 drain_replies 都经这里。
     fn refresh_display_data(&mut self, ctx: &egui::Context) {
-        if self.reload_pending.is_some() || self.slide.is_some() {
-            return;
-        }
-        let View::Showing(path) = self.core.view() else {
-            return;
+        let showing = match self.core.view() {
+            View::Showing(path) => Some(path.clone()),
+            _ => None,
         };
-        let want_target = self.physical_target(ctx);
-        if self.load_in_flight && self.load_mode == self.fit_mode && self.load_target == want_target
-        {
-            return;
+        let observation = Observation {
+            showing,
+            fit_mode: self.fit_mode,
+            target: self.physical_target(ctx),
+            slide_active: self.slide.is_some(),
+            now_secs: ctx.input(|input| input.time),
+        };
+        if let Some(key) = self.pipeline.tick(&observation) {
+            let _ = self.command_tx.send(Command::Refresh { key });
         }
-        let mode_stale = self.texture_mode != self.fit_mode;
-        let target_stale = self.texture_target != want_target;
-        if !mode_stale && !target_stale {
-            self.target_candidate.clear();
-            return;
-        }
-        if target_stale && !mode_stale {
-            let now_secs = ctx.input(|input| input.time);
-            if !self.target_candidate.observe(want_target, now_secs, 0.25) {
-                return;
-            }
-        }
-        self.target_candidate.clear();
-        self.reload_pending = Some((path.clone(), self.fit_mode, want_target));
-        let request = LoadRequest::product(want_target, self.fit_mode);
-        let _ = self.command_tx.send(Command::Load {
-            seq: RELOAD_SEQ,
-            candidates: vec![path],
-            request,
-        });
     }
 
     /// 窗口几何维护（工单 20）：启动离屏钳制（只查一次）、宽高比锁定
@@ -1166,32 +1125,19 @@ impl FrameApp {
                         self.texture = None;
                         self.incoming = None;
                         self.slide = None;
+                        self.pipeline.drop_incoming();
+                        self.pipeline.clear_current();
                     }
                 }
                 Reply::Loaded { seq, image } => {
-                    if seq == RELOAD_SEQ {
-                        // 显示方式切换后的当前图重载（工单 18）：只换纹理，
-                        // 不经核心、不算一次显示。画面已切走或转场中则丢弃，
-                        // 转正后会按新模式再触发一次（refresh_display_data）。
-                        let pending = self.reload_pending.take();
-                        if let (Some((path, mode, target)), Some(image)) = (pending, image) {
-                            if self.slide.is_none()
-                                && self.core.view() == View::Showing(image.path.clone())
-                                && image.path == path
-                            {
-                                self.upload(ctx, image);
-                                self.texture = self.incoming.take();
-                                self.texture_mode = mode;
-                                self.texture_target = target;
-                            }
-                        }
+                    // 序号裁决归管线：过期回送（换文件夹之前）不碰当前
+                    // 画面与状态，也不通知核心。
+                    let decision = self
+                        .pipeline
+                        .nav_reply(seq, image.as_ref().map(|image| image.path.as_path()));
+                    if decision == NavDecision::Stale {
                         continue;
                     }
-                    if seq != self.load_seq {
-                        // 旧一轮（换文件夹之前）的结果：直接丢弃，不碰当前画面与状态。
-                        continue;
-                    }
-                    self.load_in_flight = false;
                     let shown = image.as_ref().map(|image| image.path.clone());
                     if let Some(image) = image {
                         self.upload(ctx, image);
@@ -1202,15 +1148,36 @@ impl FrameApp {
                     });
                     self.dispatch(ctx, effects);
                     // 核心决定起转场时（dispatch 已置 slide）目标图留在 incoming
-                    // 里滑动；否则（首图或直接提交）立即成为当前图（工单 14）。
+                    // 里滑动；否则（首图或直接提交）立即成为当前图（工单 14），
+                    // 当前槽记录随纹理一并转正（管线记账）。
                     if self.slide.is_none() && self.incoming.is_some() {
                         self.texture = self.incoming.take();
-                        self.texture_mode = self.load_mode;
-                        self.texture_target = self.load_target;
+                        self.pipeline.promote_incoming();
                     }
                     // 导航全失败时核心保留当前图，纹理不动；只有核心回到无图状态才清纹理。
                     if self.core.view() == View::Empty {
                         self.texture = None;
+                        self.pipeline.clear_current();
+                    }
+                }
+                Reply::Refreshed { image } => {
+                    // 当前图刷新（工单 18/20）：只换纹理，不经核心、不算
+                    // 一次显示。是否替换由管线裁决（画面切走、转场中或
+                    // 刷新失败都丢弃，失败保旧图且同口径不再重试）。
+                    let showing = match self.core.view() {
+                        View::Showing(path) => Some(path.clone()),
+                        _ => None,
+                    };
+                    let decision = self.pipeline.refresh_reply(
+                        image.as_ref().map(|image| image.path.as_path()),
+                        showing.as_deref(),
+                        self.slide.is_some(),
+                    );
+                    if decision == RefreshDecision::Swap {
+                        if let Some(image) = image {
+                            self.upload(ctx, image);
+                            self.texture = self.incoming.take();
+                        }
                     }
                 }
             }
@@ -1315,10 +1282,10 @@ impl eframe::App for FrameApp {
             let elapsed = ctx.input(|input| input.time) - slide.started_secs;
             if elapsed >= SLIDE_SECONDS {
                 self.slide = None;
-                // 切走图的纹理随旧 handle 一并释放；目标图成为当前图。
+                // 切走图的纹理随旧 handle 一并释放；目标图成为当前图，
+                // 当前槽记录随纹理一并转正（管线记账，与直接提交共用）。
                 self.texture = self.incoming.take();
-                self.texture_mode = self.load_mode;
-                self.texture_target = self.load_target;
+                self.pipeline.promote_incoming();
                 let effects = self
                     .core
                     .handle(Intent::TransitionCompleted { now_ms: now });
@@ -1520,7 +1487,7 @@ impl eframe::App for FrameApp {
             // 隐藏时没有轮播截止时刻可唤醒，心跳保证托盘点击/菜单及时被处理；
             // 轮播 Tick 仍按各自截止时刻在心跳帧上判定，不受影响。
             ctx.request_repaint_after(Duration::from_millis(250));
-        } else if self.load_in_flight {
+        } else if self.pipeline.load_in_flight() {
             ctx.request_repaint_after(Duration::from_millis(50));
         } else if let Some(deadline) = self.core.next_deadline_ms() {
             // 睡到下一次自动切换时刻再唤醒，避免空转重绘。

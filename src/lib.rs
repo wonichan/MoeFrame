@@ -8,6 +8,7 @@ pub mod config;
 pub mod decode_validation;
 pub mod diagnostics;
 pub mod display;
+pub mod display_data;
 pub mod gesture;
 pub mod library;
 pub mod loading;
