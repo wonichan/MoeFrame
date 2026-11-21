@@ -1,10 +1,10 @@
 //! 显示数据管线（architecture-deepening 工单 01）：「当前纹理与所显示图片
 //! 的显示口径一致」这一不变量只在这里维护——显示数据的记账、转正、过期
-//! 判定与重载决策都在本模块，宿主只上传纹理与绘制。
+//! 判定与刷新决策都在本模块，宿主只上传纹理与绘制。
 //!
 //! 形状与手势机、行为核心一致：egui-free，宿主把加载回送与每帧观察喂
 //! 进来，本模块返回裁决与刷新命令。纹理句柄归宿主，按本模块的抽象槽位
-//! （当前 / 传入）对应持有；刷新重载的决策形态是「替换当前槽内容」。
+//! （当前 / 传入）对应持有；刷新的决策形态是「替换当前槽内容」。
 //!
 //! 刷新失败策略（2026-11-21 grilling 定案，明文于此）：刷新失败时保持
 //! 当前纹理不动、不重试、不提示；同一期望口径不再重复触发，直到口径
@@ -13,7 +13,7 @@
 use crate::decode_validation::DisplayMode;
 use std::path::{Path, PathBuf};
 
-/// 目标尺寸变化的停稳时长（秒）：停稳才触发重载，避免拖动缩放中反复解码。
+/// 目标尺寸变化的停稳时长（秒）：停稳才触发刷新，避免拖动缩放中反复解码。
 const TARGET_SETTLE_SECS: f64 = 0.25;
 
 /// 「同一份显示数据」的身份：路径 + 物理目标 + 显示方式。worker 预载
@@ -23,12 +23,6 @@ pub struct DisplayKey {
     pub path: PathBuf,
     pub target: [u32; 2],
     pub mode: DisplayMode,
-}
-
-impl DisplayKey {
-    pub fn new(path: PathBuf, target: [u32; 2], mode: DisplayMode) -> Self {
-        Self { path, target, mode }
-    }
 }
 
 /// 导航加载回送的裁决。
@@ -140,7 +134,11 @@ impl DisplayPipeline {
         let nav = self.nav_in_flight.take().expect("在飞记录刚核对过");
         match image_path {
             Some(path) => {
-                self.incoming = Some(DisplayKey::new(path.to_path_buf(), nav.target, nav.mode));
+                self.incoming = Some(DisplayKey {
+                    path: path.to_path_buf(),
+                    target: nav.target,
+                    mode: nav.mode,
+                });
                 NavDecision::Accept
             }
             None => NavDecision::Failed,
@@ -166,7 +164,7 @@ impl DisplayPipeline {
         self.current = None;
     }
 
-    /// 每帧刷新决策：当前槽口径过期且满足触发条件时，返回要重载的
+    /// 每帧刷新决策：当前槽口径过期且满足触发条件时，返回要刷新的
     /// 期望键并记为待决刷新；其余情况返回 None。
     pub fn tick(&mut self, obs: &Observation) -> Option<DisplayKey> {
         if self.refresh_pending.is_some() || obs.slide_active {
@@ -186,7 +184,11 @@ impl DisplayPipeline {
             self.target_candidate = None;
             return None;
         }
-        let desired = DisplayKey::new(showing.clone(), obs.target, obs.fit_mode);
+        let desired = DisplayKey {
+            path: showing.clone(),
+            target: obs.target,
+            mode: obs.fit_mode,
+        };
         if self.refresh_failed_for.as_ref() == Some(&desired) {
             return None;
         }

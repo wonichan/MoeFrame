@@ -446,7 +446,7 @@ fn track_draft_field(
 type SavedGeom = (Option<i64>, Option<i64>, u32, u32);
 
 /// 停稳防抖（工单 20）：候选值保持不变满 settle_secs 后 observe 返回
-/// true（结算一次）；值一变就重新计时。目标尺寸重载与几何落盘共用。
+/// true（结算一次）；值一变就重新计时。窗口几何落盘用（工单 20）。
 #[cfg(windows)]
 struct Debounce<T> {
     candidate: Option<(T, f64)>,
@@ -518,8 +518,9 @@ struct FrameApp {
     /// 设置窗（工单 18）：是否打开、打开时是否已定位到屏幕中央。
     settings_open: bool,
     settings_positioned: bool,
-    /// 显示数据管线（architecture-deepening 工单 01）：纹理的记账、转正、
-    /// 过期判定与重载决策都在库 display_data 里，宿主只上传纹理与绘制。
+    /// 显示数据管线（architecture-deepening 工单 01）：显示数据的记账、
+    /// 转正、过期判定与刷新决策都在库 display_data 里；纹理句柄归宿主，
+    /// 按它的当前/传入槽位对应持有。
     pipeline: DisplayPipeline,
     /// 宽高比锁定（工单 20）：Some(比例) 为锁定中，比例在打开开关那一刻
     /// 捕获（或启动时由存档尺寸推导）；开关本身落盘在 config。
@@ -603,7 +604,11 @@ impl FrameApp {
                     });
                 }
                 Effect::Preload { path } => {
-                    let key = DisplayKey::new(path, self.physical_target(ctx), self.fit_mode);
+                    let key = DisplayKey {
+                        path,
+                        target: self.physical_target(ctx),
+                        mode: self.fit_mode,
+                    };
                     let _ = self.command_tx.send(Command::Preload { key });
                 }
                 Effect::SaveInterval(secs) => {
@@ -673,7 +678,7 @@ impl FrameApp {
     }
 
     /// 应用显示方式（工单 18）：设置窗与相框菜单「显示方式」共用——改
-    /// 宿主状态、落盘、触发当前图按新方式重载；同值不动。
+    /// 宿主状态、落盘、触发当前图按新方式刷新；同值不动。
     fn apply_fit_mode(&mut self, ctx: &egui::Context, mode: DisplayMode) {
         if mode != self.fit_mode {
             self.fit_mode = mode;
@@ -972,7 +977,7 @@ impl FrameApp {
         }
     }
 
-    /// 当前纹理的显示数据过期时重载当前图（工单 18/20 的行为，记账与
+    /// 当前纹理的显示数据过期时刷新当前图（工单 18/20 的行为，记账与
     /// 决策在库 display_data）：宿主每帧把观察值喂给管线，它决定是否
     /// 发起刷新；刷新走 worker 的独立 Refresh 类别，回送只换纹理、
     /// 不经核心提交。apply_fit_mode 与 drain_replies 都经这里。

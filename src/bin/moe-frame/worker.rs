@@ -94,8 +94,10 @@ fn run(commands: Receiver<Command>, replies: Sender<Reply>, log_path: PathBuf) {
                 request,
             } => {
                 // 预加载命中：首候选正是缓存的显示数据且口径未变，直接交出。
-                let first_key = candidates.first().map(|first| {
-                    DisplayKey::new(first.clone(), request.target_pixels, request.mode)
+                let first_key = candidates.first().map(|first| DisplayKey {
+                    path: first.clone(),
+                    target: request.target_pixels,
+                    mode: request.mode,
                 });
                 let cached_hit = match (&first_key, &cache) {
                     (Some(key), Some(cached)) if cached.key == *key => {

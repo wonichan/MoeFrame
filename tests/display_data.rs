@@ -1,5 +1,5 @@
 //! 显示数据管线（工单 01，architecture-deepening）：记账、转正、过期判定
-//! 与重载决策只在 display_data 一处，测试直接驱动它的 interface——喂加载
+//! 与刷新决策只在 display_data 一处，测试直接驱动它的 interface——喂加载
 //! 回送与每帧观察，断言它给出的裁决与刷新命令。
 
 use moe_frame::{
@@ -13,7 +13,11 @@ fn img(name: &str) -> PathBuf {
 }
 
 fn key(name: &str, target: [u32; 2], mode: DisplayMode) -> DisplayKey {
-    DisplayKey::new(img(name), target, mode)
+    DisplayKey {
+        path: img(name),
+        target,
+        mode,
+    }
 }
 
 fn obs(showing: Option<&str>, mode: DisplayMode, target: [u32; 2], now_secs: f64) -> Observation {
@@ -179,7 +183,7 @@ fn refresh_reply_after_view_moved_on_is_discarded() {
 #[test]
 fn in_flight_nav_load_with_desired_key_suppresses_refresh() {
     let mut pipeline = showing_pipeline("a.jpg", DisplayMode::Fit, [800, 600]);
-    // 核心已按新口径发出导航加载：其转正会刷新当前槽记录，不重复重载。
+    // 核心已按新口径发出导航加载：其转正会刷新当前槽记录，不重复刷新。
     let seq = pipeline.begin_load(DisplayMode::Fill, [800, 600]);
     assert_eq!(
         pipeline.tick(&obs(Some("a.jpg"), DisplayMode::Fill, [800, 600], 1.0)),
