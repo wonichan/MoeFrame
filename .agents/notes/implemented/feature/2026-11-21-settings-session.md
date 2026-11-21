@@ -34,3 +34,4 @@ Status: implemented
 - 宿主接线（egui 焦点跟踪、TextEdit 借文字、视口采样）仍无自动化覆盖：本票置 needs-info，设置窗交互的实机确认并入 real-machine-check-deepening.md 的工单 02 一节，与工单 01–05 其余各节同轮执行。
 - 工单 04 的改道点已明确：execute_session_actions 中 CommitFolder/CommitInterval/ApplyMode 的核心落盘 Effect 与 ApplyFitMode/ApplyAspectLock/ApplyAutostart 的直写，届时改走 config_sync；settings_session 本身不动。
 - 工单 05 的宽高比锁定开关经本会话的 ApplyAspectLock 动作发出、宿主转发几何状态机——接线点就是 execute_session_actions 的该分支。
+- Fit/Fill 与宽高比锁定动作已随 [相框按当前图像比例自适应宽度](2026-11-22-image-driven-frame.md) 移除；草稿提交、关闭丢弃和即时播放设置规则不变。

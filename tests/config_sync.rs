@@ -9,7 +9,6 @@ use moe_frame::{
     autostart::AutostartStore,
     config::{ConfigStore, PlaybackMode},
     config_sync::ConfigSync,
-    decode_validation::DisplayMode,
 };
 use std::{
     io,
@@ -56,11 +55,9 @@ fn seed_config(config_path: &Path) {
     store
         .set_playback_mode(PlaybackMode::Sequential)
         .expect("seed");
-    store.set_fit_mode(DisplayMode::Fill).expect("seed");
     store
         .set_window_geometry(Some(10), Some(20), 640, 480)
         .expect("seed");
-    store.set_lock_aspect(true).expect("seed");
     store.set_autostart(true).expect("seed");
     store
         .save_resume_state(
@@ -90,14 +87,7 @@ fn startup_translates_config_into_a_package() {
     assert_eq!(resume.seen.len(), 2);
     assert_eq!(resume.history.len(), 2);
     // 宿主初值包。
-    assert_eq!(package.host.fit_mode, DisplayMode::Fill);
-    assert_eq!(
-        package.host.locked_aspect,
-        Some(640.0 / 480.0),
-        "锁定开启时由存档尺寸推导"
-    );
     assert_eq!(package.host.saved_geom, (Some(10), Some(20), 640, 480));
-    assert_eq!(package.host.last_inner, [640.0, 480.0]);
     assert_eq!(package.host.saved_position, Some([10.0, 20.0]));
     // 自启对账：实际与镜像一致，无回写。
     assert!(package.autostart.enabled());
@@ -140,7 +130,6 @@ fn an_empty_config_yields_no_resume_and_no_saved_position() {
     assert_eq!(package.core.resume, None);
     assert_eq!(package.core.saved_folder, None);
     assert_eq!(package.host.saved_position, None);
-    assert_eq!(package.host.locked_aspect, None);
 }
 
 #[test]
@@ -152,8 +141,6 @@ fn mirror_writes_land_in_the_config_file() {
     sync.save_folder(Path::new(r"E:\新图库"));
     sync.save_interval(99);
     sync.save_playback_mode(PlaybackMode::Sequential);
-    sync.save_fit_mode(DisplayMode::Fill);
-    sync.save_lock_aspect(true);
     sync.save_window_geometry((Some(1), Some(2), 800, 600));
     sync.save_autostart_mirror(true);
     sync.save_resume_state(
@@ -165,8 +152,6 @@ fn mirror_writes_land_in_the_config_file() {
     assert_eq!(config.image_folder.as_deref(), Some(r"E:\新图库"));
     assert_eq!(config.playback.interval_secs, 99);
     assert_eq!(config.playback.mode, PlaybackMode::Sequential);
-    assert_eq!(config.display.fit_mode, DisplayMode::Fill);
-    assert!(config.window.lock_aspect);
     assert_eq!(
         (
             config.window.x,
@@ -204,12 +189,12 @@ fn a_failed_write_logs_one_line_and_later_startup_can_converge() {
     std::fs::create_dir(&config_path).expect("occupy path with a directory");
     // 失败不阻塞：调用照常返回，行为继续；每次失败记一行。
     sync.save_interval(77);
-    sync.save_fit_mode(DisplayMode::Fit);
+    sync.save_autostart_mirror(false);
     let log = std::fs::read_to_string(&log_path).expect("log written");
     let lines: Vec<&str> = log.lines().collect();
     assert_eq!(lines.len(), 2, "每次失败恰一行：{log}");
     assert!(lines[0].contains("interval_secs"), "{}", lines[0]);
-    assert!(lines[1].contains("fit_mode"), "{}", lines[1]);
+    assert!(lines[1].contains("autostart"), "{}", lines[1]);
     // 收敛：目标恢复可写后，下一次启动装配的写回成功落盘。
     std::fs::remove_dir(&config_path).expect("free the path");
     seed_config(&config_path);

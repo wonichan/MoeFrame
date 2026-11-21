@@ -15,7 +15,7 @@ Status: proposed
 3. **导航决策收拢到 Playlist**：候选计算、落位方式、落位记账、恢复/重扫/缺失替代候选整段下沉；RandomSource 所有权移入 Playlist；备袋内化为落位记账的自检；落位标记类型归 Playlist 定义、core 只携带不解释；续播数据改由 Playlist 产出只读快照，core 不再摸 seen/history/游标；core 只保留计时、在飞/排队、转场、视图，入参只减不打包；测试随决策搬家。
 4. **持久化镜像与启动装配 → 库 module `config_sync`**：两头收——启动翻译产出一个启动包（core 构造入参 + 宿主初值），全部镜像写回经它落盘（core 的 Save 系列 Effect、宿主直写的显示方式/几何/锁定/自启镜像）；ConfigStore 降为其背后的文件 adapter 不合并；自启只收写回与启动对账装配，AutostartSync 决策不搬；写回失败统一口径 = 不阻塞、不弹窗、不重试、记一行日志、靠下次启动对账收敛；退出冲刷归它收尾，Exit 臂只发请求；候选 2 的落盘动作在此改道。
 5. **双解码管线合流（排在 22/23 发布门之后，最后做）**：产品解码实现与产品类型（DisplayMode、DisplayImage、DecodeError、DecodeLimits）迁产品侧，loading.rs 就地演进承接、不改名；decode_validation 只剩验证装配 + 薄 adapter（可独立传 Limits 的实验入口），decode-validation 二进制保留；fit/fill 计算三份合一、取整政策只定义一次；工单 09 的 encoded-size 预检分歧一并裁决关闭（Limits 只按解码输出判定），旧笔记以新笔记取代并交叉链接。
-6. **窗口几何生命周期 → 库层状态机（window_geom 就地演进）**：纯算术被吸收为内部实现；宿主每帧喂观察值、状态机返回抽象命令；只产出待保存几何，落盘归 config_sync，初值来自启动包；多显示器已知限制（副屏误钳）只搬家不修复、行为不变；宽高比锁定的比例捕获归状态机（用最近观察值），开关动作经 settings_session 发出、宿主转发。本候选排第五，是六个里唯一可无损推迟到 V1 之后的一项。
+6. **窗口几何生命周期 → 库层状态机（window_geom 就地演进）**：纯算术被吸收为内部实现；宿主每帧喂观察值、状态机返回抽象命令；只产出待保存几何，落盘归 config_sync，初值来自启动包；多显示器已知限制（副屏误钳）只搬家不修复、行为不变；宽高比锁定的比例捕获归状态机（用最近观察值），开关动作经 settings_session 发出、宿主转发。此候选的宽高比锁定部分后续由 [相框按当前图像比例自适应宽度](../../../../.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md) 取代。本候选排第五，是六个里唯一可无损推迟到 V1 之后的一项。
 
 ## Acceptance criteria
 

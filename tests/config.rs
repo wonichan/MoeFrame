@@ -3,7 +3,6 @@
 mod common;
 
 use moe_frame::config::{Animation, ConfigStore, PlaybackMode};
-use moe_frame::decode_validation::DisplayMode;
 use std::{fs, path::PathBuf};
 
 fn temp_config(tag: &str) -> PathBuf {
@@ -20,12 +19,10 @@ fn missing_file_yields_defaults_and_writes_back_a_legal_config() {
     assert_eq!(config.window.width, 480);
     assert_eq!(config.window.height, 320);
     assert_eq!(config.window.x, None);
-    assert!(!config.window.lock_aspect);
     assert_eq!(config.playback.mode, PlaybackMode::Random);
     assert_eq!(config.playback.interval_secs, 30);
     assert!(config.playback.pause_on_hover);
     assert_eq!(config.playback.animation, Animation::Slide);
-    assert_eq!(config.display.fit_mode, DisplayMode::Fit);
     assert!(!config.display.show_filename);
     assert!(!config.general.autostart);
     assert_eq!(config.general.current_image, None);
@@ -93,8 +90,6 @@ current_image = "E:\\图 库\\a.png"
     assert_eq!(config.image_folder.as_deref(), Some("E:\\图 库"));
     assert_eq!(config.window.x, Some(1200));
     assert_eq!(config.window.y, Some(600));
-    assert!(config.window.lock_aspect);
-    assert_eq!(config.display.fit_mode, DisplayMode::Fill);
     assert!(config.display.show_filename);
     assert!(config.general.autostart);
     assert_eq!(
@@ -112,6 +107,45 @@ current_image = "E:\\图 库\\a.png"
     let text = fs::read_to_string(&path).unwrap();
     assert!(text.contains("interval_secs = 3"), "{text}");
     assert!(text.contains("mode = \"random\""), "{text}");
+}
+
+#[test]
+fn legacy_fit_and_aspect_lock_keys_are_removed_on_load() {
+    let path = temp_config("legacy-display-settings");
+    fs::write(
+        &path,
+        r#"
+recursive = true
+my_custom_note = "keep me"
+
+[window]
+width = 640
+height = 400
+lock_aspect = true
+
+[playback]
+mode = "random"
+interval_secs = 30
+pause_on_hover = true
+animation = "slide"
+
+[display]
+fit_mode = "fill"
+show_filename = false
+
+[general]
+autostart = false
+"#,
+    )
+    .unwrap();
+
+    let store = ConfigStore::load(&path);
+    assert_eq!(store.config().window.width, 640);
+    assert_eq!(store.config().window.height, 400);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("lock_aspect"), "{text}");
+    assert!(!text.contains("fit_mode"), "{text}");
+    assert!(text.contains("my_custom_note = \"keep me\""), "{text}");
 }
 
 #[test]
@@ -145,7 +179,7 @@ fit_mode = "fill"
     store.set_image_folder(Some("D:\\new folder")).unwrap();
     let text = fs::read_to_string(&path).unwrap();
     assert!(text.contains("interval_secs = 45"), "{text}");
-    assert!(text.contains("fit_mode = \"fill\""), "{text}");
+    assert!(!text.contains("fit_mode"), "{text}");
     assert!(text.contains("my_custom_note = \"keep me\""), "{text}");
     let reloaded = ConfigStore::load(&path);
     assert_eq!(
@@ -252,25 +286,6 @@ fn an_overlong_saved_history_is_trimmed_to_the_newest_512() {
 }
 
 #[test]
-fn set_fit_mode_round_trips_through_a_real_file() {
-    use moe_frame::decode_validation::DisplayMode;
-    let path = temp_config("fit-mode");
-    let mut store = ConfigStore::load(&path);
-    assert_eq!(store.config().display.fit_mode, DisplayMode::Fit);
-    store.set_fit_mode(DisplayMode::Fill).unwrap();
-    // 内存与重新读盘一致，且不伤其他字段。
-    assert_eq!(store.config().display.fit_mode, DisplayMode::Fill);
-    let reparsed = ConfigStore::load(&path);
-    assert_eq!(reparsed.config().display.fit_mode, DisplayMode::Fill);
-    assert_eq!(reparsed.config().playback.interval_secs, 30);
-    store.set_fit_mode(DisplayMode::Fit).unwrap();
-    assert_eq!(
-        ConfigStore::load(&path).config().display.fit_mode,
-        DisplayMode::Fit
-    );
-}
-
-#[test]
 fn interval_draft_parsing_keeps_the_two_rule_sets_apart() {
     use moe_frame::config::parse_interval_draft;
     // 区间内原样，越界钳制（与读配置的钳制方向一致）。
@@ -299,20 +314,17 @@ fn interval_draft_parsing_keeps_the_two_rule_sets_apart() {
 }
 
 #[test]
-fn window_geometry_and_lock_round_trip_through_a_real_file() {
+fn window_geometry_round_trips_through_a_real_file() {
     let path = temp_config("window-geom");
     let mut store = ConfigStore::load(&path);
     store
         .set_window_geometry(Some(1500), Some(700), 640, 400)
         .unwrap();
-    store.set_lock_aspect(true).unwrap();
     let reparsed = ConfigStore::load(&path);
     assert_eq!(reparsed.config().window.x, Some(1500));
     assert_eq!(reparsed.config().window.y, Some(700));
     assert_eq!(reparsed.config().window.width, 640);
     assert_eq!(reparsed.config().window.height, 400);
-    assert!(reparsed.config().window.lock_aspect);
-    // 不伤其他字段；清位置只删 x/y 两键，尺寸保留。
     assert_eq!(reparsed.config().playback.interval_secs, 30);
     store.set_window_geometry(None, None, 480, 320).unwrap();
     let reparsed = ConfigStore::load(&path);
@@ -326,7 +338,7 @@ fn corrupt_window_fields_are_repaired_without_touching_other_sections() {
     let path = temp_config("window-repair");
     std::fs::write(
         &path,
-        "image_folder = \"D:\\\\图库\"\n\n[window]\nx = \"东\"\ny = 40\nwidth = -5\nheight = 0\nlock_aspect = \"yes\"\n",
+        "image_folder = \"D:\\\\图库\"\n\n[window]\nx = \"东\"\ny = 40\nwidth = -5\nheight = 0\n",
     )
     .unwrap();
     let store = ConfigStore::load(&path);
@@ -335,7 +347,6 @@ fn corrupt_window_fields_are_repaired_without_touching_other_sections() {
     assert_eq!(window.y, Some(40));
     assert_eq!(window.width, 480);
     assert_eq!(window.height, 320);
-    assert!(!window.lock_aspect);
     assert_eq!(store.config().image_folder.as_deref(), Some("D:\\图库"));
 }
 

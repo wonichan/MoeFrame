@@ -5,7 +5,6 @@
 
 use moe_frame::{
     config::PlaybackMode,
-    decode_validation::DisplayMode,
     settings_session::{
         EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
     },
@@ -202,18 +201,14 @@ fn unchanged_path_blur_is_a_noop() {
 fn picks_apply_in_order_and_same_mode_pick_is_dropped() {
     let mut session = opened();
     let mut picks = no_picks();
-    picks.mode = Some(PlaybackMode::Random); // 与当前相同：不产生动作
+    picks.mode = Some(PlaybackMode::Random);
     picks.interval = Some(60);
-    picks.fit = Some(DisplayMode::Fill);
-    picks.aspect_lock = Some(true);
     picks.restore_default = true;
     picks.autostart = Some(true);
     assert_eq!(
         frame(&mut session, picks),
         vec![
             SessionAction::ApplyIntervalPreset(60),
-            SessionAction::ApplyFitMode(DisplayMode::Fill),
-            SessionAction::ApplyAspectLock(true),
             SessionAction::RestoreDefaultGeometry,
             SessionAction::ApplyAutostart(true),
         ]

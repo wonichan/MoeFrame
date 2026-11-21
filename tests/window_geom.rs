@@ -9,12 +9,7 @@ const MONITOR: [f32; 2] = [1920.0, 1080.0];
 const SAVED: GeometryRecord = (Some(100), Some(100), 480, 320);
 
 fn machine(saved: GeometryRecord, aspect: Option<f32>, has_position: bool) -> GeometryMachine {
-    GeometryMachine::new(
-        saved,
-        aspect,
-        [saved.2 as f32, saved.3 as f32],
-        has_position,
-    )
+    GeometryMachine::new(saved, aspect, has_position)
 }
 
 /// 一帧观察：位置与尺寸自洽（外尺寸 = 内尺寸，本相框无边框装饰）。
@@ -107,9 +102,7 @@ fn a_partially_visible_start_position_is_left_alone() {
         .observe(&obs([100.0, 100.0], [480.0, 320.0], 0.0))
         .is_empty());
 }
-
-// ---------- 宽高比锁定修正（经观察驱动） ----------
-
+// ---------- 当前图像比例修正（经观察驱动） ----------
 /// 锁定机：先喂一帧基准尺寸，返回机与已消费基准的观察。
 fn locked_machine(aspect: f32, base: [f32; 2]) -> GeometryMachine {
     let saved: GeometryRecord = (Some(100), Some(100), base[0] as u32, base[1] as u32);
@@ -119,10 +112,10 @@ fn locked_machine(aspect: f32, base: [f32; 2]) -> GeometryMachine {
 }
 
 #[test]
-fn a_width_driven_resize_derives_the_height() {
+fn a_width_drag_keeps_height_as_the_scale_reference() {
     let mut m = locked_machine(1.5, [480.0, 320.0]);
     let commands = m.observe(&obs([100.0, 100.0], [600.0, 320.0], 0.1));
-    assert_size(sizes(&commands)[0], [600.0, 400.0]);
+    assert_size(sizes(&commands)[0], [480.0, 320.0]);
 }
 
 #[test]
@@ -133,20 +126,20 @@ fn a_height_driven_resize_derives_the_width() {
 }
 
 #[test]
-fn a_corner_resize_prefers_the_width() {
+fn a_corner_resize_keeps_height_as_the_scale_reference() {
     let mut m = locked_machine(1.5, [480.0, 320.0]);
     let commands = m.observe(&obs([100.0, 100.0], [600.0, 500.0], 0.1));
-    assert_size(sizes(&commands)[0], [600.0, 400.0]);
+    assert_size(sizes(&commands)[0], [750.0, 500.0]);
 }
 
 #[test]
-fn the_minimum_side_clamps_and_rederives() {
+fn minimum_window_sides_preserve_the_image_ratio() {
     let mut m = locked_machine(1.5, [480.0, 320.0]);
-    let commands = m.observe(&obs([100.0, 100.0], [100.0, 320.0], 0.1));
+    let commands = m.observe(&obs([100.0, 100.0], [600.0, 80.0], 0.1));
     assert_size(sizes(&commands)[0], [180.0, 120.0]);
-    // 竖长比例 0.5：宽触底 120 → 高 240。
+
     let mut m = locked_machine(0.5, [160.0, 320.0]);
-    let commands = m.observe(&obs([100.0, 100.0], [100.0, 320.0], 0.1));
+    let commands = m.observe(&obs([100.0, 100.0], [100.0, 80.0], 0.1));
     assert_size(sizes(&commands)[0], [120.0, 240.0]);
 }
 
@@ -158,17 +151,20 @@ fn an_invalid_aspect_never_corrects() {
 }
 
 #[test]
-fn no_correction_while_the_pointer_is_down() {
+fn initial_image_ratio_corrects_the_window_using_height_as_reference() {
+    let mut m = machine(SAVED, Some(2.0), true);
+    let commands = m.observe(&obs([100.0, 100.0], [480.0, 320.0], 0.0));
+    assert_size(sizes(&commands)[0], [640.0, 320.0]);
+}
+
+#[test]
+fn resize_corrects_the_aspect_when_pointer_is_released() {
     let mut m = locked_machine(1.5, [480.0, 320.0]);
     let mut dragging = obs([100.0, 100.0], [600.0, 320.0], 0.1);
     dragging.pointer_down = true;
     assert!(sizes(&m.observe(&dragging)).is_empty());
-    // 松手后尺寸未再变则无偏离可修正；再拉高时以高为准推导宽
-    // （基准已随拖动到 600×320：高 340 → 宽 510）。
     let commands = m.observe(&obs([100.0, 100.0], [600.0, 320.0], 0.2));
-    assert!(sizes(&commands).is_empty(), "尺寸未再变，无偏离可修正");
-    let commands = m.observe(&obs([100.0, 100.0], [600.0, 340.0], 0.3));
-    assert_size(sizes(&commands)[0], [510.0, 340.0]);
+    assert_size(sizes(&commands)[0], [480.0, 320.0]);
 }
 
 // ---------- 落盘防抖 ----------
@@ -226,22 +222,19 @@ fn a_hidden_frame_observes_no_geometry_to_save() {
     assert_eq!(m.exit_settle(), (None, SAVED));
 }
 
-// ---------- 锁定开关的比例捕获 ----------
+// ---------- 当前图变化 ----------
 
 #[test]
-fn locking_captures_the_ratio_from_the_latest_observation() {
+fn changing_images_updates_the_window_aspect() {
     let mut m = machine(SAVED, None, true);
-    m.observe(&obs([100.0, 100.0], [800.0, 400.0], 0.0));
-    assert_eq!(m.set_lock(true), vec![GeomCommand::SaveLockAspect(true)]);
-    assert!(m.is_locked());
-    // 捕获的比例是 2.0：拉高到 500 → 宽应随到 1000。
-    let commands = m.observe(&obs([100.0, 100.0], [800.0, 500.0], 0.1));
-    assert_size(sizes(&commands)[0], [1000.0, 500.0]);
-    // 解锁后不再修正。
-    assert_eq!(m.set_lock(false), vec![GeomCommand::SaveLockAspect(false)]);
-    assert!(!m.is_locked());
-    let commands = m.observe(&obs([100.0, 100.0], [700.0, 500.0], 0.2));
-    assert!(sizes(&commands).is_empty());
+    m.observe(&obs([100.0, 100.0], [480.0, 320.0], 0.0));
+    m.set_image_aspect(Some(2.0));
+    let commands = m.observe(&obs([100.0, 100.0], [480.0, 320.0], 0.1));
+    assert_size(sizes(&commands)[0], [640.0, 320.0]);
+
+    m.set_image_aspect(Some(0.5));
+    let commands = m.observe(&obs([100.0, 100.0], [640.0, 320.0], 0.2));
+    assert_size(sizes(&commands)[0], [160.0, 320.0]);
 }
 
 // ---------- 恢复默认 ----------
@@ -262,6 +255,20 @@ fn restore_default_sizes_places_and_saves() {
 }
 
 #[test]
+fn restore_default_uses_the_current_image_ratio_and_height() {
+    let mut m = machine((Some(300), Some(200), 800, 600), Some(2.0), true);
+    let commands = m.restore_default(Some(MONITOR), true);
+    assert_eq!(
+        commands,
+        vec![
+            GeomCommand::SetInnerSize([640.0, 320.0]),
+            GeomCommand::SetOuterPosition([1256.0, 736.0]),
+            GeomCommand::SaveGeometry((Some(1256), Some(736), 640, 320)),
+        ]
+    );
+}
+
+#[test]
 fn restore_default_shows_a_hidden_frame() {
     let mut m = machine(SAVED, None, true);
     let commands = m.restore_default(Some(MONITOR), false);
@@ -276,14 +283,4 @@ fn restore_default_without_a_monitor_keeps_the_saved_position() {
         .iter()
         .any(|c| matches!(c, GeomCommand::SetOuterPosition(_))));
     assert!(commands.contains(&GeomCommand::SaveGeometry((Some(300), Some(200), 480, 320))));
-}
-
-#[test]
-fn restore_default_relocks_at_the_default_ratio() {
-    let mut m = locked_machine(2.0, [800.0, 400.0]);
-    m.restore_default(Some(MONITOR), true);
-    // 恢复后基准是默认尺寸：拉宽到 600 → 高按 1.5 随到 400。
-    m.observe(&obs([1416.0, 736.0], [480.0, 320.0], 1.0));
-    let commands = m.observe(&obs([1416.0, 736.0], [600.0, 320.0], 1.1));
-    assert_size(sizes(&commands)[0], [600.0, 400.0]);
 }

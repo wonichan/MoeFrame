@@ -4,7 +4,7 @@
 //! 整个文件不可解析时恢复为合法默认配置，不崩溃。三个 P1 键（`pause_on_hover`、
 //! `animation`、`show_filename`）只保存与修复，不驱动行为。
 
-use crate::{decode_validation::DisplayMode, playlist::HISTORY_LIMIT};
+use crate::playlist::HISTORY_LIMIT;
 use std::{fs, io, path::Path};
 use toml_edit::{value, DocumentMut, Item, Table};
 
@@ -48,7 +48,6 @@ recursive = true
 [window]
 width = 480
 height = 320
-lock_aspect = false
 
 [playback]
 mode = \"random\"
@@ -57,7 +56,6 @@ pause_on_hover = true
 animation = \"slide\"
 
 [display]
-fit_mode = \"fit\"
 show_filename = false
 
 [general]
@@ -103,7 +101,6 @@ pub struct WindowConfig {
     pub y: Option<i64>,
     pub width: u32,
     pub height: u32,
-    pub lock_aspect: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,7 +115,6 @@ pub struct PlaybackConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisplayConfig {
-    pub fit_mode: DisplayMode,
     /// P1：只保存，不驱动行为。
     pub show_filename: bool,
 }
@@ -154,7 +150,6 @@ impl Default for Config {
                 y: None,
                 width: 480,
                 height: 320,
-                lock_aspect: false,
             },
             playback: PlaybackConfig {
                 mode: PlaybackMode::Random,
@@ -163,7 +158,6 @@ impl Default for Config {
                 animation: Animation::Slide,
             },
             display: DisplayConfig {
-                fit_mode: DisplayMode::Fit,
                 show_filename: false,
             },
             general: GeneralConfig {
@@ -241,19 +235,6 @@ impl ConfigStore {
         })
     }
 
-    /// 设置窗「显示方式」（工单 18）：适应/填充即时落盘，字符串值是第 6 节
-    /// 定的配置契约（"fit"/"fill"）。
-    pub fn set_fit_mode(&mut self, mode: DisplayMode) -> io::Result<()> {
-        self.update(|document, config| {
-            let text = match mode {
-                DisplayMode::Fit => "fit",
-                DisplayMode::Fill => "fill",
-            };
-            document["display"]["fit_mode"] = value(text);
-            config.display.fit_mode = mode;
-        })
-    }
-
     /// 保存开机自启的配置镜像（工单 21）：真实状态在系统 Run 项里，
     /// 这里只保存与实际状态对齐后的镜像值（切换成功后或启动对齐时）。
     pub fn set_autostart(&mut self, enabled: bool) -> io::Result<()> {
@@ -289,15 +270,6 @@ impl ConfigStore {
             config.window.y = y;
             config.window.width = width;
             config.window.height = height;
-        })
-    }
-
-    /// 保存宽高比锁定开关（工单 20）：比例本身不落盘，启动时由存档
-    /// 尺寸推导，运行时打开开关时捕获当刻尺寸比例。
-    pub fn set_lock_aspect(&mut self, locked: bool) -> io::Result<()> {
-        self.update(|document, config| {
-            document["window"]["lock_aspect"] = value(locked);
-            config.window.lock_aspect = locked;
         })
     }
 
@@ -381,12 +353,14 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
     let recursive = repair_bool(root, "recursive", true, repaired);
 
     let window_table = ensure_table(root, "window", repaired);
+    if window_table.remove("lock_aspect").is_some() {
+        *repaired = true;
+    }
     let window = WindowConfig {
         x: optional_i64(window_table, "x"),
         y: optional_i64(window_table, "y"),
         width: repair_dimension(window_table, "width", 480, repaired),
         height: repair_dimension(window_table, "height", 320, repaired),
-        lock_aspect: repair_bool(window_table, "lock_aspect", false, repaired),
     };
 
     let playback_table = ensure_table(root, "playback", repaired);
@@ -434,15 +408,9 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
     };
 
     let display_table = ensure_table(root, "display", repaired);
-    let fit_mode = match display_table.get("fit_mode").and_then(Item::as_str) {
-        Some("fit") => DisplayMode::Fit,
-        Some("fill") => DisplayMode::Fill,
-        _ => {
-            display_table["fit_mode"] = value("fit");
-            *repaired = true;
-            DisplayMode::Fit
-        }
-    };
+    if display_table.remove("fit_mode").is_some() {
+        *repaired = true;
+    }
     let show_filename = repair_bool(display_table, "show_filename", false, repaired);
 
     let general_table = ensure_table(root, "general", repaired);
@@ -477,10 +445,7 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
             pause_on_hover,
             animation,
         },
-        display: DisplayConfig {
-            fit_mode,
-            show_filename,
-        },
+        display: DisplayConfig { show_filename },
         general: GeneralConfig {
             autostart,
             current_image,

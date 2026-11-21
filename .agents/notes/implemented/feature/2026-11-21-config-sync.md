@@ -33,3 +33,4 @@ Status: implemented
 - 写回失败从此在日志里可见（此前静默）：日志可能多出 `config write failed` 行，这是口径统一的预期结果，不是新故障。
 - 本票动了全部持久化路径与启动装配，宿主接线无自动化覆盖：实机清单（real-machine-check-deepening.md）新增本票小节，重启恢复/自启对账/几何恢复/显示方式持久化须在真窗口确认后转 resolved。
 - 工单 05 的入口已就位：geometry 状态机只发保存意图、经 config_sync 落盘；启动几何值从 HostInit 领取，本票未预留其他接口。
+- Fit/Fill 与宽高比锁定不再是可持久化设置，遗留键在载入时清除；见 [相框按当前图像比例自适应宽度](2026-11-22-image-driven-frame.md)。

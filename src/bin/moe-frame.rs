@@ -19,11 +19,9 @@ use moe_frame::{
     config::PlaybackMode,
     config_sync::ConfigSync,
     decode_validation::DisplayMode,
-    display::display_size,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
     gesture::GestureThresholds,
     loading::LoadRequest,
-    playlist::Direction,
     resize_cursor, resize_direction,
     settings_session::{
         EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
@@ -33,10 +31,11 @@ use moe_frame::{
 #[cfg(windows)]
 use std::{
     error::Error,
-    io,
+    fs::OpenOptions,
+    io::{self, Write},
     path::PathBuf,
-    sync::mpsc::{Receiver, Sender},
-    time::Duration,
+    sync::mpsc::{channel, Receiver, Sender},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 #[cfg(windows)]
 use winit::platform::windows::WindowExtWindows;
@@ -69,6 +68,25 @@ fn app_directory() -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
+fn resize_debug_record(event: &str, details: &str) {
+    let Some(directory) = app_directory() else {
+        return;
+    };
+    let path = directory.join("moe_frame.log");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let _ = writeln!(
+        file,
+        "[DEBUG-resize-f317] unix_ms={unix_ms} pid={} event={event} {details}",
+        std::process::id()
+    );
+}
+
+#[cfg(windows)]
 fn run() -> Result<(), Box<dyn Error>> {
     let directory = app_directory().ok_or_else(|| io::Error::other("APPDATA is unavailable"))?;
     let config_path = directory.join("config.toml");
@@ -79,7 +97,6 @@ fn run() -> Result<(), Box<dyn Error>> {
     let core_args = package.core;
     let host_init = package.host;
     let autostart_sync = package.autostart;
-    let fit_mode = host_init.fit_mode;
     let window = host_init.window.clone();
     let saved_position = host_init.saved_position.map(|p| egui::pos2(p[0], p[1]));
 
@@ -114,22 +131,34 @@ fn run() -> Result<(), Box<dyn Error>> {
             cc.egui_ctx
                 .options_mut(|options| options.zoom_with_keyboard = false);
             cc.egui_ctx.set_zoom_factor(1.0);
+            resize_debug_record("startup", "diagnostic=resize-f317");
             let (command_tx, reply_rx) = worker::spawn(log_path);
+            let (tray_event_tx, tray_event_rx) = channel();
+            let tray_ctx = cc.egui_ctx.clone();
+            tray_icon::TrayIconEvent::set_event_handler(Some(move |event| {
+                let _ = tray_event_tx.send(event);
+                tray_ctx.request_repaint();
+            }));
+            let (menu_event_tx, menu_event_rx) = channel();
+            let menu_ctx = cc.egui_ctx.clone();
+            tray_icon::menu::MenuEvent::set_event_handler(Some(move |event| {
+                let _ = menu_event_tx.send(event);
+                menu_ctx.request_repaint();
+            }));
             Ok(Box::new(FrameApp {
                 core: FrameCore::new(
                     core_args,
                     system_gesture_thresholds(cc.egui_ctx.pixels_per_point()),
                 ),
                 sync,
-                fit_mode,
                 command_tx,
                 reply_rx,
+                tray_event_rx,
+                menu_event_rx,
                 started: false,
                 texture: None,
                 incoming: None,
-                slide: None,
                 press_window_pos: None,
-                wheel_acc: 0.0,
                 tray: None,
                 tray_tried: false,
                 tray_state: None,
@@ -139,13 +168,13 @@ fn run() -> Result<(), Box<dyn Error>> {
                 pipeline: DisplayPipeline::new(),
                 geometry: GeometryMachine::new(
                     host_init.saved_geom,
-                    host_init.locked_aspect,
-                    host_init.last_inner,
+                    None,
                     host_init.saved_position.is_some(),
                 ),
                 autostart: autostart_sync,
                 autostart_store: RegAutostartStore,
                 session: SettingsSession::new(),
+                debug_last_inner: None,
             }))
         }),
     )?;
@@ -266,6 +295,7 @@ fn build_tray(frame_visible: bool, playing: bool) -> Option<TrayHandles> {
     .ok()?;
     let icon = tray_icon::TrayIconBuilder::new()
         .with_menu(Box::new(menu))
+        .with_menu_on_left_click(false)
         .with_icon(tray_icon_image())
         .with_tooltip("萌框 MoeFrame")
         .build()
@@ -279,6 +309,19 @@ fn build_tray(frame_visible: bool, playing: bool) -> Option<TrayHandles> {
         settings,
         exit,
     })
+}
+
+#[cfg(windows)]
+fn tray_click_intent(
+    button: tray_icon::MouseButton,
+    button_state: tray_icon::MouseButtonState,
+) -> Option<Intent> {
+    match (button, button_state) {
+        (tray_icon::MouseButton::Left, tray_icon::MouseButtonState::Up) => {
+            Some(Intent::ToggleVisibilityRequested)
+        }
+        _ => None,
+    }
 }
 
 /// 用系统默认看图器打开原图（工单 15）：菜单项与双击效果共用这一处；
@@ -324,10 +367,6 @@ fn system_gesture_thresholds(pixels_per_point: f32) -> GestureThresholds {
     }
 }
 
-/// 滑动转场时长（秒）：约 300ms、ease-out（父规格 §5）。
-#[cfg(windows)]
-const SLIDE_SECONDS: f64 = 0.3;
-
 /// 间隔六档预设（工单 11/18）：相框菜单与设置窗共用同一份，不各写一份。
 const INTERVAL_PRESETS: [(&str, i64); 6] = [
     ("10 秒", 10),
@@ -366,31 +405,20 @@ fn track_draft_field(
     }
 }
 
-/// 一段进行中的滑动转场（工单 14）：方向与起始时刻（egui UI 时钟，秒）。
-#[cfg(windows)]
-#[derive(Clone, Copy)]
-struct Slide {
-    direction: Direction,
-    started_secs: f64,
-}
-
 #[cfg(windows)]
 struct FrameApp {
     core: FrameCore,
     sync: ConfigSync,
-    fit_mode: DisplayMode,
     command_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
+    tray_event_rx: Receiver<tray_icon::TrayIconEvent>,
+    menu_event_rx: Receiver<tray_icon::menu::MenuEvent>,
     started: bool,
     texture: Option<egui::TextureHandle>,
-    /// 刚加载完成、等待核心决定直接提交还是开始转场的目标图纹理（工单 14）。
+    /// 加载完成、等待核心完成显示提交的目标纹理。
     incoming: Option<egui::TextureHandle>,
-    /// 进行中的滑动转场渲染状态；源图是 texture、目标图是 incoming（工单 14）。
-    slide: Option<Slide>,
     /// 本次左键按下时窗口的外框位置：右键取消拖动时回滚到这里（工单 15）。
     press_window_pos: Option<egui::Pos2>,
-    /// 滚轮平滑滚动量的累积，攒够一格才触发一次切换。
-    wheel_acc: f32,
     /// 托盘（工单 17）：首帧懒建（须在事件循环内建）；建失败为 None，相框照常。
     tray: Option<TrayHandles>,
     tray_tried: bool,
@@ -418,6 +446,7 @@ struct FrameApp {
     /// 库 settings_session）：草稿、基线、待结算与焦点记忆都在其中，
     /// 宿主只采样事件、渲染、执行它返回的动作。
     session: SettingsSession,
+    debug_last_inner: Option<[f32; 2]>,
 }
 
 #[cfg(windows)]
@@ -441,26 +470,23 @@ impl FrameApp {
                 }
                 Effect::Scan(folder) => {
                     // 新一轮扫描开始：在飞的旧加载结果从此作废；
-                    // 进行中的转场一并取消，画面回到核心仍在显示的源图。
                     self.pipeline.invalidate();
-                    self.pipeline.drop_incoming();
-                    self.slide = None;
+                    // 新一轮扫描开始：作废在飞加载，画面回到核心仍在显示的源图。
                     self.incoming = None;
                     let _ = self.command_tx.send(Command::Scan { folder });
                 }
-                Effect::StartTransition { direction, .. } => {
-                    self.slide = Some(Slide {
-                        direction,
-                        started_secs: ctx.input(|input| input.time),
+                Effect::StartTransition { .. } => {
+                    let effects = self.core.handle(Intent::TransitionCompleted {
+                        now_ms: now_ms(ctx),
                     });
-                    ctx.request_repaint();
+                    self.dispatch(ctx, effects);
                 }
                 Effect::Load { candidates } => {
                     // 序号与在飞口径记账归显示数据管线：回送按序号裁决，
                     // 转正时当前槽记为这次加载的口径。
                     let target = self.physical_target(ctx);
-                    let seq = self.pipeline.begin_load(self.fit_mode, target);
-                    let request = LoadRequest::product(target, self.fit_mode);
+                    let seq = self.pipeline.begin_load(DisplayMode::Fit, target);
+                    let request = LoadRequest::product(target, DisplayMode::Fit);
                     let _ = self.command_tx.send(Command::Load {
                         seq,
                         candidates,
@@ -471,7 +497,7 @@ impl FrameApp {
                     let key = DisplayKey {
                         path,
                         target: self.physical_target(ctx),
-                        mode: self.fit_mode,
+                        mode: DisplayMode::Fit,
                     };
                     let _ = self.command_tx.send(Command::Preload { key });
                 }
@@ -531,16 +557,6 @@ impl FrameApp {
         ]
     }
 
-    /// 应用显示方式（工单 18）：设置窗与相框菜单「显示方式」共用——改
-    /// 宿主状态、落盘、触发当前图按新方式刷新；同值不动。
-    fn apply_fit_mode(&mut self, ctx: &egui::Context, mode: DisplayMode) {
-        if mode != self.fit_mode {
-            self.fit_mode = mode;
-            self.sync.save_fit_mode(mode);
-            self.refresh_display_data(ctx);
-        }
-    }
-
     /// 打开设置窗或把它带到前台（工单 18）：只有一块，已开时只聚焦，
     /// 不重置位置（位置不保存、也不随相框移动）。从托盘打开不唤出相框。
     /// 开/不开的裁决与播种在会话里（工单 02），这里只执行窗口动作。
@@ -575,8 +591,7 @@ impl FrameApp {
 
     /// 执行会话返回的本帧动作（工单 02）：顺序由会话定，这里只把每个
     /// 动作落到核心意图或宿主机制上。落盘类动作经 config_sync 落盘
-    /// （工单 04 改道）：文件夹/间隔/模式经核心的 Save 系列效果，
-    /// 显示方式、自启镜像、几何与宽高比锁定经同步的宿主镜像方法。
+    /// （工单 04 改道）：文件夹/间隔/模式经核心的 Save 系列效果，窗口几何、自启镜像经同步写回。
     fn execute_session_actions(
         &mut self,
         ctx: &egui::Context,
@@ -598,15 +613,6 @@ impl FrameApp {
                 SessionAction::ApplyMode(mode) => {
                     let effects = self.core.handle(Intent::PlaybackModeSelected(mode));
                     self.dispatch(ctx, effects);
-                }
-                SessionAction::ApplyFitMode(mode) => {
-                    self.apply_fit_mode(ctx, mode);
-                }
-                SessionAction::ApplyAspectLock(locked) => {
-                    // 比例捕获归几何状态机（工单 05）：按它最近的观察
-                    // 值捕获，宿主只转发开关并执行返回的保存命令。
-                    let commands = self.geometry.set_lock(locked);
-                    self.execute_geometry_commands(ctx, commands);
                 }
                 SessionAction::RestoreDefaultGeometry => {
                     self.restore_default_geometry(ctx);
@@ -649,8 +655,6 @@ impl FrameApp {
         }
         let mode_now = self.core.playback_mode();
         let interval_now = self.core.interval_secs();
-        let fit_now = self.fit_mode;
-        let lock_now = self.geometry.is_locked();
         let autostart_now = self.autostart.enabled();
         let mut picks = Picks::default();
         let mut viewport_focused_now = true;
@@ -719,27 +723,9 @@ impl FrameApp {
                     }
                 });
                 ui.separator();
-                ui.label("窗口");
-                let mut lock_checked = lock_now;
-                if ui
-                    .checkbox(&mut lock_checked, "宽高比锁定（按当前比例）")
-                    .clicked()
-                {
-                    picks_ref.aspect_lock = Some(lock_checked);
-                }
                 if ui.button("恢复默认位置与大小").clicked() {
                     picks_ref.restore_default = true;
                 }
-                ui.separator();
-                ui.label("显示方式");
-                ui.horizontal(|ui| {
-                    if ui.radio(fit_now == DisplayMode::Fit, "适应").clicked() {
-                        picks_ref.fit = Some(DisplayMode::Fit);
-                    }
-                    if ui.radio(fit_now == DisplayMode::Fill, "填充").clicked() {
-                        picks_ref.fit = Some(DisplayMode::Fill);
-                    }
-                });
                 ui.separator();
                 let mut autostart_checked = autostart_now;
                 if ui.checkbox(&mut autostart_checked, "开机自启").clicked() {
@@ -754,7 +740,7 @@ impl FrameApp {
     /// 当前纹理的显示数据过期时刷新当前图（工单 18/20 的行为，记账与
     /// 决策在库 display_data）：宿主每帧把观察值喂给管线，它决定是否
     /// 发起刷新；刷新走 worker 的独立 Refresh 类别，回送只换纹理、
-    /// 不经核心提交。apply_fit_mode 与 drain_replies 都经这里。
+    /// 不经核心提交。窗口尺寸改变与图片切换均经这里刷新当前显示数据。
     fn refresh_display_data(&mut self, ctx: &egui::Context) {
         let showing = match self.core.view() {
             View::Showing(path) => Some(path.clone()),
@@ -762,9 +748,9 @@ impl FrameApp {
         };
         let observation = Observation {
             showing,
-            fit_mode: self.fit_mode,
+            fit_mode: DisplayMode::Fit,
             target: self.physical_target(ctx),
-            slide_active: self.slide.is_some(),
+            slide_active: false,
             now_secs: ctx.input(|input| input.time),
         };
         if let Some(key) = self.pipeline.tick(&observation) {
@@ -775,23 +761,56 @@ impl FrameApp {
     /// 窗口几何维护（工单 20 的生命周期，工单 05 起归库状态机）：
     /// 每帧采样观察值喂给几何状态机，执行它返回的抽象命令。
     fn update_window_geometry(&mut self, ctx: &egui::Context) {
-        let observation = ctx.input(|input| {
+        let (observation, focused) = ctx.input(|input| {
             let viewport = input.viewport();
-            GeomObservation {
-                outer_pos: viewport.outer_rect.map(|rect| [rect.min.x, rect.min.y]),
-                outer_size: viewport
-                    .outer_rect
-                    .map(|rect| [rect.width(), rect.height()]),
-                inner: viewport
-                    .inner_rect
-                    .map(|rect| [rect.width(), rect.height()]),
-                monitor: viewport.monitor_size.map(|size| [size.x, size.y]),
-                pointer_down: input.pointer.any_down(),
-                frame_visible: self.core.frame_visible(),
-                now_secs: input.time,
-            }
+            (
+                GeomObservation {
+                    outer_pos: viewport.outer_rect.map(|rect| [rect.min.x, rect.min.y]),
+                    outer_size: viewport
+                        .outer_rect
+                        .map(|rect| [rect.width(), rect.height()]),
+                    inner: viewport
+                        .inner_rect
+                        .map(|rect| [rect.width(), rect.height()]),
+                    monitor: viewport.monitor_size.map(|size| [size.x, size.y]),
+                    pointer_down: input.pointer.any_down(),
+                    frame_visible: self.core.frame_visible(),
+                    now_secs: input.time,
+                },
+                viewport.focused,
+            )
         });
+        if let Some(inner) = observation.inner {
+            let changed = self.debug_last_inner.is_none_or(|last| {
+                (last[0] - inner[0]).abs() > 0.5 || (last[1] - inner[1]).abs() > 0.5
+            });
+            if changed {
+                resize_debug_record(
+                    "inner_size_observed",
+                    &format!(
+                        "inner={inner:?} outer={:?} pointer_down={} focused={focused:?} ui_ms={:.0}",
+                        observation.outer_size,
+                        observation.pointer_down,
+                        observation.now_secs * 1000.0
+                    ),
+                );
+                self.debug_last_inner = Some(inner);
+            }
+        }
         let commands = self.geometry.observe(&observation);
+        for command in &commands {
+            if let GeomCommand::SetInnerSize(requested) = command {
+                resize_debug_record(
+                    "inner_size_command",
+                    &format!(
+                        "observed={:?} requested={requested:?} pointer_down={} focused={focused:?} ui_ms={:.0}",
+                        observation.inner,
+                        observation.pointer_down,
+                        observation.now_secs * 1000.0
+                    ),
+                );
+            }
+        }
         self.execute_geometry_commands(ctx, commands);
     }
 
@@ -812,9 +831,6 @@ impl FrameApp {
                 }
                 GeomCommand::SaveGeometry(geom) => {
                     self.sync.save_window_geometry(geom);
-                }
-                GeomCommand::SaveLockAspect(locked) => {
-                    self.sync.save_lock_aspect(locked);
                 }
                 GeomCommand::ShowFrame => {
                     let effects = self.core.handle(Intent::ToggleVisibilityRequested);
@@ -864,7 +880,6 @@ impl FrameApp {
                     if self.core.view() == View::Empty {
                         self.texture = None;
                         self.incoming = None;
-                        self.slide = None;
                         self.pipeline.drop_incoming();
                         self.pipeline.clear_current();
                     }
@@ -880,6 +895,9 @@ impl FrameApp {
                     }
                     let shown = image.as_ref().map(|image| image.path.clone());
                     if let Some(image) = image {
+                        self.geometry.set_image_aspect(Some(
+                            image.source_pixels[0] as f32 / image.source_pixels[1] as f32,
+                        ));
                         self.upload(ctx, image);
                     }
                     let effects = self.core.handle(Intent::LoadCompleted {
@@ -887,10 +905,7 @@ impl FrameApp {
                         now_ms: now_ms(ctx),
                     });
                     self.dispatch(ctx, effects);
-                    // 核心决定起转场时（dispatch 已置 slide）目标图留在 incoming
-                    // 里滑动；否则（首图或直接提交）立即成为当前图（工单 14），
-                    // 当前槽记录随纹理一并转正（管线记账）。
-                    if self.slide.is_none() && self.incoming.is_some() {
+                    if self.incoming.is_some() {
                         self.texture = self.incoming.take();
                         self.pipeline.promote_incoming();
                     }
@@ -901,9 +916,7 @@ impl FrameApp {
                     }
                 }
                 Reply::Refreshed { image } => {
-                    // 当前图刷新（工单 18/20）：只换纹理，不经核心、不算
-                    // 一次显示。是否替换由管线裁决（画面切走、转场中或
-                    // 刷新失败都丢弃，失败保旧图且同口径不再重试）。
+                    // 当前图刷新只替换纹理；失败或图像比例变更时保留旧图状态。
                     let showing = match self.core.view() {
                         View::Showing(path) => Some(path.clone()),
                         _ => None,
@@ -911,10 +924,13 @@ impl FrameApp {
                     let decision = self.pipeline.refresh_reply(
                         image.as_ref().map(|image| image.path.as_path()),
                         showing.as_deref(),
-                        self.slide.is_some(),
+                        false,
                     );
                     if decision == RefreshDecision::Swap {
                         if let Some(image) = image {
+                            self.geometry.set_image_aspect(Some(
+                                image.source_pixels[0] as f32 / image.source_pixels[1] as f32,
+                            ));
                             self.upload(ctx, image);
                             self.texture = self.incoming.take();
                         }
@@ -931,7 +947,7 @@ impl FrameApp {
             image.display_pixels[1] as usize,
         ];
         let color = egui::ColorImage::from_rgba_unmultiplied(size, &image.rgba);
-        // 先放 incoming：是否滑动由核心在 LoadCompleted 的效果里决定（工单 14）。
+        // 暂存新纹理，待核心提交显示后转正；当前宿主不播放转场动画。
         self.incoming =
             Some(ctx.load_texture("moe-frame-incoming", color, egui::TextureOptions::LINEAR));
     }
@@ -959,18 +975,20 @@ impl eframe::App for FrameApp {
         }
         let mut tray_intents: Vec<Intent> = Vec::new();
         let mut tray_settings = false;
-        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+        while let Ok(event) = self.tray_event_rx.try_recv() {
             if let tray_icon::TrayIconEvent::Click {
-                button: tray_icon::MouseButton::Left,
-                button_state: tray_icon::MouseButtonState::Up,
+                button,
+                button_state,
                 ..
             } = event
             {
-                tray_intents.push(Intent::ToggleVisibilityRequested);
+                if let Some(intent) = tray_click_intent(button, button_state) {
+                    tray_intents.push(intent);
+                }
             }
         }
         if let Some(tray) = &self.tray {
-            while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
+            while let Ok(event) = self.menu_event_rx.try_recv() {
                 let id = event.id();
                 if id == tray.show_hide.id() {
                     tray_intents.push(Intent::ToggleVisibilityRequested);
@@ -1001,80 +1019,18 @@ impl eframe::App for FrameApp {
             let effects = self.core.handle(Intent::CloseRequested);
             self.dispatch(&ctx, effects);
         }
-        self.handle_keys_and_wheel(&ctx, now);
-        // 滑动转场推进（工单 14）：到时先把目标图转正并通知核心提交，再绘制。
-        if let Some(slide) = self.slide {
-            let elapsed = ctx.input(|input| input.time) - slide.started_secs;
-            if elapsed >= SLIDE_SECONDS {
-                self.slide = None;
-                // 切走图的纹理随旧 handle 一并释放；目标图成为当前图，
-                // 当前槽记录随纹理一并转正（管线记账，与直接提交共用）。
-                self.texture = self.incoming.take();
-                self.pipeline.promote_incoming();
-                let effects = self
-                    .core
-                    .handle(Intent::TransitionCompleted { now_ms: now });
-                self.dispatch(&ctx, effects);
-            } else {
-                ctx.request_repaint();
-            }
-        }
-
+        self.handle_keys(&ctx, now);
         let mut menu_intent: Option<Intent> = None;
         let mut menu_settings = false;
         let mut menu_autostart: Option<bool> = None;
-        let mut menu_fit: Option<DisplayMode> = None;
         let panel = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ui, |ui| {
                 let rect = ui.max_rect();
                 let painter = ui.painter();
-                // 绘制几何（工单 18）：适应完整放入留黑边、填充覆盖居中
-                // 裁剪，与库共用同一份 display_size 计算。
-                let fit_mode = self.fit_mode;
-                let fitted = |texture: &egui::TextureHandle| {
-                    let tex = [texture.size()[0] as f32, texture.size()[1] as f32];
-                    let size = display_size(fit_mode, [rect.width(), rect.height()], tex);
-                    egui::Rect::from_center_size(rect.center(), egui::vec2(size[0], size[1]))
-                };
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                if let (Some(slide), Some(outgoing), Some(incoming)) =
-                    (self.slide, &self.texture, &self.incoming)
-                {
-                    // 转场中：源图与目标图按 ease-out 进度同向滑动（工单 14）。
-                    let t = ((ctx.input(|input| input.time) - slide.started_secs) / SLIDE_SECONDS)
-                        .clamp(0.0, 1.0) as f32;
-                    let eased = 1.0 - (1.0 - t).powi(3);
-                    // 行程按各自矩形算（工单 18）：切入图从恰好整幅出框的
-                    // 位置进、切出图走到恰好整幅出框——填充图比窗口宽，
-                    // 整宽平移会在起始帧先露出一截切入图。
-                    let out_rect = fitted(outgoing);
-                    let in_rect = fitted(incoming);
-                    let (out_dx, in_dx) = match slide.direction {
-                        Direction::Next => (
-                            -(out_rect.right() - rect.left()) * eased,
-                            (rect.right() - in_rect.left()) * (1.0 - eased),
-                        ),
-                        Direction::Prev => (
-                            (rect.right() - out_rect.left()) * eased,
-                            -(in_rect.right() - rect.left()) * (1.0 - eased),
-                        ),
-                    };
-                    let painter = ui.painter_at(rect);
-                    painter.image(
-                        outgoing.id(),
-                        out_rect.translate(egui::vec2(out_dx, 0.0)),
-                        uv,
-                        egui::Color32::WHITE,
-                    );
-                    painter.image(
-                        incoming.id(),
-                        in_rect.translate(egui::vec2(in_dx, 0.0)),
-                        uv,
-                        egui::Color32::WHITE,
-                    );
-                } else if let Some(texture) = &self.texture {
-                    painter.image(texture.id(), fitted(texture), uv, egui::Color32::WHITE);
+                if let Some(texture) = &self.texture {
+                    painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
                 } else {
                     painter.text(
                         rect.center(),
@@ -1092,97 +1048,89 @@ impl eframe::App for FrameApp {
             View::Showing(path) => Some(path),
             View::Empty => None,
         };
-        panel.response.context_menu(|ui| {
-            if ui.button("选择文件夹…").clicked() {
-                menu_intent = Some(Intent::FolderPickRequested);
-                ui.close();
-            }
-            if ui.button("重新扫描").clicked() {
-                menu_intent = Some(Intent::RescanRequested);
-                ui.close();
-            }
-            ui.separator();
-            if ui.button("上一张").clicked() {
-                menu_intent = Some(Intent::PrevRequested);
-                ui.close();
-            }
-            if ui.button("下一张").clicked() {
-                menu_intent = Some(Intent::NextRequested);
-                ui.close();
-            }
-            if ui.button(if playing { "暂停" } else { "播放" }).clicked() {
-                menu_intent = Some(Intent::PlayPauseToggled { now_ms: now });
-                ui.close();
-            }
-            ui.menu_button("播放模式", |ui| {
-                for (label, mode) in [
-                    ("顺序", PlaybackMode::Sequential),
-                    ("随机", PlaybackMode::Random),
-                ] {
-                    if ui.selectable_label(mode == current_mode, label).clicked() {
-                        menu_intent = Some(Intent::PlaybackModeSelected(mode));
-                        ui.close();
-                    }
+        panel
+            .response
+            .interact(egui::Sense::click())
+            .context_menu(|ui| {
+                if ui.button("选择文件夹…").clicked() {
+                    menu_intent = Some(Intent::FolderPickRequested);
+                    ui.close();
                 }
-            });
-            ui.menu_button("切换间隔", |ui| {
-                for (label, secs) in INTERVAL_PRESETS {
-                    if ui
-                        .selectable_label(secs == current_interval, label)
-                        .clicked()
-                    {
-                        menu_intent = Some(Intent::IntervalSelected { secs, now_ms: now });
-                        ui.close();
-                    }
+                if ui.button("重新扫描").clicked() {
+                    menu_intent = Some(Intent::RescanRequested);
+                    ui.close();
                 }
-            });
-            if let Some(current) = &current_path {
                 ui.separator();
-                if ui.button("打开当前原图").clicked() {
-                    open_image(current);
+                if ui.button("上一张").clicked() {
+                    menu_intent = Some(Intent::PrevRequested);
                     ui.close();
                 }
-                if ui.button("打开所在文件夹").clicked() {
-                    if let Some(parent) = current.parent() {
-                        let _ = open::that(parent);
+                if ui.button("下一张").clicked() {
+                    menu_intent = Some(Intent::NextRequested);
+                    ui.close();
+                }
+                if ui.button(if playing { "暂停" } else { "播放" }).clicked() {
+                    menu_intent = Some(Intent::PlayPauseToggled { now_ms: now });
+                    ui.close();
+                }
+                ui.menu_button("播放模式", |ui| {
+                    for (label, mode) in [
+                        ("顺序", PlaybackMode::Sequential),
+                        ("随机", PlaybackMode::Random),
+                    ] {
+                        if ui.selectable_label(mode == current_mode, label).clicked() {
+                            menu_intent = Some(Intent::PlaybackModeSelected(mode));
+                            ui.close();
+                        }
                     }
-                    ui.close();
-                }
-                if ui.button("复制图片路径").clicked() {
-                    ui.ctx().copy_text(current.to_string_lossy().into_owned());
-                    ui.close();
-                }
-            }
-            ui.menu_button("显示方式", |ui| {
-                for (label, mode) in [("适应", DisplayMode::Fit), ("填充", DisplayMode::Fill)] {
-                    if ui.selectable_label(mode == self.fit_mode, label).clicked() {
-                        menu_fit = Some(mode);
+                });
+                ui.menu_button("切换间隔", |ui| {
+                    for (label, secs) in INTERVAL_PRESETS {
+                        if ui
+                            .selectable_label(secs == current_interval, label)
+                            .clicked()
+                        {
+                            menu_intent = Some(Intent::IntervalSelected { secs, now_ms: now });
+                            ui.close();
+                        }
+                    }
+                });
+                if let Some(current) = &current_path {
+                    ui.separator();
+                    if ui.button("打开当前原图").clicked() {
+                        open_image(current);
+                        ui.close();
+                    }
+                    if ui.button("打开所在文件夹").clicked() {
+                        if let Some(parent) = current.parent() {
+                            let _ = open::that(parent);
+                        }
+                        ui.close();
+                    }
+                    if ui.button("复制图片路径").clicked() {
+                        ui.ctx().copy_text(current.to_string_lossy().into_owned());
                         ui.close();
                     }
                 }
+                ui.separator();
+                if ui.button("设置").clicked() {
+                    menu_settings = true;
+                    ui.close();
+                }
+                let mut autostart_checked = self.autostart.enabled();
+                if ui.checkbox(&mut autostart_checked, "开机自启").clicked() {
+                    menu_autostart = Some(autostart_checked);
+                    ui.close();
+                }
+                if ui.button("退出").clicked() {
+                    menu_intent = Some(Intent::ExitRequested);
+                    ui.close();
+                }
             });
-            ui.separator();
-            if ui.button("设置").clicked() {
-                menu_settings = true;
-                ui.close();
-            }
-            let mut autostart_checked = self.autostart.enabled();
-            if ui.checkbox(&mut autostart_checked, "开机自启").clicked() {
-                menu_autostart = Some(autostart_checked);
-                ui.close();
-            }
-            if ui.button("退出").clicked() {
-                menu_intent = Some(Intent::ExitRequested);
-                ui.close();
-            }
-        });
         self.handle_pointer(&ctx);
         if let Some(intent) = menu_intent {
             let effects = self.core.handle(intent);
             self.dispatch(&ctx, effects);
-        }
-        if let Some(mode) = menu_fit {
-            self.apply_fit_mode(&ctx, mode);
         }
         if let Some(target) = menu_autostart {
             self.apply_autostart(target);
@@ -1223,8 +1171,8 @@ impl eframe::App for FrameApp {
 
 #[cfg(windows)]
 impl FrameApp {
-    /// 聚焦时的左右方向键/空格与滚轮：与菜单共用同一组导航意图（工单 11）。
-    fn handle_keys_and_wheel(&mut self, ctx: &egui::Context, now: u64) {
+    /// 聚焦时的左右方向键与空格：与菜单共用同一组导航意图。
+    fn handle_keys(&mut self, ctx: &egui::Context, now: u64) {
         let (prev, next, toggle) = ctx.input(|input| {
             (
                 input.key_pressed(egui::Key::ArrowLeft),
@@ -1241,19 +1189,6 @@ impl FrameApp {
         }
         if toggle {
             intents.push(Intent::PlayPauseToggled { now_ms: now });
-        }
-        // 滚轮：平滑量攒够一格触发一次；向上（正）为上一张，向下为下一张。
-        const WHEEL_NOTCH: f32 = 24.0;
-        let scroll = ctx.input(|input| input.smooth_scroll_delta.y);
-        if scroll != 0.0 {
-            self.wheel_acc += scroll;
-            if self.wheel_acc >= WHEEL_NOTCH {
-                intents.push(Intent::PrevRequested);
-                self.wheel_acc = 0.0;
-            } else if self.wheel_acc <= -WHEEL_NOTCH {
-                intents.push(Intent::NextRequested);
-                self.wheel_acc = 0.0;
-            }
         }
         for intent in intents {
             let effects = self.core.handle(intent);
@@ -1287,6 +1222,7 @@ impl FrameApp {
         let now = now_ms(ctx);
         let events: Vec<egui::Event> = ctx.input(|input| input.events.clone());
         for event in &events {
+            let popup_open = egui::Popup::is_any_open(ctx);
             match event {
                 egui::Event::PointerButton {
                     pos,
@@ -1294,9 +1230,38 @@ impl FrameApp {
                     pressed: true,
                     ..
                 } if rect.contains(*pos) => {
-                    if let Some(direction) = resize_direction(rect, *pos) {
+                    let edge_distances = [
+                        pos.x - rect.left(),
+                        rect.right() - pos.x,
+                        pos.y - rect.top(),
+                        rect.bottom() - pos.y,
+                    ];
+                    let direction = resize_direction(rect, *pos);
+                    if edge_distances.iter().any(|distance| *distance <= 24.0) {
+                        let (focused, pixels_per_point) =
+                            ctx.input(|input| (input.viewport().focused, input.pixels_per_point()));
+                        resize_debug_record(
+                            "edge_press",
+                            &format!(
+                                "pos={pos:?} rect={rect:?} edge_distances={edge_distances:?} hit={direction:?} popup={popup_open} maximized_or_fullscreen={maximized_or_fullscreen} focused={focused:?} pixels_per_point={pixels_per_point}",
+                            ),
+                        );
+                    }
+                    if popup_open {
+                        continue;
+                    }
+                    if let Some(direction) = direction {
                         if !maximized_or_fullscreen {
+                            resize_debug_record(
+                                "begin_resize",
+                                &format!("direction={direction:?} pos={pos:?} rect={rect:?}"),
+                            );
                             ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+                        } else {
+                            resize_debug_record(
+                                "resize_blocked",
+                                &format!("direction={direction:?} maximized_or_fullscreen=true"),
+                            );
                         }
                         continue;
                     }
@@ -1344,5 +1309,89 @@ impl FrameApp {
                 _ => {}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ui_regressions {
+    use eframe::egui::{
+        self, CentralPanel, Color32, Context, Event, Frame, Modifiers, PointerButton, Pos2,
+        RawInput, Rect, Vec2,
+    };
+
+    fn frame(ctx: &Context, events: Vec<Event>) -> bool {
+        let mut opened = false;
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 200.0))),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let panel = CentralPanel::default()
+                .frame(Frame::NONE.fill(Color32::BLACK))
+                .show(ui, |ui| {
+                    ui.painter().rect_filled(
+                        ui.max_rect(),
+                        egui::CornerRadius::ZERO,
+                        Color32::BLACK,
+                    );
+                });
+            panel
+                .response
+                .interact(egui::Sense::click())
+                .context_menu(|ui| {
+                    ui.label("frame menu");
+                });
+            opened = panel.response.context_menu_opened();
+        });
+        output.textures_delta.clear();
+        opened
+    }
+
+    #[test]
+    fn the_frame_context_menu_opens_on_secondary_click() {
+        let ctx = Context::default();
+        let pos = Pos2::new(100.0, 100.0);
+        frame(&ctx, vec![Event::PointerMoved(pos)]);
+        frame(
+            &ctx,
+            vec![Event::PointerButton {
+                pos,
+                button: PointerButton::Secondary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        assert!(frame(
+            &ctx,
+            vec![Event::PointerButton {
+                pos,
+                button: PointerButton::Secondary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        ));
+    }
+    #[test]
+    fn tray_left_click_toggles_visibility_and_right_click_is_reserved_for_menu() {
+        use super::tray_click_intent;
+
+        assert!(matches!(
+            tray_click_intent(
+                tray_icon::MouseButton::Left,
+                tray_icon::MouseButtonState::Up
+            ),
+            Some(super::Intent::ToggleVisibilityRequested)
+        ));
+        assert!(tray_click_intent(
+            tray_icon::MouseButton::Left,
+            tray_icon::MouseButtonState::Down
+        )
+        .is_none());
+        assert!(tray_click_intent(
+            tray_icon::MouseButton::Right,
+            tray_icon::MouseButtonState::Up
+        )
+        .is_none());
     }
 }

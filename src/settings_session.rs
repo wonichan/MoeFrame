@@ -10,10 +10,7 @@
 //! 基线与快照不一致的字段草稿作废重播种。原 settings_draft 的两条
 //! 结算函数已吸收为本模块的内部实现，不再是公开面。
 
-use crate::{
-    config::{parse_interval_draft, PlaybackMode},
-    decode_validation::DisplayMode,
-};
+use crate::config::{parse_interval_draft, PlaybackMode};
 
 /// 带草稿的输入字段。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,8 +42,6 @@ pub enum OpenDecision {
 pub struct Picks {
     pub mode: Option<PlaybackMode>,
     pub interval: Option<i64>,
-    pub fit: Option<DisplayMode>,
-    pub aspect_lock: Option<bool>,
     pub restore_default: bool,
     pub autostart: Option<bool>,
     pub rescan: bool,
@@ -54,7 +49,7 @@ pub struct Picks {
 }
 
 /// 本帧要由宿主执行的动作，按返回顺序执行（顺序即工单 19 的应用
-/// 顺序：回车提交 → 模式 → 间隔预设 → 显示方式 → 锁定 → 恢复默认
+/// 应用顺序：回车提交 → 模式 → 间隔预设 → 恢复默认 → 自启 → 关闭/重扫/帧尾结算。
 /// → 自启 → 关闭/重扫/帧尾结算）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionAction {
@@ -62,8 +57,6 @@ pub enum SessionAction {
     CommitInterval(i64),
     ApplyMode(PlaybackMode),
     ApplyIntervalPreset(i64),
-    ApplyFitMode(DisplayMode),
-    ApplyAspectLock(bool),
     RestoreDefaultGeometry,
     ApplyAutostart(bool),
     Rescan,
@@ -234,12 +227,6 @@ impl SettingsSession {
         if let Some(secs) = picks.interval {
             interval_now = secs;
             actions.push(SessionAction::ApplyIntervalPreset(secs));
-        }
-        if let Some(mode) = picks.fit {
-            actions.push(SessionAction::ApplyFitMode(mode));
-        }
-        if let Some(locked) = picks.aspect_lock {
-            actions.push(SessionAction::ApplyAspectLock(locked));
         }
         if picks.restore_default {
             actions.push(SessionAction::RestoreDefaultGeometry);

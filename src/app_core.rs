@@ -9,16 +9,12 @@
 //! 跨启动恢复（工单 13）：启动时宿主把配置里保存的当前图、本轮进度与历史经
 //! `ResumeData` 送入，首次扫描后按模式与当前图是否仍在图库决定首图；每次成功
 //! 显示都经 `SaveResumeState` 效果请宿主落盘（预加载与失败不落盘）。
-//! 滑动转场（工单 14）：导航加载成功后核心先发 `StartTransition`，宿主渲染约
-//! 300ms 滑动并以 `TransitionCompleted` 回送，核心在完成时才提交这次显示
-//! （记账、落盘、重计间隔都在完成时）；转场期间的新导航意图只保留最后一个。
-//! 指针手势（工单 15）：按下/移动/松开/右键事件经手势机（`crate::gesture`）
-//! 按系统阈值判定，单击成立走与菜单同一套导航，双击产出打开原图效果，
-//! 右键取消未完成动作并在拖动中产出位置回滚效果。
+//! 导航加载成功后核心发送完成事件供宿主提交显示；宿主立即回送完成，所有滑动动画关闭，转场等待态只维持到加载成功。转场期间的新导航意图仍只保留最后一个。
+//! 指针手势（工单 15）：按下/移动/松开/右键事件经手势机判定拖动/取消；单击不切图，双击仍打开原图，右键取消未完成动作并在拖动中产出位置回滚效果。
 
 use crate::{
     config::PlaybackMode,
-    gesture::{GestureMachine, GestureOutcome, GestureThresholds, Zone},
+    gesture::{GestureMachine, GestureOutcome, GestureThresholds},
     playlist::{Direction, Landing, Playlist, RescanPlan, SystemRandom},
 };
 use std::path::PathBuf;
@@ -72,9 +68,9 @@ pub enum Intent {
     PointerUp { pos: [f32; 2], now_ms: u64 },
     /// 右键按下（工单 15）：取消未完成的左键动作；菜单由宿主照常打开。
     RightPressed,
-    /// 上一张（菜单、左方向键、滚轮向上共用同一意图）。
+    /// 上一张（菜单与左方向键共用同一意图）。
     PrevRequested,
-    /// 下一张（菜单、右方向键、滚轮向下共用同一意图）。
+    /// 下一张（菜单与右方向键共用同一意图）。
     NextRequested,
     /// 播放/暂停切换（菜单与空格共用同一意图）。
     PlayPauseToggled { now_ms: u64 },
@@ -261,24 +257,15 @@ impl FrameCore {
         (self.interval_secs.max(1) as u64) * 1000
     }
 
-    /// 执行手势判定结果：单击按分区走与菜单/按键同一套导航，双击打开原图。
+    /// 单击不导航，双击打开原图。
     fn apply_gesture(&mut self, outcomes: Vec<GestureOutcome>) -> Vec<Effect> {
-        let mut effects = Vec::new();
-        for outcome in outcomes {
-            match outcome {
-                GestureOutcome::Click(Zone::Left) => {
-                    effects.extend(self.navigate(Direction::Prev, false));
-                }
-                GestureOutcome::Click(Zone::Right) => {
-                    effects.extend(self.navigate(Direction::Next, false));
-                }
-                GestureOutcome::Click(Zone::Middle) => {}
-                GestureOutcome::DoubleClick(path) => {
-                    effects.push(Effect::OpenImage { path });
-                }
-            }
-        }
-        effects
+        outcomes
+            .into_iter()
+            .filter_map(|outcome| match outcome {
+                GestureOutcome::Click(_) => None,
+                GestureOutcome::DoubleClick(path) => Some(Effect::OpenImage { path }),
+            })
+            .collect()
     }
 
     fn navigate(&mut self, direction: Direction, auto: bool) -> Vec<Effect> {
@@ -587,7 +574,7 @@ impl FrameCore {
             }
             Intent::Tick { now_ms } => {
                 let mut effects = Vec::new();
-                // 等待中的单击到双击窗口结束即成立，与播放/暂停状态无关。
+                // 双击窗口到期后清除等待态；单击本身不触发动作。
                 if let Some(zone) = self.gesture.settle_due(now_ms) {
                     effects.extend(self.apply_gesture(vec![GestureOutcome::Click(zone)]));
                 }

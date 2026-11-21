@@ -1,27 +1,14 @@
-//! 窗口几何生命周期状态机（工单 20 落地、architecture-deepening
-//! 工单 05 收拢）：启动离屏钳制、首次放置、宽高比锁定修正、几何
-//! 落盘防抖、恢复默认的整台迁移在这里，宿主每帧只喂观察值、执行
-//! 返回的抽象命令。纯算术（右下角放置、锁定修正、离屏判定）是本
-//! module 的内部实现，不再是公开面。
+//! 窗口几何生命周期状态机（工单 20 落地、深挖工单 05 收拢）：启动离屏钳制、首次放置、按当前图像比例从窗口高度推导宽度、几何落盘防抖与恢复默认都在这里；宿主每帧只喂观察值、执行返回的抽象命令。
 //!
-//! 本状态机只产出「要保存的几何值」（GeomCommand::SaveGeometry），
-//! 落盘与退出收尾归 config_sync；启动初值从 config_sync 的启动包
-//! 领取；它不直接碰 config，也不与 display_data 横向通信（尺寸
-//! 观察由宿主转喂）。
+//! 本状态机只产出要保存的几何值；落盘与退出收尾归 config_sync。启动初值来自配置；图像比例由宿主在新图到达时更新。
 //!
-//! 已知限制（只搬家不修复，工单 20 口径）：离屏判定把主屏当作原点
-//! 在 (0,0) 的矩形——egui 只给得出相框所在屏的尺寸、没有屏幕原点
-//! 与枚举。**整窗合法地摆在副屏上的位置也会被判离屏、启动时被移
-//! 回主屏右下角**，即不保存副屏摆放（副屏拔掉防丢与副屏保留在
-//! 本 API 下不可兼得，取防丢）。多屏用户以实机清单的点名项为准。
+//! 已知限制：离屏判定把主屏当作原点 (0,0) 的矩形。egui 只提供相框所在屏尺寸，不提供屏幕原点与屏幕枚举，因此整窗放在副屏重启后会被移回主屏右下角，作为防丢行为保留。
 
 use crate::config_sync::GeometryRecord;
 
-/// 窗口最小边（逻辑尺寸，父规格第 4 节）：锁定修正与宿主最小尺寸共用。
+/// 窗口最小边（逻辑尺寸）：保持无黑边时仍满足宿主最小窗口约束。
 pub const MIN_WINDOW_SIDE: f32 = 120.0;
-
-/// 默认窗口尺寸（逻辑，父规格第 4 节）：恢复默认与宽高比锁定的
-/// 比例捕获兜底都用它。
+/// 默认窗口尺寸（逻辑）：无图时使用此尺寸，有图时高度作为缩放基准。
 pub const DEFAULT_FRAME_SIZE: [f32; 2] = [480.0, 320.0];
 
 /// 几何落盘防抖（工单 20）：观察值停稳满此时长才产出保存命令。
@@ -56,16 +43,14 @@ pub enum GeomCommand {
     SetInnerSize([f32; 2]),
     /// 要保存的几何值（落盘基准由状态机同步推进，宿主不必回告）。
     SaveGeometry(GeometryRecord),
-    /// 宽高比锁定开关要保存的值（经 config_sync 的宿主状态镜像落盘）。
-    SaveLockAspect(bool),
     /// 恢复默认时相框处于隐藏：宿主经行为核心显示相框。
     ShowFrame,
 }
 
-/// 窗口几何状态机：持有宽高比锁定的比例、上一帧内尺寸、落盘基准、最近
-/// 观察到的待落盘几何、防抖候选与一次性的启动钳制/首次放置标记。
+/// 持有当前图像比例、最近稳定内尺寸、落盘基准、待落盘几何与一次性的启动钳制/首次放置标记。
 pub struct GeometryMachine {
-    locked_aspect: Option<f32>,
+    image_aspect: Option<f32>,
+    aspect_applied: bool,
     last_inner: [f32; 2],
     saved_geom: GeometryRecord,
     observed_geom: Option<GeometryRecord>,
@@ -75,18 +60,17 @@ pub struct GeometryMachine {
 }
 
 impl GeometryMachine {
-    /// 以启动包的几何初值装配：落盘基准、宽高比锁定的比例（开启时已由存档
-    /// 尺寸推导）、上一帧内尺寸初值、存档位置是否存在（决定首次
-    /// 放置是否还要做）。
+    /// 以启动几何装配；收到首张图后再用图像比例修正宽度。
     pub fn new(
         saved_geom: GeometryRecord,
-        locked_aspect: Option<f32>,
-        last_inner: [f32; 2],
+        image_aspect: Option<f32>,
         has_saved_position: bool,
     ) -> Self {
+        let image_aspect = valid_aspect(image_aspect);
         Self {
-            locked_aspect,
-            last_inner,
+            image_aspect,
+            aspect_applied: image_aspect.is_none(),
+            last_inner: [saved_geom.2 as f32, saved_geom.3 as f32],
             saved_geom,
             observed_geom: None,
             candidate: None,
@@ -95,13 +79,16 @@ impl GeometryMachine {
         }
     }
 
-    /// 宽高比锁定当前是否开启（设置窗渲染勾选状态用）。
-    pub fn is_locked(&self) -> bool {
-        self.locked_aspect.is_some()
+    /// 新图到达时更新比例；比例变化后下一帧按当前高度调整窗口。
+    pub fn set_image_aspect(&mut self, aspect: Option<f32>) {
+        let aspect = valid_aspect(aspect);
+        if self.image_aspect != aspect {
+            self.image_aspect = aspect;
+            self.aspect_applied = aspect.is_none();
+        }
     }
 
-    /// 喂一帧观察，返回本帧命令。迁移顺序与工单 20 的宿主帧序一致：
-    /// 启动钳制 → 锁定修正 → 落盘观察（防抖）→ 首次放置。
+    /// 喂一帧观察，返回本帧命令：启动钳制 → 图像比例校正 → 落盘观察 → 首次放置。
     pub fn observe(&mut self, obs: &GeomObservation) -> Vec<GeomCommand> {
         let mut commands = Vec::new();
         // 启动离屏钳制：只查一次，等外矩形与显示器都取到才查。
@@ -118,24 +105,27 @@ impl GeometryMachine {
         let Some(cur) = obs.inner else {
             return commands;
         };
-        // 宽高比锁定修正：指针按下时不抢，停稳后按偏离修正一次。
-        if let Some(aspect) = self.locked_aspect {
-            if !obs.pointer_down && cur != self.last_inner {
-                let corrected = aspect_locked_size(self.last_inner, cur, aspect);
-                if (corrected[0] - cur[0]).abs() > 0.5 || (corrected[1] - cur[1]).abs() > 0.5 {
-                    commands.push(GeomCommand::SetInnerSize(corrected));
+        let mut effective_inner = cur;
+        if !obs.pointer_down {
+            if let Some(aspect) = self.image_aspect {
+                if !self.aspect_applied || cur != self.last_inner {
+                    let corrected = aspect_size_from_height(cur, aspect);
+                    if (corrected[0] - cur[0]).abs() > 0.5 || (corrected[1] - cur[1]).abs() > 0.5 {
+                        commands.push(GeomCommand::SetInnerSize(corrected));
+                    }
+                    effective_inner = corrected;
+                    self.aspect_applied = true;
                 }
             }
+            self.last_inner = cur;
         }
-        self.last_inner = cur;
-        // 落盘观察：隐藏时不观察；变化停稳 0.6 秒产出一次保存命令。
         if obs.frame_visible {
             if let Some(pos) = obs.outer_pos {
                 let geom = (
                     Some(pos[0].round() as i64),
                     Some(pos[1].round() as i64),
-                    cur[0].round() as u32,
-                    cur[1].round() as u32,
+                    effective_inner[0].round() as u32,
+                    effective_inner[1].round() as u32,
                 );
                 self.observed_geom = Some(geom);
                 if geom == self.saved_geom {
@@ -159,7 +149,7 @@ impl GeometryMachine {
         // 首次放置：无存档位置时，第一帧取到显示器就放右下角内缩。
         if !self.placed {
             if let Some(monitor) = obs.monitor {
-                let pos = bottom_right_position(cur, monitor);
+                let pos = bottom_right_position(effective_inner, monitor);
                 commands.push(GeomCommand::SetOuterPosition(pos));
                 self.placed = true;
             }
@@ -167,32 +157,21 @@ impl GeometryMachine {
         commands
     }
 
-    /// 宽高比锁定开关（settings_session 的动作经宿主转发）：开启时
-    /// 用最近观察到的内尺寸捕获比例（尚无观察时退回默认尺寸比例，
-    /// 工单 20 口径），不再由设置窗代码捕获；返回要落盘的开关值。
-    pub fn set_lock(&mut self, locked: bool) -> Vec<GeomCommand> {
-        if locked {
-            self.locked_aspect = Some(if self.last_inner[1] > 0.0 {
-                self.last_inner[0] / self.last_inner[1]
-            } else {
-                DEFAULT_FRAME_SIZE[0] / DEFAULT_FRAME_SIZE[1]
-            });
-        } else {
-            self.locked_aspect = None;
-        }
-        vec![GeomCommand::SaveLockAspect(locked)]
-    }
-
-    /// 恢复默认位置与大小（工单 20）：立即默认尺寸、当前屏右下角
-    /// 内缩并产出保存命令；隐藏时多一条 ShowFrame；锁定开启时锁定
-    /// 比例同步改为默认尺寸的比例。显示器取不到时不发位置命令、
-    /// 保存记录沿用旧 x/y。
+    /// 新图的比例延迟至非拖动帧应用，避免抢占系统窗口缩放。
+    /// 恢复默认位置与大小：高度回到 320 逻辑像素，并按当前图像比例推导宽度；
+    /// 位置放在当前屏右下角内缩处，隐藏时多一条 ShowFrame。显示器取不到时
+    /// 不发位置命令，保存记录沿用旧 x/y。
     pub fn restore_default(
         &mut self,
         monitor: Option<[f32; 2]>,
         frame_visible: bool,
     ) -> Vec<GeomCommand> {
-        let size = DEFAULT_FRAME_SIZE;
+        let size = self
+            .image_aspect
+            .map(|aspect| aspect_size_from_height(DEFAULT_FRAME_SIZE, aspect))
+            .unwrap_or(DEFAULT_FRAME_SIZE);
+        self.last_inner = size;
+        self.aspect_applied = true;
         let mut commands = vec![GeomCommand::SetInnerSize(size)];
         let pos = monitor.map(|m| bottom_right_position(size, m));
         if let Some(pos) = pos {
@@ -200,9 +179,6 @@ impl GeometryMachine {
         }
         if !frame_visible {
             commands.push(GeomCommand::ShowFrame);
-        }
-        if self.locked_aspect.is_some() {
-            self.locked_aspect = Some(size[0] / size[1]);
         }
         let (x, y) = match pos {
             Some(p) => (Some(p[0].round() as i64), Some(p[1].round() as i64)),
@@ -231,33 +207,26 @@ fn bottom_right_position(size: [f32; 2], monitor: [f32; 2]) -> [f32; 2] {
     ]
 }
 
-/// 宽高比锁定下的尺寸修正（工单 20）：以刚变化的那一边为准推导另
-/// 一边（两边都变时以宽为准），再套 120 逻辑最小边——一边触底时
-/// 按比例反推另一边，两边都触底时最小边优先、比例让步。aspect
-/// 非正/非有限时原样返回。状态机只在指针松开、尺寸变化后调用。
-fn aspect_locked_size(last: [f32; 2], current: [f32; 2], aspect: f32) -> [f32; 2] {
-    if !aspect.is_finite() || aspect <= 0.0 {
+/// 按当前高度推导图像比例尺寸，并保持最小边约束。
+fn aspect_size_from_height(current: [f32; 2], aspect: f32) -> [f32; 2] {
+    let Some(aspect) = valid_aspect(Some(aspect)) else {
         return current;
-    }
-    let width_changed = (current[0] - last[0]).abs() > 0.5;
-    let height_changed = (current[1] - last[1]).abs() > 0.5;
-    let (mut w, mut h) = if width_changed || !height_changed {
-        (current[0], current[0] / aspect)
-    } else {
-        (current[1] * aspect, current[1])
     };
-    if w < MIN_WINDOW_SIDE {
-        w = MIN_WINDOW_SIDE;
-        h = w / aspect;
+    let height = if current[1].is_finite() && current[1] > 0.0 {
+        current[1].max(MIN_WINDOW_SIDE)
+    } else {
+        DEFAULT_FRAME_SIZE[1]
+    };
+    let width = height * aspect;
+    if width < MIN_WINDOW_SIDE {
+        [MIN_WINDOW_SIDE, MIN_WINDOW_SIDE / aspect]
+    } else {
+        [width, height]
     }
-    if h < MIN_WINDOW_SIDE {
-        h = MIN_WINDOW_SIDE;
-        w = h * aspect;
-    }
-    if w < MIN_WINDOW_SIDE {
-        w = MIN_WINDOW_SIDE;
-    }
-    [w, h]
+}
+
+fn valid_aspect(aspect: Option<f32>) -> Option<f32> {
+    aspect.filter(|value| value.is_finite() && *value > 0.0)
 }
 
 /// 启动恢复位置的主屏钳制（工单 20）：窗口与主屏完全无交集时返回
