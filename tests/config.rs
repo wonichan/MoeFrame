@@ -297,3 +297,44 @@ fn interval_draft_parsing_keeps_the_two_rule_sets_apart() {
     assert_eq!(parse_interval_draft("4 2"), None);
     assert_eq!(parse_interval_draft("-"), None);
 }
+
+#[test]
+fn window_geometry_and_lock_round_trip_through_a_real_file() {
+    let path = temp_config("window-geom");
+    let mut store = ConfigStore::load(&path);
+    store
+        .set_window_geometry(Some(1500), Some(700), 640, 400)
+        .unwrap();
+    store.set_lock_aspect(true).unwrap();
+    let reparsed = ConfigStore::load(&path);
+    assert_eq!(reparsed.config().window.x, Some(1500));
+    assert_eq!(reparsed.config().window.y, Some(700));
+    assert_eq!(reparsed.config().window.width, 640);
+    assert_eq!(reparsed.config().window.height, 400);
+    assert!(reparsed.config().window.lock_aspect);
+    // 不伤其他字段；清位置只删 x/y 两键，尺寸保留。
+    assert_eq!(reparsed.config().playback.interval_secs, 30);
+    store.set_window_geometry(None, None, 480, 320).unwrap();
+    let reparsed = ConfigStore::load(&path);
+    assert_eq!(reparsed.config().window.x, None);
+    assert_eq!(reparsed.config().window.y, None);
+    assert_eq!(reparsed.config().window.width, 480);
+}
+
+#[test]
+fn corrupt_window_fields_are_repaired_without_touching_other_sections() {
+    let path = temp_config("window-repair");
+    std::fs::write(
+        &path,
+        "image_folder = \"D:\\\\图库\"\n\n[window]\nx = \"东\"\ny = 40\nwidth = -5\nheight = 0\nlock_aspect = \"yes\"\n",
+    )
+    .unwrap();
+    let store = ConfigStore::load(&path);
+    let window = &store.config().window;
+    assert_eq!(window.x, None);
+    assert_eq!(window.y, Some(40));
+    assert_eq!(window.width, 480);
+    assert_eq!(window.height, 320);
+    assert!(!window.lock_aspect);
+    assert_eq!(store.config().image_folder.as_deref(), Some("D:\\图库"));
+}

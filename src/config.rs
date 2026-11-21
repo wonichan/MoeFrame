@@ -254,6 +254,44 @@ impl ConfigStore {
         })
     }
 
+    /// 保存窗口几何（工单 20）：位置与尺寸跨启动恢复；x/y 为 None 时
+    /// 删除对应键（回到「无存档位置」）。只动 window 表，其余字段保留。
+    pub fn set_window_geometry(
+        &mut self,
+        x: Option<i64>,
+        y: Option<i64>,
+        width: u32,
+        height: u32,
+    ) -> io::Result<()> {
+        self.update(|document, config| {
+            for (key, val) in [("x", x), ("y", y)] {
+                match val {
+                    Some(v) => document["window"][key] = value(v),
+                    None => {
+                        if let Some(table) = document["window"].as_table_mut() {
+                            table.remove(key);
+                        }
+                    }
+                }
+            }
+            document["window"]["width"] = value(i64::from(width));
+            document["window"]["height"] = value(i64::from(height));
+            config.window.x = x;
+            config.window.y = y;
+            config.window.width = width;
+            config.window.height = height;
+        })
+    }
+
+    /// 保存宽高比锁定开关（工单 20）：比例本身不落盘，启动时由存档
+    /// 尺寸推导，运行时打开开关时捕获当刻尺寸比例。
+    pub fn set_lock_aspect(&mut self, locked: bool) -> io::Result<()> {
+        self.update(|document, config| {
+            document["window"]["lock_aspect"] = value(locked);
+            config.window.lock_aspect = locked;
+        })
+    }
+
     /// 保存播放模式（工单 12）：只改 playback.mode，其余字段原样保留。
     pub fn set_playback_mode(&mut self, mode: PlaybackMode) -> io::Result<()> {
         self.update(|document, config| {

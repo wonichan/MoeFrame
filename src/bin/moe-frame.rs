@@ -23,6 +23,7 @@ use moe_frame::{
     playlist::{Direction, RandomSource},
     resize_cursor, resize_direction,
     settings_draft::{settle_path_draft, settle_seconds_draft, DraftSettle},
+    window_geom::{aspect_locked_size, bottom_right_position, offscreen_position, MIN_WINDOW_SIDE},
 };
 #[cfg(windows)]
 use std::{
@@ -115,6 +116,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         None
     };
     let window = store.config().window.clone();
+    // 窗口几何初值（工单 20）：锁定宽高比由存档尺寸推导，落盘记录以存档为准。
+    let locked_aspect_init = if window.lock_aspect && window.height > 0 {
+        Some(window.width as f32 / window.height as f32)
+    } else {
+        None
+    };
+    let saved_geom_init = (window.x, window.y, window.width, window.height);
+    let last_inner_init = [window.width as f32, window.height as f32];
     // 配置里存有窗口位置时按存档开窗；没有（首次启动）才走右下角内缩放置。
     let saved_position = match (window.x, window.y) {
         (Some(x), Some(y)) => Some(egui::pos2(x as f32, y as f32)),
@@ -126,7 +135,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         .with_decorations(false)
         .with_resizable(true)
         .with_inner_size([window.width as f32, window.height as f32])
-        .with_min_inner_size([120.0, 120.0])
+        .with_min_inner_size([MIN_WINDOW_SIDE, MIN_WINDOW_SIDE])
         .with_maximized(false)
         .with_fullscreen(false)
         .with_window_level(egui::WindowLevel::Normal);
@@ -184,6 +193,15 @@ fn run() -> Result<(), Box<dyn Error>> {
                 texture_mode: fit_mode,
                 load_mode: fit_mode,
                 reload_pending: None,
+                texture_target: [0, 0],
+                load_target: [0, 0],
+                target_candidate: Debounce::new(),
+                locked_aspect: locked_aspect_init,
+                last_inner: last_inner_init,
+                saved_geom: saved_geom_init,
+                geom_candidate: Debounce::new(),
+                observed_geom: None,
+                startup_clamp_done: false,
                 path_draft: String::new(),
                 path_base: String::new(),
                 seconds_draft: String::new(),
@@ -329,7 +347,11 @@ const INTERVAL_PRESETS: [(&str, i64); 6] = [
 ];
 
 /// 设置窗尺寸（工单 18）：建窗与屏幕居中计算共用。
-const SETTINGS_SIZE: [f32; 2] = [420.0, 470.0];
+const SETTINGS_SIZE: [f32; 2] = [420.0, 580.0];
+
+/// 相框默认尺寸（工单 20 恢复默认用）：480×320 逻辑尺寸。
+#[cfg(windows)]
+const DEFAULT_FRAME_SIZE: [f32; 2] = [480.0, 320.0];
 
 /// 设置窗的视口标识（工单 18）：全程只有一块。
 fn settings_viewport_id() -> egui::ViewportId {
@@ -356,6 +378,38 @@ fn track_draft_field(
             *blurred = Some(field);
         }
         *was_focused = response.has_focus();
+    }
+}
+
+/// 已落盘/待落盘的窗口几何（x, y, 宽, 高）（工单 20）。
+#[cfg(windows)]
+type SavedGeom = (Option<i64>, Option<i64>, u32, u32);
+
+/// 停稳防抖（工单 20）：候选值保持不变满 settle_secs 后 observe 返回
+/// true（结算一次）；值一变就重新计时。目标尺寸重载与几何落盘共用。
+#[cfg(windows)]
+struct Debounce<T> {
+    candidate: Option<(T, f64)>,
+}
+
+#[cfg(windows)]
+impl<T: PartialEq> Debounce<T> {
+    fn new() -> Self {
+        Self { candidate: None }
+    }
+
+    fn observe(&mut self, value: T, now_secs: f64, settle_secs: f64) -> bool {
+        match &self.candidate {
+            Some((candidate, since)) if *candidate == value => now_secs - since >= settle_secs,
+            _ => {
+                self.candidate = Some((value, now_secs));
+                false
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.candidate = None;
     }
 }
 
@@ -412,8 +466,28 @@ struct FrameApp {
     texture_mode: DisplayMode,
     /// 最近一次核心加载发出时用的显示方式：其纹理转正时记入 texture_mode。
     load_mode: DisplayMode,
-    /// 显示方式切换后的当前图重载在飞（哨兵序号与核心加载分开，工单 18）。
-    reload_pending: Option<(PathBuf, DisplayMode)>,
+    /// 显示方式切换后的当前图重载在飞（哨兵序号与核心加载分开，工单 18）：
+    /// 路径、模式与目标物理尺寸（工单 20 起目标变化也走这条重载）。
+    reload_pending: Option<(PathBuf, DisplayMode, [u32; 2])>,
+    /// 当前纹理的显示数据按哪个物理目标尺寸生成（工单 20）。
+    texture_target: [u32; 2],
+    /// 最近一次核心加载发出时的目标尺寸：其纹理转正时记入 texture_target。
+    load_target: [u32; 2],
+    /// 目标尺寸变化的停稳防抖：停稳 250ms 才触发重载。
+    target_candidate: Debounce<[u32; 2]>,
+    /// 宽高比锁定（工单 20）：Some(比例) 为锁定中，比例在打开开关那一刻
+    /// 捕获（或启动时由存档尺寸推导）；开关本身落盘在 config。
+    locked_aspect: Option<f32>,
+    /// 上一帧观察到的窗口逻辑内尺寸：锁定修正的「哪边变了」基准。
+    last_inner: [f32; 2],
+    /// 最近一次落盘的窗口几何（x, y, 宽, 高）。
+    saved_geom: SavedGeom,
+    /// 几何变化的停稳防抖：停稳 0.6 秒才落盘。
+    geom_candidate: Debounce<SavedGeom>,
+    /// 最近一次观察到的窗口几何：退出时冲刷未落盘的最后位置（工单 20）。
+    observed_geom: Option<SavedGeom>,
+    /// 启动离屏钳制是否已检查（工单 20，只查一次）。
+    startup_clamp_done: bool,
     /// 设置窗草稿（工单 19）：path_draft/seconds_draft 是输入框文字，
     /// path_base/seconds_base 是草稿播种时的生效值——生效值被别处（菜单、
     /// 预设）改动时草稿作废重播种。打开设置窗时统一播种。
@@ -469,7 +543,8 @@ impl FrameApp {
                     self.load_seq += 1;
                     self.load_in_flight = true;
                     self.load_mode = self.fit_mode;
-                    let request = LoadRequest::product(self.physical_target(ctx), self.fit_mode);
+                    self.load_target = self.physical_target(ctx);
+                    let request = LoadRequest::product(self.load_target, self.fit_mode);
                     let _ = self.command_tx.send(Command::Load {
                         seq: self.load_seq,
                         candidates,
@@ -519,6 +594,15 @@ impl FrameApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 Effect::Exit => {
+                    // 退出前冲刷未满防抖时限的最后几何（工单 20）。
+                    if let Some(geom) = self.observed_geom {
+                        if geom != self.saved_geom {
+                            let _ = self
+                                .store
+                                .set_window_geometry(geom.0, geom.1, geom.2, geom.3);
+                            self.saved_geom = geom;
+                        }
+                    }
                     // 明确退出（工单 17）：先摘托盘图标再关窗口，关闭请求不拦截。
                     self.exiting = true;
                     self.tray = None;
@@ -543,7 +627,7 @@ impl FrameApp {
         if mode != self.fit_mode {
             self.fit_mode = mode;
             let _ = self.store.set_fit_mode(mode);
-            self.refresh_texture_mode(ctx);
+            self.refresh_display_data(ctx);
         }
     }
 
@@ -660,6 +744,7 @@ impl FrameApp {
         let mode_now = self.core.playback_mode();
         let interval_now = self.core.interval_secs();
         let fit_now = self.fit_mode;
+        let lock_now = self.locked_aspect.is_some();
         let path_draft = &mut self.path_draft;
         let seconds_draft = &mut self.seconds_draft;
         let path_was = &mut self.path_was_focused;
@@ -669,6 +754,8 @@ impl FrameApp {
         let mut picked_interval: Option<i64> = None;
         let mut picked_fit: Option<DisplayMode> = None;
         let mut rescan_clicked = false;
+        let mut picked_lock: Option<bool> = None;
+        let mut restore_clicked = false;
         let mut blurred: Option<DraftField> = None;
         let mut enter_field: Option<DraftField> = None;
         let mut viewport_focused_now = true;
@@ -731,6 +818,18 @@ impl FrameApp {
                     );
                 });
                 ui.separator();
+                ui.label("窗口");
+                let mut lock_checked = lock_now;
+                if ui
+                    .checkbox(&mut lock_checked, "宽高比锁定（按当前比例）")
+                    .clicked()
+                {
+                    picked_lock = Some(lock_checked);
+                }
+                if ui.button("恢复默认位置与大小").clicked() {
+                    restore_clicked = true;
+                }
+                ui.separator();
                 ui.label("显示方式");
                 ui.horizontal(|ui| {
                     if ui.radio(fit_now == DisplayMode::Fit, "适应").clicked() {
@@ -774,6 +873,22 @@ impl FrameApp {
         if let Some(mode) = picked_fit {
             self.apply_fit_mode(ctx, mode);
         }
+        if let Some(locked) = picked_lock {
+            if locked {
+                // 打开那一刻捕获当前窗口比例（工单 20），不固定成默认比例。
+                self.locked_aspect = Some(if self.last_inner[1] > 0.0 {
+                    self.last_inner[0] / self.last_inner[1]
+                } else {
+                    DEFAULT_FRAME_SIZE[0] / DEFAULT_FRAME_SIZE[1]
+                });
+            } else {
+                self.locked_aspect = None;
+            }
+            let _ = self.store.set_lock_aspect(locked);
+        }
+        if restore_clicked {
+            self.restore_default_geometry(ctx);
+        }
         if close {
             // 关闭丢弃未提交文字（工单 19）：待提交一并作废，重开时重新播种，
             // 不借关闭造成的失焦提交。
@@ -796,25 +911,147 @@ impl FrameApp {
         }
     }
 
-    /// 当前纹理的显示数据与生效显示方式不一致时，重载当前图（工单 18）：
-    /// 填充需要覆盖尺寸的显示数据，适应生成的数据一边不够。重载走工作线程
-    /// 的普通加载命令 + 哨兵序号，回送只换纹理，不经核心提交。
-    fn refresh_texture_mode(&mut self, ctx: &egui::Context) {
+    /// 当前纹理的显示数据过期时重载当前图：显示方式变了（工单 18，填充
+    /// 需要覆盖尺寸的数据），或窗口物理尺寸/DPI 变了（工单 20，按实际
+    /// 物理像素重新生成，旧数据随纹理替换释放）。重载走工作线程的普通
+    /// 加载命令 + 哨兵序号，回送只换纹理，不经核心提交。目标尺寸变化要
+    /// 停稳 250ms 才触发，避免拖动缩放中反复解码；在飞的核心加载若已按
+    /// 新模式/新目标发出，其转正会自行刷新记录，不重复重载。
+    fn refresh_display_data(&mut self, ctx: &egui::Context) {
         if self.reload_pending.is_some() || self.slide.is_some() {
             return;
         }
-        if self.texture_mode == self.fit_mode {
+        let View::Showing(path) = self.core.view() else {
+            return;
+        };
+        let want_target = self.physical_target(ctx);
+        if self.load_in_flight && self.load_mode == self.fit_mode && self.load_target == want_target
+        {
             return;
         }
-        if let View::Showing(path) = self.core.view() {
-            self.reload_pending = Some((path.clone(), self.fit_mode));
-            let request = LoadRequest::product(self.physical_target(ctx), self.fit_mode);
-            let _ = self.command_tx.send(Command::Load {
-                seq: RELOAD_SEQ,
-                candidates: vec![path],
-                request,
-            });
+        let mode_stale = self.texture_mode != self.fit_mode;
+        let target_stale = self.texture_target != want_target;
+        if !mode_stale && !target_stale {
+            self.target_candidate.clear();
+            return;
         }
+        if target_stale && !mode_stale {
+            let now_secs = ctx.input(|input| input.time);
+            if !self.target_candidate.observe(want_target, now_secs, 0.25) {
+                return;
+            }
+        }
+        self.target_candidate.clear();
+        self.reload_pending = Some((path.clone(), self.fit_mode, want_target));
+        let request = LoadRequest::product(want_target, self.fit_mode);
+        let _ = self.command_tx.send(Command::Load {
+            seq: RELOAD_SEQ,
+            candidates: vec![path],
+            request,
+        });
+    }
+
+    /// 窗口几何维护（工单 20）：启动离屏钳制（只查一次）、宽高比锁定
+    /// 修正、几何落盘（变化停稳 0.6 秒写一次，拖动中不反复写盘）。
+    fn update_window_geometry(&mut self, ctx: &egui::Context) {
+        let (outer, inner, monitor) = ctx.input(|input| {
+            let viewport = input.viewport();
+            (
+                viewport.outer_rect,
+                viewport.inner_rect,
+                viewport.monitor_size,
+            )
+        });
+        if !self.startup_clamp_done {
+            if let (Some(outer), Some(monitor)) = (outer, monitor) {
+                self.startup_clamp_done = true;
+                if let Some(pos) = offscreen_position(
+                    [outer.min.x, outer.min.y],
+                    [outer.width(), outer.height()],
+                    [monitor.x, monitor.y],
+                ) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                        pos[0], pos[1],
+                    )));
+                }
+            }
+        }
+        let Some(inner) = inner else {
+            return;
+        };
+        let cur = [inner.width(), inner.height()];
+        if let Some(aspect) = self.locked_aspect {
+            // 指针按下（拖动/缩放进行中）时不抢，停稳后按偏离修正一次。
+            let pointer_down = ctx.input(|input| input.pointer.any_down());
+            if !pointer_down && cur != self.last_inner {
+                let corrected = aspect_locked_size(self.last_inner, cur, aspect);
+                if (corrected[0] - cur[0]).abs() > 0.5 || (corrected[1] - cur[1]).abs() > 0.5 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                        corrected[0],
+                        corrected[1],
+                    )));
+                }
+            }
+        }
+        self.last_inner = cur;
+        if !self.core.frame_visible() {
+            return;
+        }
+        let Some(outer) = outer else {
+            return;
+        };
+        let geom = (
+            Some(outer.min.x.round() as i64),
+            Some(outer.min.y.round() as i64),
+            cur[0].round() as u32,
+            cur[1].round() as u32,
+        );
+        self.observed_geom = Some(geom);
+        if geom == self.saved_geom {
+            self.geom_candidate.clear();
+            return;
+        }
+        let now_secs = ctx.input(|input| input.time);
+        if self.geom_candidate.observe(geom, now_secs, 0.6) {
+            let _ = self
+                .store
+                .set_window_geometry(geom.0, geom.1, geom.2, geom.3);
+            self.saved_geom = geom;
+            self.geom_candidate.clear();
+        }
+    }
+
+    /// 恢复默认位置与大小（工单 20）：立即 480×320、当前屏右下角内缩
+    /// 24px 并落盘；相框隐藏时按主屏口径放置并显示相框（与托盘开设置
+    /// 不唤出相框相区别）；锁定开启时，锁定的宽高比同步改为默认尺寸的比例。
+    fn restore_default_geometry(&mut self, ctx: &egui::Context) {
+        let size = DEFAULT_FRAME_SIZE;
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+            size[0], size[1],
+        )));
+        let monitor = ctx.input(|input| input.viewport().monitor_size);
+        let pos = monitor.map(|m| bottom_right_position(size, [m.x, m.y]));
+        if let Some(pos) = pos {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                pos[0], pos[1],
+            )));
+        }
+        if !self.core.frame_visible() {
+            let effects = self.core.handle(Intent::ToggleVisibilityRequested);
+            self.dispatch(ctx, effects);
+        }
+        if self.locked_aspect.is_some() {
+            self.locked_aspect = Some(size[0] / size[1]);
+        }
+        let (x, y) = match pos {
+            Some(p) => (Some(p[0].round() as i64), Some(p[1].round() as i64)),
+            None => (self.saved_geom.0, self.saved_geom.1),
+        };
+        let _ = self
+            .store
+            .set_window_geometry(x, y, size[0] as u32, size[1] as u32);
+        self.saved_geom = (x, y, size[0] as u32, size[1] as u32);
+        self.geom_candidate.clear();
     }
 
     fn drain_replies(&mut self, ctx: &egui::Context) {
@@ -834,9 +1071,9 @@ impl FrameApp {
                     if seq == RELOAD_SEQ {
                         // 显示方式切换后的当前图重载（工单 18）：只换纹理，
                         // 不经核心、不算一次显示。画面已切走或转场中则丢弃，
-                        // 转正后会按新模式再触发一次（refresh_texture_mode）。
+                        // 转正后会按新模式再触发一次（refresh_display_data）。
                         let pending = self.reload_pending.take();
-                        if let (Some((path, mode)), Some(image)) = (pending, image) {
+                        if let (Some((path, mode, target)), Some(image)) = (pending, image) {
                             if self.slide.is_none()
                                 && self.core.view() == View::Showing(image.path.clone())
                                 && image.path == path
@@ -844,6 +1081,7 @@ impl FrameApp {
                                 self.upload(ctx, image);
                                 self.texture = self.incoming.take();
                                 self.texture_mode = mode;
+                                self.texture_target = target;
                             }
                         }
                         continue;
@@ -867,6 +1105,7 @@ impl FrameApp {
                     if self.slide.is_none() && self.incoming.is_some() {
                         self.texture = self.incoming.take();
                         self.texture_mode = self.load_mode;
+                        self.texture_target = self.load_target;
                     }
                     // 导航全失败时核心保留当前图，纹理不动；只有核心回到无图状态才清纹理。
                     if self.core.view() == View::Empty {
@@ -875,7 +1114,7 @@ impl FrameApp {
                 }
             }
         }
-        self.refresh_texture_mode(ctx);
+        self.refresh_display_data(ctx);
     }
 
     fn upload(&mut self, ctx: &egui::Context, image: moe_frame::decode_validation::DisplayImage) {
@@ -897,10 +1136,8 @@ impl FrameApp {
             return;
         };
         let rect = ctx.viewport_rect();
-        let pos = egui::pos2(
-            (monitor.x - rect.width() - 24.0).max(0.0),
-            (monitor.y - rect.height() - 24.0).max(0.0),
-        );
+        let placed = bottom_right_position([rect.width(), rect.height()], [monitor.x, monitor.y]);
+        let pos = egui::pos2(placed[0], placed[1]);
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
         self.placed = true;
     }
@@ -916,6 +1153,7 @@ impl eframe::App for FrameApp {
             self.dispatch(&ctx, effects);
         }
         self.drain_replies(&ctx);
+        self.update_window_geometry(&ctx);
         self.place_bottom_right(&ctx);
         let now = now_ms(&ctx);
         let tick_effects = self.core.handle(Intent::Tick { now_ms: now });
@@ -979,6 +1217,7 @@ impl eframe::App for FrameApp {
                 // 切走图的纹理随旧 handle 一并释放；目标图成为当前图。
                 self.texture = self.incoming.take();
                 self.texture_mode = self.load_mode;
+                self.texture_target = self.load_target;
                 let effects = self
                     .core
                     .handle(Intent::TransitionCompleted { now_ms: now });

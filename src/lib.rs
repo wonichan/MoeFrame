@@ -190,3 +190,5 @@ pub fn resize_direction(rect: egui::Rect, pos: egui::Pos2) -> Option<egui::Resiz
         _ => None,
     }
 }
+
+pub mod window_geom;
