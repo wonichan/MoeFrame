@@ -38,12 +38,15 @@ pub type GeometryRecord = (Option<i64>, Option<i64>, u32, u32);
 /// 宿主初值包：启动翻译从配置算出的宿主侧初始状态。
 #[derive(Clone, Debug, PartialEq)]
 pub struct HostInit {
+    /// 显示方式初值（宿主持有的状态，变更经宿主状态镜像写回）。
     pub fit_mode: DisplayMode,
+    /// 窗口配置原文：开窗尺寸与位置的来源。
     pub window: WindowConfig,
     /// 宽高比锁定的初始比例：存档开启锁定时由存档尺寸推导，未锁为 None。
     pub locked_aspect: Option<f32>,
     /// 落盘记录以存档为准：防抖保存的比较基准。
     pub saved_geom: GeometryRecord,
+    /// 上一帧内尺寸的初值（宽高比校正的比较基准）。
     pub last_inner: [f32; 2],
     /// 存档位置（两坐标齐全时）；None 表示首次启动走默认放置。
     pub saved_position: Option<[f32; 2]>,
@@ -120,17 +123,17 @@ impl ConfigSync {
     pub fn save_folder(&mut self, folder: &Path) {
         let text = folder.to_string_lossy().into_owned();
         let result = self.store.set_image_folder(Some(&text));
-        self.write("image_folder", result);
+        self.note_write_result("image_folder", result);
     }
 
     pub fn save_interval(&mut self, secs: i64) {
         let result = self.store.set_interval_secs(secs);
-        self.write("interval_secs", result);
+        self.note_write_result("interval_secs", result);
     }
 
     pub fn save_playback_mode(&mut self, mode: PlaybackMode) {
         let result = self.store.set_playback_mode(mode);
-        self.write("playback_mode", result);
+        self.note_write_result("playback_mode", result);
     }
 
     /// 续播状态落盘：路径以字符串保存，无法表示为 UTF-8 的当前图
@@ -142,38 +145,38 @@ impl ConfigSync {
         let seen = paths_to_strings(seen);
         let history = paths_to_strings(history);
         let result = self.store.save_resume_state(Some(current), &seen, &history);
-        self.write("resume_state", result);
+        self.note_write_result("resume_state", result);
     }
 
     pub fn clear_resume_state(&mut self) {
         let result = self.store.save_resume_state(None, &[], &[]);
-        self.write("resume_state", result);
+        self.note_write_result("resume_state", result);
     }
 
     // ---- 宿主状态镜像 ----
 
     pub fn save_fit_mode(&mut self, mode: DisplayMode) {
         let result = self.store.set_fit_mode(mode);
-        self.write("fit_mode", result);
+        self.note_write_result("fit_mode", result);
     }
 
     pub fn save_lock_aspect(&mut self, locked: bool) {
         let result = self.store.set_lock_aspect(locked);
-        self.write("lock_aspect", result);
+        self.note_write_result("lock_aspect", result);
     }
 
     pub fn save_window_geometry(&mut self, geom: GeometryRecord) {
         let result = self
             .store
             .set_window_geometry(geom.0, geom.1, geom.2, geom.3);
-        self.write("window_geometry", result);
+        self.note_write_result("window_geometry", result);
     }
 
     // ---- 注册表反向对齐的镜像落盘 ----
 
     pub fn save_autostart_mirror(&mut self, value: bool) {
         let result = self.store.set_autostart(value);
-        self.write("autostart", result);
+        self.note_write_result("autostart", result);
     }
 
     /// 退出收尾（工单 20 的退出冲刷）：把最后观察到的几何一次结清——
@@ -192,8 +195,9 @@ impl ConfigSync {
         }
     }
 
-    /// 统一失败口径：不阻塞、不弹窗、不重试，记一行到现有日志文件。
-    fn write(&mut self, what: &str, result: io::Result<()>) {
+    /// 统一失败口径：写回结果到这里汇合——成功即过，失败不阻塞、
+    /// 不弹窗、不重试，只记一行到现有日志文件。
+    fn note_write_result(&mut self, what: &str, result: io::Result<()>) {
         if let Err(error) = result {
             let _ = append_log_line(
                 &self.log_path,
@@ -220,6 +224,7 @@ fn resume_data(config: &crate::config::Config) -> Option<ResumeData> {
     })
 }
 
+/// 路径列表转可落盘的字符串列表；无法表示为 UTF-8 的路径跳过。
 fn paths_to_strings(paths: &[PathBuf]) -> Vec<String> {
     paths
         .iter()

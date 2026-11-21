@@ -17,7 +17,7 @@ use moe_frame::{
     app_core::{Effect, FrameCore, Intent, View},
     autostart::{autostart_command, AutostartStore, AutostartSync, RUN_KEY_PATH, RUN_VALUE_NAME},
     config::PlaybackMode,
-    config_sync::ConfigSync,
+    config_sync::{ConfigSync, GeometryRecord},
     decode_validation::DisplayMode,
     display::display_size,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
@@ -63,8 +63,6 @@ fn now_ms(ctx: &egui::Context) -> u64 {
     (ctx.input(|input| input.time) * 1000.0) as u64
 }
 
-/// 路径列表转可落盘的字符串列表；无法表示为 UTF-8 的路径跳过。
-#[cfg(windows)]
 #[cfg(windows)]
 fn app_directory() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("MoeFrame"))
@@ -373,10 +371,6 @@ fn track_draft_field(
     }
 }
 
-/// 已落盘/待落盘的窗口几何（x, y, 宽, 高）（工单 20）。
-#[cfg(windows)]
-type SavedGeom = (Option<i64>, Option<i64>, u32, u32);
-
 /// 停稳防抖（工单 20）：候选值保持不变满 settle_secs 后 observe 返回
 /// true（结算一次）；值一变就重新计时。窗口几何落盘用（工单 20）。
 #[cfg(windows)]
@@ -452,11 +446,11 @@ struct FrameApp {
     /// 上一帧观察到的窗口逻辑内尺寸：锁定修正的「哪边变了」基准。
     last_inner: [f32; 2],
     /// 最近一次落盘的窗口几何（x, y, 宽, 高）。
-    saved_geom: SavedGeom,
+    saved_geom: GeometryRecord,
     /// 几何变化的停稳防抖：停稳 0.6 秒才落盘。
-    geom_candidate: Debounce<SavedGeom>,
+    geom_candidate: Debounce<GeometryRecord>,
     /// 最近一次观察到的窗口几何：退出时冲刷未落盘的最后位置（工单 20）。
-    observed_geom: Option<SavedGeom>,
+    observed_geom: Option<GeometryRecord>,
     /// 启动离屏钳制是否已检查（工单 20，只查一次）。
     startup_clamp_done: bool,
     /// 开机自启的真实状态（工单 21）：菜单与设置窗都读它；注册表实现
