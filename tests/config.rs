@@ -338,3 +338,14 @@ fn corrupt_window_fields_are_repaired_without_touching_other_sections() {
     assert!(!window.lock_aspect);
     assert_eq!(store.config().image_folder.as_deref(), Some("D:\\图库"));
 }
+
+#[test]
+fn autostart_mirror_round_trips_through_a_real_file() {
+    let path = temp_config("autostart");
+    let mut store = ConfigStore::load(&path);
+    assert!(!store.config().general.autostart);
+    store.set_autostart(true).unwrap();
+    let reparsed = ConfigStore::load(&path);
+    assert!(reparsed.config().general.autostart);
+    assert_eq!(reparsed.config().playback.interval_secs, 30);
+}

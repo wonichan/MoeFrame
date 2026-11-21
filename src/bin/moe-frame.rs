@@ -15,6 +15,7 @@ use eframe::egui;
 #[cfg(windows)]
 use moe_frame::{
     app_core::{Effect, FrameCore, Intent, ResumeData, View},
+    autostart::{autostart_command, AutostartStore, AutostartSync, RUN_KEY_PATH, RUN_VALUE_NAME},
     config::{ConfigStore, PlaybackMode},
     decode_validation::DisplayMode,
     display::display_size,
@@ -96,7 +97,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     let directory = app_directory().ok_or_else(|| io::Error::other("APPDATA is unavailable"))?;
     let config_path = directory.join("config.toml");
     let log_path = directory.join("moe_frame.log");
-    let store = ConfigStore::load(&config_path);
+    let mut store = ConfigStore::load(&config_path);
+    // 开机自启启动对齐（工单 21）：实际注册表状态优先于配置镜像，
+    // 不一致时把镜像回写为实际值；读不到实际状态时退回镜像。
+    let (autostart_sync, autostart_rewrite) =
+        AutostartSync::startup(&mut RegAutostartStore, store.config().general.autostart);
+    if let Some(value) = autostart_rewrite {
+        let _ = store.set_autostart(value);
+    }
     let saved_folder = store.config().image_folder.as_ref().map(PathBuf::from);
     let fit_mode = store.config().display.fit_mode;
     let interval_secs = store.config().playback.interval_secs;
@@ -202,6 +210,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                 geom_candidate: Debounce::new(),
                 observed_geom: None,
                 startup_clamp_done: false,
+                autostart: autostart_sync,
+                autostart_store: RegAutostartStore,
                 path_draft: String::new(),
                 path_base: String::new(),
                 seconds_draft: String::new(),
@@ -235,6 +245,65 @@ fn tray_icon_image() -> tray_icon::Icon {
         .to_rgba8();
     let (width, height) = image.dimensions();
     tray_icon::Icon::from_rgba(image.into_raw(), width, height).expect("托盘图标像素格式固定")
+}
+
+/// 开机自启的注册表实现（工单 21）：当前用户 Run 项的 MoeFrame 值，
+/// 存在即启用。业务配置不进注册表，只有这一项。
+#[cfg(windows)]
+struct RegAutostartStore;
+
+#[cfg(windows)]
+impl RegAutostartStore {
+    /// 打开 Run 项：读用只读打开（项不存在即确定未启用，返回 None），
+    /// 写用打开或创建。权限分开，不互相冒充。
+    fn run_key(&self, write: bool) -> io::Result<Option<winreg::RegKey>> {
+        let hkcu = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
+        if write {
+            hkcu.create_subkey_with_flags(RUN_KEY_PATH, winreg::enums::KEY_WRITE)
+                .map(|(key, _)| Some(key))
+        } else {
+            match hkcu.open_subkey_with_flags(RUN_KEY_PATH, winreg::enums::KEY_READ) {
+                Ok(key) => Ok(Some(key)),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error),
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl AutostartStore for RegAutostartStore {
+    fn read_enabled(&mut self) -> io::Result<bool> {
+        let Some(run) = self.run_key(false)? else {
+            return Ok(false);
+        };
+        // 值存在即启用：字符串读不到时再看原始值——值在但类型不对也算
+        // 「项存在」，不落进读失败退镜像的分支。
+        match run.get_value::<String, _>(RUN_VALUE_NAME) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(_) => match run.get_raw_value(RUN_VALUE_NAME) {
+                Ok(_) => Ok(true),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(error),
+            },
+        }
+    }
+
+    fn set_enabled(&mut self, enabled: bool, command: &str) -> io::Result<()> {
+        let run = self
+            .run_key(true)?
+            .expect("写模式打开 Run 项必得键（打开或创建）");
+        if enabled {
+            run.set_value(RUN_VALUE_NAME, &command)
+        } else {
+            match run.delete_value(RUN_VALUE_NAME) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            }
+        }
+    }
 }
 
 /// 建托盘图标与右键菜单（工单 17）：菜单项与相框菜单走同一套核心意图；
@@ -347,7 +416,7 @@ const INTERVAL_PRESETS: [(&str, i64); 6] = [
 ];
 
 /// 设置窗尺寸（工单 18）：建窗与屏幕居中计算共用。
-const SETTINGS_SIZE: [f32; 2] = [420.0, 580.0];
+const SETTINGS_SIZE: [f32; 2] = [420.0, 630.0];
 
 /// 相框默认尺寸（工单 20 恢复默认用）：480×320 逻辑尺寸。
 #[cfg(windows)]
@@ -488,6 +557,10 @@ struct FrameApp {
     observed_geom: Option<SavedGeom>,
     /// 启动离屏钳制是否已检查（工单 20，只查一次）。
     startup_clamp_done: bool,
+    /// 开机自启的真实状态（工单 21）：菜单与设置窗都读它；注册表实现
+    /// 经接缝注入，切换失败时状态不动（回滚）。
+    autostart: AutostartSync,
+    autostart_store: RegAutostartStore,
     /// 设置窗草稿（工单 19）：path_draft/seconds_draft 是输入框文字，
     /// path_base/seconds_base 是草稿播种时的生效值——生效值被别处（菜单、
     /// 预设）改动时草稿作废重播种。打开设置窗时统一播种。
@@ -745,6 +818,7 @@ impl FrameApp {
         let interval_now = self.core.interval_secs();
         let fit_now = self.fit_mode;
         let lock_now = self.locked_aspect.is_some();
+        let autostart_now = self.autostart.enabled();
         let path_draft = &mut self.path_draft;
         let seconds_draft = &mut self.seconds_draft;
         let path_was = &mut self.path_was_focused;
@@ -755,6 +829,7 @@ impl FrameApp {
         let mut picked_fit: Option<DisplayMode> = None;
         let mut rescan_clicked = false;
         let mut picked_lock: Option<bool> = None;
+        let mut picked_autostart: Option<bool> = None;
         let mut restore_clicked = false;
         let mut blurred: Option<DraftField> = None;
         let mut enter_field: Option<DraftField> = None;
@@ -839,6 +914,11 @@ impl FrameApp {
                         picked_fit = Some(DisplayMode::Fill);
                     }
                 });
+                ui.separator();
+                let mut autostart_checked = autostart_now;
+                if ui.checkbox(&mut autostart_checked, "开机自启").clicked() {
+                    picked_autostart = Some(autostart_checked);
+                }
             });
         });
         // 点相框（另一个系统窗口）算失焦（工单 19）：设置窗视口失去系统
@@ -888,6 +968,9 @@ impl FrameApp {
         }
         if restore_clicked {
             self.restore_default_geometry(ctx);
+        }
+        if let Some(target) = picked_autostart {
+            self.apply_autostart(target);
         }
         if close {
             // 关闭丢弃未提交文字（工单 19）：待提交一并作废，重开时重新播种，
@@ -1018,6 +1101,24 @@ impl FrameApp {
                 .set_window_geometry(geom.0, geom.1, geom.2, geom.3);
             self.saved_geom = geom;
             self.geom_candidate.clear();
+        }
+    }
+
+    /// 切换开机自启（工单 21）：先写注册表，成功才保存配置镜像
+    /// （保存失败不回滚系统状态——界面与系统仍一致，镜像靠下次启动
+    /// 对齐自愈）；
+    /// 失败时状态保持操作前——菜单与设置窗都从 autostart 状态渲染，
+    /// 自然回到原值，不弹窗、不伪报。目标命令每次按当前程序路径生成。
+    fn apply_autostart(&mut self, target: bool) {
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        let command = autostart_command(&exe);
+        if let Some(value) = self
+            .autostart
+            .apply(&mut self.autostart_store, target, &command)
+        {
+            let _ = self.store.set_autostart(value);
         }
     }
 
@@ -1229,6 +1330,7 @@ impl eframe::App for FrameApp {
 
         let mut menu_intent: Option<Intent> = None;
         let mut menu_settings = false;
+        let mut menu_autostart: Option<bool> = None;
         let mut menu_fit: Option<DisplayMode> = None;
         let panel = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
@@ -1372,6 +1474,11 @@ impl eframe::App for FrameApp {
                 menu_settings = true;
                 ui.close();
             }
+            let mut autostart_checked = self.autostart.enabled();
+            if ui.checkbox(&mut autostart_checked, "开机自启").clicked() {
+                menu_autostart = Some(autostart_checked);
+                ui.close();
+            }
             if ui.button("退出").clicked() {
                 menu_intent = Some(Intent::ExitRequested);
                 ui.close();
@@ -1384,6 +1491,9 @@ impl eframe::App for FrameApp {
         }
         if let Some(mode) = menu_fit {
             self.apply_fit_mode(&ctx, mode);
+        }
+        if let Some(target) = menu_autostart {
+            self.apply_autostart(target);
         }
         if menu_settings {
             self.request_settings(&ctx);

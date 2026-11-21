@@ -254,6 +254,15 @@ impl ConfigStore {
         })
     }
 
+    /// 保存开机自启的配置镜像（工单 21）：真实状态在系统 Run 项里，
+    /// 这里只保存与实际状态对齐后的镜像值（切换成功后或启动对齐时）。
+    pub fn set_autostart(&mut self, enabled: bool) -> io::Result<()> {
+        self.update(|document, config| {
+            document["general"]["autostart"] = value(enabled);
+            config.general.autostart = enabled;
+        })
+    }
+
     /// 保存窗口几何（工单 20）：位置与尺寸跨启动恢复；x/y 为 None 时
     /// 删除对应键（回到「无存档位置」）。只动 window 表，其余字段保留。
     pub fn set_window_geometry(

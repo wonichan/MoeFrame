@@ -3,6 +3,7 @@
 use eframe::egui;
 
 pub mod app_core;
+pub mod autostart;
 pub mod config;
 pub mod decode_validation;
 pub mod diagnostics;
