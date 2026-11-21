@@ -269,3 +269,31 @@ fn set_fit_mode_round_trips_through_a_real_file() {
         DisplayMode::Fit
     );
 }
+
+#[test]
+fn interval_draft_parsing_keeps_the_two_rule_sets_apart() {
+    use moe_frame::config::parse_interval_draft;
+    // 区间内原样，越界钳制（与读配置的钳制方向一致）。
+    assert_eq!(parse_interval_draft("30"), Some(30));
+    assert_eq!(parse_interval_draft("3"), Some(3));
+    assert_eq!(parse_interval_draft("2"), Some(3));
+    assert_eq!(parse_interval_draft("0"), Some(3));
+    assert_eq!(parse_interval_draft("-5"), Some(3));
+    assert_eq!(parse_interval_draft("99999999"), Some(99_999_999));
+    assert_eq!(parse_interval_draft("100000000"), Some(99_999_999));
+    assert_eq!(parse_interval_draft("+42"), Some(42));
+    // 超 i64 位数的纯数字仍是整数，按符号钳制，不当解析失败。
+    assert_eq!(
+        parse_interval_draft("99999999999999999999999999"),
+        Some(99_999_999)
+    );
+    assert_eq!(parse_interval_draft("-99999999999999999999999999"), Some(3));
+    // 解析失败一律 None：调用方保留上次有效值，绝不回退默认 30。
+    assert_eq!(parse_interval_draft(""), None);
+    assert_eq!(parse_interval_draft("3.5"), None);
+    assert_eq!(parse_interval_draft("30.0"), None);
+    assert_eq!(parse_interval_draft("abc"), None);
+    assert_eq!(parse_interval_draft("1e3"), None);
+    assert_eq!(parse_interval_draft("4 2"), None);
+    assert_eq!(parse_interval_draft("-"), None);
+}

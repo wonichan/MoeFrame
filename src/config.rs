@@ -10,7 +10,36 @@ use toml_edit::{value, DocumentMut, Item, Table};
 
 pub const MIN_INTERVAL_SECS: i64 = 3;
 pub const MAX_INTERVAL_SECS: i64 = 99_999_999;
+
 pub const DEFAULT_INTERVAL_SECS: i64 = 30;
+
+/// 秒数草稿的提交解析（工单 19）：与配置读取修复是两套规则——解析失败
+/// （空白、小数、非数字）返回 None，调用方保留上次有效值，绝不回退默认
+/// 30；能读成整数但越界的钳制到 [MIN_INTERVAL_SECS, MAX_INTERVAL_SECS]。
+/// 入参须已去掉首尾空白。超 i64 位数的纯数字串仍按整数论，按符号钳制。
+pub fn parse_interval_draft(text: &str) -> Option<i64> {
+    if text.is_empty() {
+        return None;
+    }
+    match text.parse::<i64>() {
+        Ok(value) => Some(value.clamp(MIN_INTERVAL_SECS, MAX_INTERVAL_SECS)),
+        Err(_) => {
+            let digits = text
+                .strip_prefix('+')
+                .or_else(|| text.strip_prefix('-'))
+                .unwrap_or(text);
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                if text.starts_with('-') {
+                    Some(MIN_INTERVAL_SECS)
+                } else {
+                    Some(MAX_INTERVAL_SECS)
+                }
+            } else {
+                None
+            }
+        }
+    }
+}
 
 const DEFAULT_TEMPLATE: &str = "\
 # MoeFrame 配置文件 —— 程序自动维护，也可手动编辑（重启生效）
