@@ -2,7 +2,7 @@
 //! 时间通过意图携带的 now_ms 可控推进，不用真实等待。
 
 // 随机性已归播放序列持有（工单 03 深挖）：核心测试不再注入确定性随机源。
-use moe_frame::app_core::{Effect, FrameCore, Intent, ResumeData, View};
+use moe_frame::app_core::{CoreArgs, Effect, FrameCore, Intent, ResumeData, View};
 use moe_frame::config::PlaybackMode;
 use moe_frame::gesture::GestureThresholds;
 use moe_frame::playlist::Direction;
@@ -41,10 +41,12 @@ fn showing_core_mode(
     mode: PlaybackMode,
 ) -> (FrameCore, Vec<Effect>) {
     let mut core = FrameCore::new(
-        Some(path("D:\\图库")),
-        interval_secs,
-        mode,
-        None,
+        CoreArgs {
+            saved_folder: Some(path("D:\\图库")),
+            interval_secs,
+            mode,
+            resume: None,
+        },
         test_thresholds(),
     );
     core.handle(Intent::Started);
@@ -61,7 +63,15 @@ fn showing_core_mode(
 
 #[test]
 fn first_run_without_a_saved_folder_prompts_once_and_cancel_stays_empty() {
-    let mut core = FrameCore::new(None, 30, PlaybackMode::Sequential, None, test_thresholds());
+    let mut core = FrameCore::new(
+        CoreArgs {
+            saved_folder: None,
+            interval_secs: 30,
+            mode: PlaybackMode::Sequential,
+            resume: None,
+        },
+        test_thresholds(),
+    );
     assert_eq!(core.handle(Intent::Started), vec![Effect::PickFolder]);
     assert_eq!(core.handle(Intent::FolderPickCancelled), vec![]);
     assert_eq!(core.view(), View::Empty);
@@ -69,7 +79,15 @@ fn first_run_without_a_saved_folder_prompts_once_and_cancel_stays_empty() {
 
 #[test]
 fn picking_a_folder_saves_scans_loads_and_shows_the_first_image() {
-    let mut core = FrameCore::new(None, 30, PlaybackMode::Sequential, None, test_thresholds());
+    let mut core = FrameCore::new(
+        CoreArgs {
+            saved_folder: None,
+            interval_secs: 30,
+            mode: PlaybackMode::Sequential,
+            resume: None,
+        },
+        test_thresholds(),
+    );
     core.handle(Intent::Started);
     let folder = path("D:\\图库");
     assert_eq!(
@@ -101,10 +119,12 @@ fn picking_a_folder_saves_scans_loads_and_shows_the_first_image() {
 #[test]
 fn a_saved_folder_skips_the_prompt_on_the_next_launch() {
     let mut core = FrameCore::new(
-        Some(path("D:\\图库")),
-        30,
-        PlaybackMode::Sequential,
-        None,
+        CoreArgs {
+            saved_folder: Some(path("D:\\图库")),
+            interval_secs: 30,
+            mode: PlaybackMode::Sequential,
+            resume: None,
+        },
         test_thresholds(),
     );
     assert_eq!(
@@ -116,10 +136,12 @@ fn a_saved_folder_skips_the_prompt_on_the_next_launch() {
 #[test]
 fn an_empty_scan_enters_the_empty_state_without_loading() {
     let mut core = FrameCore::new(
-        Some(path("D:\\空文件夹")),
-        30,
-        PlaybackMode::Sequential,
-        None,
+        CoreArgs {
+            saved_folder: Some(path("D:\\空文件夹")),
+            interval_secs: 30,
+            mode: PlaybackMode::Sequential,
+            resume: None,
+        },
         test_thresholds(),
     );
     core.handle(Intent::Started);
@@ -134,10 +156,12 @@ fn an_empty_scan_enters_the_empty_state_without_loading() {
 #[test]
 fn when_every_candidate_fails_the_frame_stays_operable_and_empty() {
     let mut core = FrameCore::new(
-        Some(path("D:\\坏图库")),
-        30,
-        PlaybackMode::Sequential,
-        None,
+        CoreArgs {
+            saved_folder: Some(path("D:\\坏图库")),
+            interval_secs: 30,
+            mode: PlaybackMode::Sequential,
+            resume: None,
+        },
         test_thresholds(),
     );
     core.handle(Intent::Started);
@@ -166,7 +190,15 @@ fn cancelling_a_menu_repick_keeps_the_current_image() {
 
 #[test]
 fn exit_is_an_explicit_effect() {
-    let mut core = FrameCore::new(None, 30, PlaybackMode::Sequential, None, test_thresholds());
+    let mut core = FrameCore::new(
+        CoreArgs {
+            saved_folder: None,
+            interval_secs: 30,
+            mode: PlaybackMode::Sequential,
+            resume: None,
+        },
+        test_thresholds(),
+    );
     assert_eq!(core.handle(Intent::ExitRequested), vec![Effect::Exit]);
 }
 
@@ -580,10 +612,12 @@ fn a_single_image_in_random_mode_never_navigates() {
 
 fn resumed_core(mode: PlaybackMode, resume: ResumeData) -> FrameCore {
     let mut core = FrameCore::new(
-        Some(path("D:\\图库")),
-        30,
-        mode,
-        Some(resume),
+        CoreArgs {
+            saved_folder: Some(path("D:\\图库")),
+            interval_secs: 30,
+            mode,
+            resume: Some(resume),
+        },
         test_thresholds(),
     );
     core.handle(Intent::Started);
@@ -748,10 +782,12 @@ fn sequential_resume_with_a_missing_current_takes_the_natural_successor() {
 fn playback_state_survives_across_two_launches() {
     // 第一次启动：随机模式看过 a、b 后退出，落盘状态被第二次启动接手。
     let mut first = FrameCore::new(
-        Some(path("D:\\图库")),
-        30,
-        PlaybackMode::Random,
-        None,
+        CoreArgs {
+            saved_folder: Some(path("D:\\图库")),
+            interval_secs: 30,
+            mode: PlaybackMode::Random,
+            resume: None,
+        },
         test_thresholds(),
     );
     first.handle(Intent::Started);

@@ -14,9 +14,10 @@ mod worker;
 use eframe::egui;
 #[cfg(windows)]
 use moe_frame::{
-    app_core::{Effect, FrameCore, Intent, ResumeData, View},
+    app_core::{Effect, FrameCore, Intent, View},
     autostart::{autostart_command, AutostartStore, AutostartSync, RUN_KEY_PATH, RUN_VALUE_NAME},
-    config::{ConfigStore, PlaybackMode},
+    config::PlaybackMode,
+    config_sync::ConfigSync,
     decode_validation::DisplayMode,
     display::display_size,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
@@ -64,13 +65,6 @@ fn now_ms(ctx: &egui::Context) -> u64 {
 
 /// 路径列表转可落盘的字符串列表；无法表示为 UTF-8 的路径跳过。
 #[cfg(windows)]
-fn paths_to_strings(paths: &[PathBuf]) -> Vec<String> {
-    paths
-        .iter()
-        .filter_map(|path| path.to_str().map(str::to_owned))
-        .collect()
-}
-
 #[cfg(windows)]
 fn app_directory() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("MoeFrame"))
@@ -81,46 +75,15 @@ fn run() -> Result<(), Box<dyn Error>> {
     let directory = app_directory().ok_or_else(|| io::Error::other("APPDATA is unavailable"))?;
     let config_path = directory.join("config.toml");
     let log_path = directory.join("moe_frame.log");
-    let mut store = ConfigStore::load(&config_path);
-    // 开机自启启动对齐（工单 21）：实际注册表状态优先于配置镜像，
-    // 不一致时把镜像回写为实际值；读不到实际状态时退回镜像。
-    let (autostart_sync, autostart_rewrite) =
-        AutostartSync::startup(&mut RegAutostartStore, store.config().general.autostart);
-    if let Some(value) = autostart_rewrite {
-        let _ = store.set_autostart(value);
-    }
-    let saved_folder = store.config().image_folder.as_ref().map(PathBuf::from);
-    let fit_mode = store.config().display.fit_mode;
-    let interval_secs = store.config().playback.interval_secs;
-    let playback_mode = store.config().playback.mode;
-    // 跨启动恢复（工单 13）：配置里保存的当前图、本轮进度与历史交给行为核心。
-    let general = &store.config().general;
-    let resume = if general.current_image.is_some()
-        || !general.round_seen.is_empty()
-        || !general.history.is_empty()
-    {
-        Some(ResumeData {
-            current: general.current_image.clone().map(PathBuf::from),
-            seen: general.round_seen.iter().map(PathBuf::from).collect(),
-            history: general.history.iter().map(PathBuf::from).collect(),
-        })
-    } else {
-        None
-    };
-    let window = store.config().window.clone();
-    // 窗口几何初值（工单 20）：锁定宽高比由存档尺寸推导，落盘记录以存档为准。
-    let locked_aspect_init = if window.lock_aspect && window.height > 0 {
-        Some(window.width as f32 / window.height as f32)
-    } else {
-        None
-    };
-    let saved_geom_init = (window.x, window.y, window.width, window.height);
-    let last_inner_init = [window.width as f32, window.height as f32];
-    // 配置里存有窗口位置时按存档开窗；没有（首次启动）才走右下角内缩放置。
-    let saved_position = match (window.x, window.y) {
-        (Some(x), Some(y)) => Some(egui::pos2(x as f32, y as f32)),
-        _ => None,
-    };
+    // 启动装配（工单 04 深挖）：配置加载/修复、自启对账与全部初值
+    // 翻译归 config_sync，run() 只分发启动包。
+    let (sync, package) = ConfigSync::startup(&config_path, &log_path, &mut RegAutostartStore);
+    let core_args = package.core;
+    let host_init = package.host;
+    let autostart_sync = package.autostart;
+    let fit_mode = host_init.fit_mode;
+    let window = host_init.window.clone();
+    let saved_position = host_init.saved_position.map(|p| egui::pos2(p[0], p[1]));
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("MoeFrame")
@@ -156,13 +119,10 @@ fn run() -> Result<(), Box<dyn Error>> {
             let (command_tx, reply_rx) = worker::spawn(log_path);
             Ok(Box::new(FrameApp {
                 core: FrameCore::new(
-                    saved_folder,
-                    interval_secs,
-                    playback_mode,
-                    resume,
+                    core_args,
                     system_gesture_thresholds(cc.egui_ctx.pixels_per_point()),
                 ),
-                store,
+                sync,
                 fit_mode,
                 command_tx,
                 reply_rx,
@@ -180,9 +140,9 @@ fn run() -> Result<(), Box<dyn Error>> {
                 settings_open: false,
                 settings_positioned: false,
                 pipeline: DisplayPipeline::new(),
-                locked_aspect: locked_aspect_init,
-                last_inner: last_inner_init,
-                saved_geom: saved_geom_init,
+                locked_aspect: host_init.locked_aspect,
+                last_inner: host_init.last_inner,
+                saved_geom: host_init.saved_geom,
                 geom_candidate: Debounce::new(),
                 observed_geom: None,
                 startup_clamp_done: false,
@@ -456,7 +416,7 @@ struct Slide {
 #[cfg(windows)]
 struct FrameApp {
     core: FrameCore,
-    store: ConfigStore,
+    sync: ConfigSync,
     fit_mode: DisplayMode,
     command_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
@@ -526,9 +486,7 @@ impl FrameApp {
                     self.dispatch(ctx, follow_up);
                 }
                 Effect::SaveFolder(folder) => {
-                    let text = folder.to_string_lossy().into_owned();
-                    // A failed config write must not crash the frame; startup will re-prompt.
-                    let _ = self.store.set_image_folder(Some(&text));
+                    self.sync.save_folder(&folder);
                 }
                 Effect::Scan(folder) => {
                     // 新一轮扫描开始：在飞的旧加载结果从此作废；
@@ -567,27 +525,21 @@ impl FrameApp {
                     let _ = self.command_tx.send(Command::Preload { key });
                 }
                 Effect::SaveInterval(secs) => {
-                    // A failed config write must not crash the frame; the menu re-reads the core value.
-                    let _ = self.store.set_interval_secs(secs);
+                    self.sync.save_interval(secs);
                 }
                 Effect::SavePlaybackMode(mode) => {
-                    let _ = self.store.set_playback_mode(mode);
+                    self.sync.save_playback_mode(mode);
                 }
                 Effect::ClearResumeState => {
                     // 图库已空：当前图、本轮进度与历史一并清掉（工单 16）。
-                    let _ = self.store.save_resume_state(None, &[], &[]);
+                    self.sync.clear_resume_state();
                 }
                 Effect::SaveResumeState {
                     current,
                     seen,
                     history,
                 } => {
-                    // 路径以字符串落盘；无法表示为 UTF-8 的路径跳过保存，不崩溃。
-                    if let Some(current) = current.to_str() {
-                        let seen = paths_to_strings(&seen);
-                        let history = paths_to_strings(&history);
-                        let _ = self.store.save_resume_state(Some(current), &seen, &history);
-                    }
+                    self.sync.save_resume_state(&current, &seen, &history);
                 }
                 Effect::OpenImage { path } => {
                     open_image(&path);
@@ -605,15 +557,9 @@ impl FrameApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 Effect::Exit => {
-                    // 退出前冲刷未满防抖时限的最后几何（工单 20）。
-                    if let Some(geom) = self.observed_geom {
-                        if geom != self.saved_geom {
-                            let _ = self
-                                .store
-                                .set_window_geometry(geom.0, geom.1, geom.2, geom.3);
-                            self.saved_geom = geom;
-                        }
-                    }
+                    // 退出收尾归 config_sync：最后观察到的几何一次结清
+                    // （工单 20 的退出冲刷），宿主只同步落盘基准。
+                    self.saved_geom = self.sync.shutdown(self.observed_geom, self.saved_geom);
                     // 明确退出（工单 17）：先摘托盘图标再关窗口，关闭请求不拦截。
                     self.exiting = true;
                     self.tray = None;
@@ -637,7 +583,7 @@ impl FrameApp {
     fn apply_fit_mode(&mut self, ctx: &egui::Context, mode: DisplayMode) {
         if mode != self.fit_mode {
             self.fit_mode = mode;
-            let _ = self.store.set_fit_mode(mode);
+            self.sync.save_fit_mode(mode);
             self.refresh_display_data(ctx);
         }
     }
@@ -675,8 +621,9 @@ impl FrameApp {
     }
 
     /// 执行会话返回的本帧动作（工单 02）：顺序由会话定，这里只把每个
-    /// 动作落到核心意图或宿主机制上。落盘类动作暂直执（显示方式写
-    /// config、自启写镜像），工单 04 落地时改走 config_sync。
+    /// 动作落到核心意图或宿主机制上。落盘类动作经 config_sync 落盘
+    /// （工单 04 改道）：文件夹/间隔/模式经核心的 Save 系列效果，
+    /// 显示方式、自启镜像、几何与宽高比锁定经同步的宿主镜像方法。
     fn execute_session_actions(
         &mut self,
         ctx: &egui::Context,
@@ -713,7 +660,7 @@ impl FrameApp {
                     } else {
                         self.locked_aspect = None;
                     }
-                    let _ = self.store.set_lock_aspect(locked);
+                    self.sync.save_lock_aspect(locked);
                 }
                 SessionAction::RestoreDefaultGeometry => {
                     self.restore_default_geometry(ctx);
@@ -941,9 +888,7 @@ impl FrameApp {
         }
         let now_secs = ctx.input(|input| input.time);
         if self.geom_candidate.observe(geom, now_secs, 0.6) {
-            let _ = self
-                .store
-                .set_window_geometry(geom.0, geom.1, geom.2, geom.3);
+            self.sync.save_window_geometry(geom);
             self.saved_geom = geom;
             self.geom_candidate.clear();
         }
@@ -963,7 +908,7 @@ impl FrameApp {
             .autostart
             .apply(&mut self.autostart_store, target, &command)
         {
-            let _ = self.store.set_autostart(value);
+            self.sync.save_autostart_mirror(value);
         }
     }
 
@@ -993,9 +938,8 @@ impl FrameApp {
             Some(p) => (Some(p[0].round() as i64), Some(p[1].round() as i64)),
             None => (self.saved_geom.0, self.saved_geom.1),
         };
-        let _ = self
-            .store
-            .set_window_geometry(x, y, size[0] as u32, size[1] as u32);
+        self.sync
+            .save_window_geometry((x, y, size[0] as u32, size[1] as u32));
         self.saved_geom = (x, y, size[0] as u32, size[1] as u32);
         self.geom_candidate.clear();
     }

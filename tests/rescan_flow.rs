@@ -4,7 +4,7 @@
 mod common;
 
 use common::temp_root;
-use moe_frame::app_core::{Effect, FrameCore, Intent, ResumeData, View};
+use moe_frame::app_core::{CoreArgs, Effect, FrameCore, Intent, ResumeData, View};
 use moe_frame::config::{ConfigStore, PlaybackMode};
 use moe_frame::gesture::GestureThresholds;
 use moe_frame::library::scan_library;
@@ -67,10 +67,12 @@ fn resume_from(store: &ConfigStore) -> Option<ResumeData> {
 
 fn new_core(folder: &std::path::Path, resume: Option<ResumeData>) -> FrameCore {
     FrameCore::new(
-        Some(folder.to_path_buf()),
-        30,
-        PlaybackMode::Sequential,
-        resume,
+        CoreArgs {
+            saved_folder: Some(folder.to_path_buf()),
+            interval_secs: 30,
+            mode: PlaybackMode::Sequential,
+            resume,
+        },
         thresholds(),
     )
 }

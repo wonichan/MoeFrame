@@ -23,6 +23,16 @@ use crate::{
 };
 use std::path::PathBuf;
 
+/// 行为核心的构造入参包（深挖工单 04）：由 config_sync 的启动翻译
+/// 从配置产出，run() 只分发；测试可直接按字段构造。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoreArgs {
+    pub saved_folder: Option<PathBuf>,
+    pub interval_secs: i64,
+    pub mode: PlaybackMode,
+    pub resume: Option<ResumeData>,
+}
+
 /// 跨启动保存的续播状态（工单 13）：当前图、本轮进度与历史，只存路径。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResumeData {
@@ -191,24 +201,18 @@ enum ScanKind {
 }
 
 impl FrameCore {
-    pub fn new(
-        saved_folder: Option<PathBuf>,
-        interval_secs: i64,
-        mode: PlaybackMode,
-        resume: Option<ResumeData>,
-        gesture_thresholds: GestureThresholds,
-    ) -> Self {
+    pub fn new(args: CoreArgs, gesture_thresholds: GestureThresholds) -> Self {
         Self {
-            folder: saved_folder,
-            playlist: Playlist::new(Vec::new(), mode, Box::new(SystemRandom::new())),
+            folder: args.saved_folder,
+            playlist: Playlist::new(Vec::new(), args.mode, Box::new(SystemRandom::new())),
             playing: true,
-            interval_secs,
+            interval_secs: args.interval_secs,
             deadline_ms: None,
             pending: None,
             transition: None,
             queued_nav: None,
             recount_on_settle: false,
-            resume,
+            resume: args.resume,
             gesture: GestureMachine::new(gesture_thresholds),
             scan: None,
             frame_visible: true,
