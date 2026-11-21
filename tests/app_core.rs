@@ -142,7 +142,11 @@ fn an_empty_scan_enters_the_empty_state_without_loading() {
         test_thresholds(),
     );
     core.handle(Intent::Started);
-    assert_eq!(core.handle(Intent::ScanCompleted(vec![])), vec![]);
+    // 空扫描不加载，但要清掉可能残留的落盘恢复状态（工单 16）。
+    assert_eq!(
+        core.handle(Intent::ScanCompleted(vec![])),
+        vec![Effect::ClearResumeState]
+    );
     assert_eq!(core.view(), View::Empty);
 }
 
@@ -1321,5 +1325,114 @@ fn the_double_click_window_is_measured_from_the_first_press() {
             now_ms: 1_650,
         }),
         vec![]
+    );
+}
+
+#[test]
+fn rescan_keeps_the_current_image_and_saves_the_merged_state() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    // 顺序模式显示 a；重扫：c 删除、d 新增。
+    assert_eq!(
+        core.handle(Intent::RescanRequested),
+        vec![Effect::Scan(path("D:\\图库"))]
+    );
+    let effects = core.handle(Intent::ScanCompleted(vec![
+        img("a.png"),
+        img("b.png"),
+        img("d.png"),
+    ]));
+    // 当前图不打断：不重新加载 a；只刷新预加载并落盘合并后的状态。
+    assert!(effects.contains(&Effect::SaveResumeState {
+        current: img("a.png"),
+        seen: vec![img("a.png")],
+        history: vec![img("a.png")],
+    }));
+    assert!(!effects.iter().any(|e| matches!(e, Effect::Load { .. })));
+    assert_eq!(core.view(), View::Showing(img("a.png")));
+    // 后续导航走新图库：下一张是 b，再下一张是 d，不再有 c。
+    core.handle(Intent::NextRequested);
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 1_000,
+    });
+    settle_transition(&mut core, 1_000);
+    assert_eq!(
+        core.handle(Intent::NextRequested),
+        vec![Effect::Load {
+            candidates: vec![img("d.png"), img("a.png")],
+        }]
+    );
+}
+
+#[test]
+fn rescan_with_the_current_image_deleted_starts_a_new_random_round() {
+    let (mut core, _) = showing_core_mode(&["a.png", "b.png", "c.png"], 30, PlaybackMode::Random);
+    // 随机模式当前图 a 被删：重扫后整轮作废，对剩余图库重新开轮。
+    core.handle(Intent::RescanRequested);
+    let effects = core.handle(Intent::ScanCompleted(vec![img("b.png"), img("c.png")]));
+    let [Effect::Load { candidates }] = effects.as_slice() else {
+        panic!("应发起替代图加载：{effects:?}");
+    };
+    let mut sorted = candidates.clone();
+    sorted.sort();
+    assert_eq!(sorted, vec![img("b.png"), img("c.png")]);
+}
+
+#[test]
+fn rescan_with_the_current_image_deleted_takes_the_sequential_successor() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png", "d.png"], 30);
+    // 顺序模式当前图 a 被删：从自然序后继 b 起循环找图。
+    core.handle(Intent::RescanRequested);
+    assert_eq!(
+        core.handle(Intent::ScanCompleted(vec![
+            img("b.png"),
+            img("c.png"),
+            img("d.png")
+        ])),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("c.png"), img("d.png")],
+        }]
+    );
+}
+
+#[test]
+fn rescan_to_an_empty_library_returns_to_the_empty_state() {
+    let (mut core, _) = showing_core(&["a.png", "b.png"], 30);
+    core.handle(Intent::RescanRequested);
+    // 图库清空：落盘的当前图/进度/历史同步清掉，重启不恢复已剔除状态。
+    assert_eq!(
+        core.handle(Intent::ScanCompleted(Vec::new())),
+        vec![Effect::ClearResumeState]
+    );
+    assert_eq!(core.view(), View::Empty);
+    // 空图库下导航无动作，不产生加载循环。
+    assert_eq!(core.handle(Intent::NextRequested), vec![]);
+}
+
+#[test]
+fn a_second_rescan_while_one_is_in_flight_is_ignored() {
+    let (mut core, _) = showing_core(&["a.png", "b.png"], 30);
+    assert_eq!(
+        core.handle(Intent::RescanRequested),
+        vec![Effect::Scan(path("D:\\图库"))]
+    );
+    assert_eq!(core.handle(Intent::RescanRequested), vec![]);
+}
+
+#[test]
+fn rescan_is_ignored_while_a_load_is_in_flight() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    // 导航加载在飞：重扫不发起，避免扫描回送冲掉在飞状态。
+    core.handle(Intent::NextRequested);
+    assert_eq!(core.handle(Intent::RescanRequested), vec![]);
+    // 加载收尾后重扫恢复可用。
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 1_000,
+    });
+    settle_transition(&mut core, 1_000);
+    assert_eq!(
+        core.handle(Intent::RescanRequested),
+        vec![Effect::Scan(path("D:\\图库"))]
     );
 }

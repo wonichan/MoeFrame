@@ -167,6 +167,56 @@ impl Playlist {
         }
     }
 
+    /// 手动重扫后的图库合并（工单 16）：以新图库为准并入增删，返回当前图
+    /// 是否仍在新图库中。本轮进度只保留仍在图库的路径；新增路径作为本轮
+    /// 未看并入洗牌袋（已有顺序不重洗，新增随机插入）；已备好的下一轮袋在
+    /// 图库变化后作废。历史原样保留（回看时跳过缺失路径）。当前图缺失时
+    /// 清空当前图，随机模式另按父规格清空本轮进度、准备开始新一轮。
+    pub fn rescan(&mut self, new_items: Vec<PathBuf>, rng: &mut dyn RandomSource) -> bool {
+        // 当前图以路径为准判断存废（内部存的是下标，换图库后重新定位）。
+        // 成员判断走集合，避免大图库下逐项线性扫描。
+        let new_set: std::collections::HashSet<&PathBuf> = new_items.iter().collect();
+        let current_path = self.current_path().cloned();
+        let current_survives = current_path
+            .as_ref()
+            .is_some_and(|current| new_set.contains(current));
+        self.seen.retain(|path| new_set.contains(path));
+        if !current_survives && self.mode == PlaybackMode::Random {
+            self.seen.clear();
+        }
+        if self.rollover_pending {
+            self.bag.clear();
+            self.rollover_pending = false;
+        } else {
+            self.bag.retain(|path| new_set.contains(path));
+        }
+        self.items = new_items;
+        if current_survives {
+            let current = current_path.expect("current confirmed by the survival check");
+            self.set_current(&current);
+        } else {
+            self.current = None;
+            self.history_cursor = None;
+        }
+        // 未看且不在袋中的路径（新增图、或袋尚未备好的剩余未看）随机插入袋中。
+        let bag_set: std::collections::HashSet<&PathBuf> = self.bag.iter().collect();
+        let additions: Vec<PathBuf> = self
+            .items
+            .iter()
+            .filter(|path| {
+                !self.seen.contains(*path)
+                    && !bag_set.contains(*path)
+                    && Some(*path) != self.current_path()
+            })
+            .cloned()
+            .collect();
+        for path in additions {
+            let at = rng.next_below(self.bag.len() + 1);
+            self.bag.insert(at, path);
+        }
+        current_survives
+    }
+
     pub fn clear_current(&mut self) {
         self.current = None;
     }

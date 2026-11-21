@@ -322,3 +322,135 @@ mod resume_tests {
         assert_eq!(list.history_back_candidates(), paths(&["a.jpg"]));
     }
 }
+
+mod rescan_tests {
+    use super::common::IdentityRng;
+    use moe_frame::{config::PlaybackMode, playlist::Playlist};
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    fn candidate_set(list: &mut Playlist) -> HashSet<PathBuf> {
+        list.bag_candidates(&mut IdentityRng).into_iter().collect()
+    }
+
+    #[test]
+    fn rescan_purges_deleted_progress_and_joins_additions_to_the_round() {
+        let mut list = Playlist::new(
+            paths(&["a.jpg", "b.jpg", "c.jpg", "d.jpg"]),
+            PlaybackMode::Random,
+        );
+        let mut rng = IdentityRng;
+        list.record_fresh(&PathBuf::from("a.jpg"), &mut rng);
+        list.record_fresh(&PathBuf::from("b.jpg"), &mut rng);
+        // c 被删、e 新增：当前图 b 保留，本轮不重洗。
+        assert!(list.rescan(paths(&["a.jpg", "b.jpg", "d.jpg", "e.jpg"]), &mut rng));
+        assert_eq!(list.current_path(), Some(&PathBuf::from("b.jpg")));
+        // 剩余未看恰为 {d, e}：c 已剔除，e 作为本轮未看并入。
+        assert_eq!(
+            candidate_set(&mut list),
+            HashSet::from([PathBuf::from("d.jpg"), PathBuf::from("e.jpg")])
+        );
+        assert!(list.is_seen(&PathBuf::from("a.jpg")));
+        assert!(!list.is_seen(&PathBuf::from("e.jpg")));
+    }
+
+    #[test]
+    fn rescan_with_the_current_image_deleted_clears_random_progress() {
+        let mut list = Playlist::new(paths(&["a.jpg", "b.jpg", "c.jpg"]), PlaybackMode::Random);
+        let mut rng = IdentityRng;
+        list.record_fresh(&PathBuf::from("a.jpg"), &mut rng);
+        list.record_fresh(&PathBuf::from("b.jpg"), &mut rng);
+        assert!(!list.rescan(paths(&["a.jpg", "c.jpg"]), &mut rng));
+        assert_eq!(list.current_path(), None);
+        // 随机模式当前图缺失：旧本轮进度整轮作废，新一轮候选是全图库。
+        assert!(!list.is_seen(&PathBuf::from("a.jpg")));
+        assert_eq!(
+            candidate_set(&mut list),
+            HashSet::from([PathBuf::from("a.jpg"), PathBuf::from("c.jpg")])
+        );
+    }
+
+    #[test]
+    fn rescan_with_the_current_image_deleted_keeps_sequential_progress() {
+        let mut list = Playlist::new(
+            paths(&["a.jpg", "b.jpg", "c.jpg"]),
+            PlaybackMode::Sequential,
+        );
+        let mut rng = IdentityRng;
+        list.record_fresh(&PathBuf::from("a.jpg"), &mut rng);
+        list.record_fresh(&PathBuf::from("b.jpg"), &mut rng);
+        assert!(!list.rescan(paths(&["a.jpg", "c.jpg"]), &mut rng));
+        assert_eq!(list.current_path(), None);
+        // 顺序模式只剔除已删路径的进度，仍在图库的进度保留。
+        assert!(list.is_seen(&PathBuf::from("a.jpg")));
+        assert!(!list.is_seen(&PathBuf::from("b.jpg")));
+    }
+
+    #[test]
+    fn rescan_keeps_history_and_back_walking_skips_deleted_paths() {
+        let mut list = Playlist::new(paths(&["a.jpg", "b.jpg", "c.jpg"]), PlaybackMode::Random);
+        let mut rng = IdentityRng;
+        for name in ["a.jpg", "b.jpg", "c.jpg"] {
+            list.record_fresh(&PathBuf::from(name), &mut rng);
+        }
+        assert!(list.rescan(paths(&["a.jpg", "c.jpg"]), &mut rng));
+        // 历史原样保留；回看候选跳过已删的 b，不把它写回本轮进度。
+        assert_eq!(list.history(), paths(&["a.jpg", "b.jpg", "c.jpg"]));
+        assert_eq!(list.history_back_candidates(), paths(&["a.jpg"]));
+        assert!(!list.is_seen(&PathBuf::from("b.jpg")));
+    }
+
+    #[test]
+    fn rescan_to_an_empty_library_leaves_nothing() {
+        let mut list = Playlist::new(paths(&["a.jpg"]), PlaybackMode::Random);
+        let mut rng = IdentityRng;
+        list.record_fresh(&PathBuf::from("a.jpg"), &mut rng);
+        assert!(!list.rescan(paths(&[]), &mut rng));
+        assert_eq!(list.len(), 0);
+        assert_eq!(list.current_path(), None);
+        assert!(list.bag_candidates(&mut rng).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod rescan_order_tests {
+    use super::common::IdentityRng;
+    use moe_frame::{config::PlaybackMode, playlist::Playlist};
+    use std::path::PathBuf;
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn rescan_preserves_the_relative_order_of_surviving_unseen_paths() {
+        let mut list = Playlist::new(
+            paths(&["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"]),
+            PlaybackMode::Random,
+        );
+        let mut rng = IdentityRng;
+        list.record_fresh(&PathBuf::from("a.jpg"), &mut rng);
+        // 先把洗牌袋备出来（顺序已定），再删 b、加 f 重扫。
+        let bag_before = list.bag_candidates(&mut rng);
+        assert!(list.rescan(
+            paths(&["a.jpg", "c.jpg", "d.jpg", "e.jpg", "f.jpg"]),
+            &mut rng
+        ));
+        let bag_after = list.bag_candidates(&mut rng);
+        // 存活未看路径的相对顺序与重扫前一致（不整轮重洗），f 已并入。
+        let survivors_before: Vec<&PathBuf> = bag_before
+            .iter()
+            .filter(|path| *path != &PathBuf::from("b.jpg"))
+            .collect();
+        let survivors_after: Vec<&PathBuf> = bag_after
+            .iter()
+            .filter(|path| *path != &PathBuf::from("f.jpg"))
+            .collect();
+        assert_eq!(survivors_before, survivors_after);
+        assert!(bag_after.contains(&PathBuf::from("f.jpg")));
+    }
+}

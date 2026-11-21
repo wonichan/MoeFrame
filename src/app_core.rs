@@ -40,6 +40,8 @@ pub enum Intent {
     FolderPickRequested,
     /// 文件夹选择完成。
     FolderPicked(PathBuf),
+    /// 菜单「重新扫描」（工单 16）：对当前文件夹重扫并合并图库增删。
+    RescanRequested,
     /// 文件夹选择被取消。
     FolderPickCancelled,
     /// 宿主执行完扫描的效果回送。
@@ -112,6 +114,8 @@ pub enum Effect {
         seen: Vec<PathBuf>,
         history: Vec<PathBuf>,
     },
+    /// 图库已空：清掉落盘的当前图、本轮进度与历史，重启不恢复已剔除状态（工单 16）。
+    ClearResumeState,
     Exit,
 }
 
@@ -176,6 +180,33 @@ pub struct FrameCore {
     restore_target: Option<PathBuf>,
     /// 指针手势判定（工单 15）：阈值由宿主按系统设置注入。
     gesture: GestureMachine,
+    /// 在飞的扫描种类（工单 16）：None 表示无扫描在飞。重扫的回送按合并
+    /// 语义处理，不走首图/恢复流程；扫描在飞期间不重复发起扫描。
+    scan: Option<ScanKind>,
+}
+
+/// 扫描种类：决定扫描回送走首图/恢复流程还是重扫合并（工单 16）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScanKind {
+    Initial,
+    Rescan,
+}
+
+/// 当前图缺失时按模式选替代图候选（工单 13 恢复与工单 16 重扫共用同一套
+/// 规则）：顺序模式从缺失路径的自然序后继起循环寻找，随机模式从洗牌袋抽取。
+fn candidates_when_current_missing(
+    playlist: &mut Playlist,
+    rng: &mut dyn RandomSource,
+    items: &[PathBuf],
+    missing: Option<&PathBuf>,
+) -> Vec<PathBuf> {
+    match (playlist.mode(), missing) {
+        (PlaybackMode::Sequential, Some(missing)) => {
+            rotation_from(items, natural_successor_index(items, missing))
+        }
+        (PlaybackMode::Random, _) => playlist.bag_candidates(rng),
+        (PlaybackMode::Sequential, None) => items.to_vec(),
+    }
 }
 
 impl FrameCore {
@@ -201,6 +232,7 @@ impl FrameCore {
             resume,
             restore_target: None,
             gesture: GestureMachine::new(gesture_thresholds),
+            scan: None,
         }
     }
 
@@ -351,7 +383,10 @@ impl FrameCore {
         match intent {
             Intent::Started => match &self.folder {
                 // 已保存文件夹：直接扫描，不再引导选择。
-                Some(folder) => vec![Effect::Scan(folder.clone())],
+                Some(folder) => {
+                    self.scan = Some(ScanKind::Initial);
+                    vec![Effect::Scan(folder.clone())]
+                }
                 // 首次无配置：只引导选择这一次。
                 None => vec![Effect::PickFolder],
             },
@@ -360,23 +395,73 @@ impl FrameCore {
                 // 改选文件夹不是重启恢复：旧文件夹的恢复数据作废。
                 self.resume = None;
                 self.restore_target = None;
+                self.scan = Some(ScanKind::Initial);
                 self.folder = Some(folder.clone());
                 vec![Effect::SaveFolder(folder.clone()), Effect::Scan(folder)]
             }
+            Intent::RescanRequested => match &self.folder {
+                // 扫描或加载在飞时不发起（回送会冲掉在飞状态）；无文件夹无可扫。
+                Some(folder) if self.scan.is_none() && self.pending.is_none() => {
+                    self.scan = Some(ScanKind::Rescan);
+                    vec![Effect::Scan(folder.clone())]
+                }
+                _ => Vec::new(),
+            },
             // 取消不改变任何现状：无图时停在无图状态，显示中则继续显示，且不再自动弹窗。
             Intent::FolderPickCancelled => Vec::new(),
             Intent::ScanCompleted(paths) => {
+                let was_rescan = self.scan.take() == Some(ScanKind::Rescan);
+                let kept_deadline = self.deadline_ms;
                 self.deadline_ms = None;
                 self.queued_nav = None;
                 self.transition = None;
                 self.recount_on_settle = false;
                 let mode = self.playlist.mode();
+                if was_rescan {
+                    // 手动重扫（工单 16）：把增删并入现有播放序列，不走首图/恢复流程。
+                    self.pending = None;
+                    let old_current = self.playlist.current_path().cloned();
+                    let items = paths.clone();
+                    let survived = self.playlist.rescan(paths, &mut *self.rng);
+                    if self.playlist.is_empty() {
+                        // 图库已空：落盘状态同步清掉，重启不恢复已剔除的路径。
+                        return vec![Effect::ClearResumeState];
+                    }
+                    if survived {
+                        // 当前图不打断：轮播时刻保持，只刷新预加载与落盘状态。
+                        self.deadline_ms = kept_deadline;
+                        let current = self
+                            .playlist
+                            .current_path()
+                            .expect("current confirmed by the rescan survival check")
+                            .clone();
+                        let mut effects = Vec::new();
+                        if let Some(target) = self.playlist.preload_target(&mut *self.rng) {
+                            effects.push(Effect::Preload { path: target });
+                        }
+                        effects.push(Effect::SaveResumeState {
+                            current,
+                            seen: self.playlist.seen_paths(),
+                            history: self.playlist.history().to_vec(),
+                        });
+                        return effects;
+                    }
+                    // 当前图缺失：与恢复共用同一套模式规则找替代图，成功显示后才提交。
+                    self.pending = Some(Pending::Initial);
+                    let candidates = candidates_when_current_missing(
+                        &mut self.playlist,
+                        &mut *self.rng,
+                        &items,
+                        old_current.as_ref(),
+                    );
+                    return vec![Effect::Load { candidates }];
+                }
                 let Some(resume) = self.resume.take() else {
                     self.playlist = Playlist::new(paths, mode);
                     self.restore_target = None;
                     if self.playlist.is_empty() {
                         self.pending = None;
-                        return Vec::new();
+                        return vec![Effect::ClearResumeState];
                     }
                     self.pending = Some(Pending::Initial);
                     // 随机模式的首图也是新选择：候选来自洗牌袋，而非自然序（工单 12）。
@@ -404,7 +489,7 @@ impl FrameCore {
                 if self.playlist.is_empty() {
                     self.pending = None;
                     self.restore_target = None;
-                    return Vec::new();
+                    return vec![Effect::ClearResumeState];
                 }
                 self.pending = Some(Pending::Initial);
                 let candidates = if in_library {
@@ -420,15 +505,13 @@ impl FrameCore {
                     candidates
                 } else {
                     self.restore_target = None;
-                    match (mode, &saved_current) {
-                        // 顺序模式当前图缺失：从自然序中它的下一张起循环寻找。
-                        (PlaybackMode::Sequential, Some(missing)) => {
-                            let items = self.playlist.items();
-                            rotation_from(items, natural_successor_index(items, missing))
-                        }
-                        (PlaybackMode::Random, _) => self.playlist.bag_candidates(&mut *self.rng),
-                        (PlaybackMode::Sequential, None) => self.playlist.items().to_vec(),
-                    }
+                    let items = self.playlist.items().to_vec();
+                    candidates_when_current_missing(
+                        &mut self.playlist,
+                        &mut *self.rng,
+                        &items,
+                        saved_current.as_ref(),
+                    )
                 };
                 vec![Effect::Load { candidates }]
             }

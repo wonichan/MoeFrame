@@ -314,6 +314,10 @@ impl FrameApp {
                 Effect::SavePlaybackMode(mode) => {
                     let _ = self.store.set_playback_mode(mode);
                 }
+                Effect::ClearResumeState => {
+                    // 图库已空：当前图、本轮进度与历史一并清掉（工单 16）。
+                    let _ = self.store.save_resume_state(None, &[], &[]);
+                }
                 Effect::SaveResumeState {
                     current,
                     seen,
@@ -356,6 +360,12 @@ impl FrameApp {
                 Reply::ScanCompleted(paths) => {
                     let effects = self.core.handle(Intent::ScanCompleted(paths));
                     self.dispatch(ctx, effects);
+                    // 重扫后图库为空：核心回到无图状态，画面同步清掉（工单 16）。
+                    if self.core.view() == View::Empty {
+                        self.texture = None;
+                        self.incoming = None;
+                        self.slide = None;
+                    }
                 }
                 Reply::Loaded { seq, image } => {
                     if seq != self.load_seq {
@@ -505,6 +515,10 @@ impl eframe::App for FrameApp {
         panel.response.context_menu(|ui| {
             if ui.button("选择文件夹…").clicked() {
                 menu_intent = Some(Intent::FolderPickRequested);
+                ui.close();
+            }
+            if ui.button("重新扫描").clicked() {
+                menu_intent = Some(Intent::RescanRequested);
                 ui.close();
             }
             ui.separator();
