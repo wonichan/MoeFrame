@@ -22,7 +22,7 @@ use moe_frame::{
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
     gesture::GestureThresholds,
     loading::LoadRequest,
-    playlist::{Direction, RandomSource},
+    playlist::Direction,
     resize_cursor, resize_direction,
     settings_session::{
         EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
@@ -69,25 +69,6 @@ fn paths_to_strings(paths: &[PathBuf]) -> Vec<String> {
         .iter()
         .filter_map(|path| path.to_str().map(str::to_owned))
         .collect()
-}
-
-/// 系统随机源：行为核心的洗牌经此接缝取随机性（工单 12）。
-#[cfg(windows)]
-struct SystemRandom(rand::rngs::ThreadRng);
-
-#[cfg(windows)]
-impl SystemRandom {
-    fn new() -> Self {
-        Self(rand::rng())
-    }
-}
-
-#[cfg(windows)]
-impl RandomSource for SystemRandom {
-    fn next_below(&mut self, bound: usize) -> usize {
-        use rand::RngExt;
-        self.0.random_range(0..bound)
-    }
 }
 
 #[cfg(windows)]
@@ -178,7 +159,6 @@ fn run() -> Result<(), Box<dyn Error>> {
                     saved_folder,
                     interval_secs,
                     playback_mode,
-                    Box::new(SystemRandom::new()),
                     resume,
                     system_gesture_thresholds(cc.egui_ctx.pixels_per_point()),
                 ),

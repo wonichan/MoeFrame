@@ -3,7 +3,7 @@
 //! 图片加载仍走行为入口回送（扫描只枚举路径，解码不在本流程范围内）。
 mod common;
 
-use common::{temp_root, IdentityRng};
+use common::temp_root;
 use moe_frame::app_core::{Effect, FrameCore, Intent, ResumeData, View};
 use moe_frame::config::{ConfigStore, PlaybackMode};
 use moe_frame::gesture::GestureThresholds;
@@ -70,7 +70,6 @@ fn new_core(folder: &std::path::Path, resume: Option<ResumeData>) -> FrameCore {
         Some(folder.to_path_buf()),
         30,
         PlaybackMode::Sequential,
-        Box::new(IdentityRng),
         resume,
         thresholds(),
     )

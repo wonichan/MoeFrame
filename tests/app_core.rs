@@ -1,9 +1,7 @@
 //! 工单 10/11：应用行为入口测试——通过意图/效果接缝驱动相框核心，不触碰 GUI 与线程。
 //! 时间通过意图携带的 now_ms 可控推进，不用真实等待。
 
-mod common;
-
-use common::{IdentityRng, ZeroRng};
+// 随机性已归播放序列持有（工单 03 深挖）：核心测试不再注入确定性随机源。
 use moe_frame::app_core::{Effect, FrameCore, Intent, ResumeData, View};
 use moe_frame::config::PlaybackMode;
 use moe_frame::gesture::GestureThresholds;
@@ -46,7 +44,6 @@ fn showing_core_mode(
         Some(path("D:\\图库")),
         interval_secs,
         mode,
-        Box::new(IdentityRng),
         None,
         test_thresholds(),
     );
@@ -64,14 +61,7 @@ fn showing_core_mode(
 
 #[test]
 fn first_run_without_a_saved_folder_prompts_once_and_cancel_stays_empty() {
-    let mut core = FrameCore::new(
-        None,
-        30,
-        PlaybackMode::Sequential,
-        Box::new(IdentityRng),
-        None,
-        test_thresholds(),
-    );
+    let mut core = FrameCore::new(None, 30, PlaybackMode::Sequential, None, test_thresholds());
     assert_eq!(core.handle(Intent::Started), vec![Effect::PickFolder]);
     assert_eq!(core.handle(Intent::FolderPickCancelled), vec![]);
     assert_eq!(core.view(), View::Empty);
@@ -79,14 +69,7 @@ fn first_run_without_a_saved_folder_prompts_once_and_cancel_stays_empty() {
 
 #[test]
 fn picking_a_folder_saves_scans_loads_and_shows_the_first_image() {
-    let mut core = FrameCore::new(
-        None,
-        30,
-        PlaybackMode::Sequential,
-        Box::new(IdentityRng),
-        None,
-        test_thresholds(),
-    );
+    let mut core = FrameCore::new(None, 30, PlaybackMode::Sequential, None, test_thresholds());
     core.handle(Intent::Started);
     let folder = path("D:\\图库");
     assert_eq!(
@@ -121,7 +104,6 @@ fn a_saved_folder_skips_the_prompt_on_the_next_launch() {
         Some(path("D:\\图库")),
         30,
         PlaybackMode::Sequential,
-        Box::new(IdentityRng),
         None,
         test_thresholds(),
     );
@@ -137,7 +119,6 @@ fn an_empty_scan_enters_the_empty_state_without_loading() {
         Some(path("D:\\空文件夹")),
         30,
         PlaybackMode::Sequential,
-        Box::new(IdentityRng),
         None,
         test_thresholds(),
     );
@@ -156,7 +137,6 @@ fn when_every_candidate_fails_the_frame_stays_operable_and_empty() {
         Some(path("D:\\坏图库")),
         30,
         PlaybackMode::Sequential,
-        Box::new(IdentityRng),
         None,
         test_thresholds(),
     );
@@ -186,14 +166,7 @@ fn cancelling_a_menu_repick_keeps_the_current_image() {
 
 #[test]
 fn exit_is_an_explicit_effect() {
-    let mut core = FrameCore::new(
-        None,
-        30,
-        PlaybackMode::Sequential,
-        Box::new(IdentityRng),
-        None,
-        test_thresholds(),
-    );
+    let mut core = FrameCore::new(None, 30, PlaybackMode::Sequential, None, test_thresholds());
     assert_eq!(core.handle(Intent::ExitRequested), vec![Effect::Exit]);
 }
 
@@ -265,7 +238,7 @@ fn manual_next_recounts_a_full_interval_from_the_successful_switch() {
 }
 
 #[test]
-fn prev_wraps_around_with_rotation_candidates() {
+fn prev_from_the_first_image_wraps_to_the_tail() {
     let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
     assert_eq!(
         core.handle(Intent::PrevRequested),
@@ -505,53 +478,6 @@ fn an_interval_changed_during_a_failed_manual_navigation_still_recounts() {
 // ---------- 工单 12：随机防重复与历史回看 ----------
 
 #[test]
-fn random_next_draws_only_unseen_and_a_new_round_avoids_the_last_image() {
-    let (mut core, effects) =
-        showing_core_mode(&["a.png", "b.png", "c.png"], 30, PlaybackMode::Random);
-    // 首图显示后预加载的是袋首（未看路径），并落盘本次成功显示。
-    assert_eq!(
-        effects,
-        vec![
-            Effect::Preload { path: img("b.png") },
-            Effect::SaveResumeState {
-                current: img("a.png"),
-                seen: vec![img("a.png")],
-                history: vec![img("a.png")],
-            },
-        ]
-    );
-    assert_eq!(
-        core.handle(Intent::NextRequested),
-        vec![Effect::Load {
-            candidates: vec![img("b.png"), img("c.png")],
-        }]
-    );
-    core.handle(Intent::LoadCompleted {
-        shown: Some(img("b.png")),
-        now_ms: 100,
-    });
-    settle_transition(&mut core, 100);
-    assert_eq!(
-        core.handle(Intent::NextRequested),
-        vec![Effect::Load {
-            candidates: vec![img("c.png")],
-        }]
-    );
-    core.handle(Intent::LoadCompleted {
-        shown: Some(img("c.png")),
-        now_ms: 200,
-    });
-    settle_transition(&mut core, 200);
-    // 全看完：新一轮候选避开刚显示的 c。
-    assert_eq!(
-        core.handle(Intent::NextRequested),
-        vec![Effect::Load {
-            candidates: vec![img("a.png"), img("b.png")],
-        }]
-    );
-}
-
-#[test]
 fn random_prev_walks_history_and_next_returns_to_the_newest_first() {
     let (mut core, _) = showing_core_mode(&["a.png", "b.png", "c.png"], 30, PlaybackMode::Random);
     for (next, now) in [("b.png", 100), ("c.png", 200)] {
@@ -599,7 +525,15 @@ fn random_prev_walks_history_and_next_returns_to_the_newest_first() {
 #[test]
 fn a_failed_random_navigation_records_nothing() {
     let (mut core, _) = showing_core_mode(&["a.png", "b.png", "c.png"], 30, PlaybackMode::Random);
-    core.handle(Intent::NextRequested);
+    // 候选集与顺序归播放序列测试面（工单 03 深挖）；这里只断言核心侧
+    // 事实：失败不记账、重试给出的仍是同一份候选。
+    let first = core.handle(Intent::NextRequested);
+    let [Effect::Load { candidates }] = first.as_slice() else {
+        panic!("应发起导航加载：{first:?}");
+    };
+    let mut sorted = candidates.clone();
+    sorted.sort();
+    assert_eq!(sorted, vec![img("b.png"), img("c.png")]);
     core.handle(Intent::LoadCompleted {
         shown: None,
         now_ms: 100,
@@ -607,12 +541,7 @@ fn a_failed_random_navigation_records_nothing() {
     assert_eq!(core.view(), View::Showing(img("a.png")));
     // 失败不记账：没有历史可回看，袋子原样再来。
     assert_eq!(core.handle(Intent::PrevRequested), vec![]);
-    assert_eq!(
-        core.handle(Intent::NextRequested),
-        vec![Effect::Load {
-            candidates: vec![img("b.png"), img("c.png")],
-        }]
-    );
+    assert_eq!(core.handle(Intent::NextRequested), first);
 }
 
 #[test]
@@ -647,30 +576,6 @@ fn a_single_image_in_random_mode_never_navigates() {
     assert_eq!(core.view(), View::Showing(img("a.png")));
 }
 
-#[test]
-fn a_random_first_image_is_drawn_from_the_shuffle_bag() {
-    let mut core = FrameCore::new(
-        Some(path("D:\\图库")),
-        30,
-        PlaybackMode::Random,
-        Box::new(ZeroRng),
-        None,
-        test_thresholds(),
-    );
-    core.handle(Intent::Started);
-    // ZeroRng 洗牌 [a,b,c] → [b,c,a]：首图候选是袋序，不是自然序。
-    assert_eq!(
-        core.handle(Intent::ScanCompleted(vec![
-            img("a.png"),
-            img("b.png"),
-            img("c.png"),
-        ])),
-        vec![Effect::Load {
-            candidates: vec![img("b.png"), img("c.png"), img("a.png")],
-        }]
-    );
-}
-
 // ---------- 工单 13：跨启动恢复 ----------
 
 fn resumed_core(mode: PlaybackMode, resume: ResumeData) -> FrameCore {
@@ -678,7 +583,6 @@ fn resumed_core(mode: PlaybackMode, resume: ResumeData) -> FrameCore {
         Some(path("D:\\图库")),
         30,
         mode,
-        Box::new(IdentityRng),
         Some(resume),
         test_thresholds(),
     );
@@ -749,13 +653,14 @@ fn random_resume_with_a_missing_current_starts_a_new_round() {
             history: vec![img("a.png"), img("gone.png")],
         },
     );
-    // 旧本轮进度清空：首图候选是全图库的洗牌袋（恒等洗牌下即自然序）。
-    assert_eq!(
-        core.handle(Intent::ScanCompleted(vec![img("a.png"), img("b.png")])),
-        vec![Effect::Load {
-            candidates: vec![img("a.png"), img("b.png")],
-        }]
-    );
+    // 旧本轮进度清空：首图候选是全图库的洗牌袋（顺序归播放序列测试面）。
+    let effects = core.handle(Intent::ScanCompleted(vec![img("a.png"), img("b.png")]));
+    let [Effect::Load { candidates }] = effects.as_slice() else {
+        panic!("应发起首图加载：{effects:?}");
+    };
+    let mut sorted = candidates.clone();
+    sorted.sort();
+    assert_eq!(sorted, vec![img("a.png"), img("b.png")]);
     let effects = core.handle(Intent::LoadCompleted {
         shown: Some(img("a.png")),
         now_ms: 0,
@@ -846,7 +751,6 @@ fn playback_state_survives_across_two_launches() {
         Some(path("D:\\图库")),
         30,
         PlaybackMode::Random,
-        Box::new(IdentityRng),
         None,
         test_thresholds(),
     );

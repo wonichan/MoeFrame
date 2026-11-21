@@ -3,8 +3,9 @@
 //! 宿主（二进制）负责执行效果（弹文件夹选择框、扫描、后台加载、保存配置、退出），
 //! 并把结果作为意图送回。核心本身不做任何 IO，因此行为测试可完整驱动这条接缝。
 //! 时间由意图携带的单调毫秒值推进（宿主取其 UI 时钟），核心不读系统时间。
-//! 顺序与随机（工单 12）共用同一套计时与失败语义；随机性经 `RandomSource` 接缝注入，
-//! 宿主提供系统随机，测试提供确定性实现。
+//! 顺序与随机（工单 12）共用同一套计时与失败语义；导航决策（候选计算、
+//! 落位方式、落位记账）归播放序列（工单 03 深挖），随机源由播放序列
+//! 持有，核心只管时序、在飞与转场状态。
 //! 跨启动恢复（工单 13）：启动时宿主把配置里保存的当前图、本轮进度与历史经
 //! `ResumeData` 送入，首次扫描后按模式与当前图是否仍在图库决定首图；每次成功
 //! 显示都经 `SaveResumeState` 效果请宿主落盘（预加载与失败不落盘）。
@@ -18,8 +19,7 @@
 use crate::{
     config::PlaybackMode,
     gesture::{GestureMachine, GestureOutcome, GestureThresholds, Zone},
-    library::{natural_successor_index, rotation_from},
-    playlist::{Direction, Playlist, RandomSource},
+    playlist::{Direction, Landing, Playlist, RescanPlan, SystemRandom},
 };
 use std::path::PathBuf;
 
@@ -141,9 +141,10 @@ enum Pending {
     /// 扫描后的首图加载：全失败即无图状态。
     Initial,
     /// 导航加载：全失败保留当前图；auto 区分自动轮播与手动切换的计时处理。
+    /// landing 是播放序列产出的落位标记，核心只原样携带。
     Navigate {
         auto: bool,
-        kind: Landing,
+        landing: Landing,
         direction: Direction,
     },
 }
@@ -153,17 +154,7 @@ enum Pending {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Transition {
     target: PathBuf,
-    kind: Landing,
-}
-
-/// 显示的落位方式：新鲜选择记账、历史往返只动游标、恢复只落位不记账。
-/// 导航在产生候选时就定下，转场与提交沿用同一份。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Landing {
-    Fresh,
-    Back,
-    Forward,
-    Restored,
+    landing: Landing,
 }
 
 pub struct FrameCore {
@@ -181,11 +172,8 @@ pub struct FrameCore {
     queued_nav: Option<Direction>,
     /// 在飞期间改过间隔：失败收尾时也要按新间隔重计（成功与自动失败路径天然重计）。
     recount_on_settle: bool,
-    rng: Box<dyn RandomSource>,
     /// 跨启动恢复数据：首次扫描时消费；用户改选文件夹后作废。
     resume: Option<ResumeData>,
-    /// 本次启动要恢复显示的当前图：它成功显示时只落位不记账（防重复例外）。
-    restore_target: Option<PathBuf>,
     /// 指针手势判定（工单 15）：阈值由宿主按系统设置注入。
     gesture: GestureMachine,
     /// 在飞的扫描种类（工单 16）：None 表示无扫描在飞。重扫的回送按合并
@@ -202,35 +190,17 @@ enum ScanKind {
     Rescan,
 }
 
-/// 当前图缺失时按模式选替代图候选（工单 13 恢复与工单 16 重扫共用同一套
-/// 规则）：顺序模式从缺失路径的自然序后继起循环寻找，随机模式从洗牌袋抽取。
-fn candidates_when_current_missing(
-    playlist: &mut Playlist,
-    rng: &mut dyn RandomSource,
-    items: &[PathBuf],
-    missing: Option<&PathBuf>,
-) -> Vec<PathBuf> {
-    match (playlist.mode(), missing) {
-        (PlaybackMode::Sequential, Some(missing)) => {
-            rotation_from(items, natural_successor_index(items, missing))
-        }
-        (PlaybackMode::Random, _) => playlist.bag_candidates(rng),
-        (PlaybackMode::Sequential, None) => items.to_vec(),
-    }
-}
-
 impl FrameCore {
     pub fn new(
         saved_folder: Option<PathBuf>,
         interval_secs: i64,
         mode: PlaybackMode,
-        rng: Box<dyn RandomSource>,
         resume: Option<ResumeData>,
         gesture_thresholds: GestureThresholds,
     ) -> Self {
         Self {
             folder: saved_folder,
-            playlist: Playlist::new(Vec::new(), mode),
+            playlist: Playlist::new(Vec::new(), mode, Box::new(SystemRandom::new())),
             playing: true,
             interval_secs,
             deadline_ms: None,
@@ -238,9 +208,7 @@ impl FrameCore {
             transition: None,
             queued_nav: None,
             recount_on_settle: false,
-            rng,
             resume,
-            restore_target: None,
             gesture: GestureMachine::new(gesture_thresholds),
             scan: None,
             frame_visible: true,
@@ -318,52 +286,25 @@ impl FrameCore {
             }
             return Vec::new();
         }
-        let (candidates, kind) = match (self.playlist.mode(), direction) {
-            (PlaybackMode::Sequential, _) => {
-                (self.playlist.rotation_candidates(direction), Landing::Fresh)
-            }
-            (PlaybackMode::Random, Direction::Prev) => {
-                (self.playlist.history_back_candidates(), Landing::Back)
-            }
-            (PlaybackMode::Random, Direction::Next) => {
-                // 回看中先沿历史返回最新端；无路可返时才作新鲜选择。
-                let forward = self.playlist.history_forward_candidates();
-                if self.playlist.history_cursor().is_some() && !forward.is_empty() {
-                    (forward, Landing::Forward)
-                } else {
-                    (self.playlist.bag_candidates(&mut *self.rng), Landing::Fresh)
-                }
-            }
-        };
-        if candidates.is_empty() {
+        // 候选与落位方式由播放序列决定（工单 03 深挖），核心只登记在飞。
+        let Some(plan) = self.playlist.plan_navigation(direction) else {
             return Vec::new();
-        }
+        };
         self.pending = Some(Pending::Navigate {
             auto,
-            kind,
+            landing: plan.landing,
             direction,
         });
-        vec![Effect::Load { candidates }]
+        vec![Effect::Load {
+            candidates: plan.candidates,
+        }]
     }
 
-    /// 一次成功显示的提交：按落位方式记账，从完成时刻计满一个间隔，
-    /// 并产出预加载与跨启动落盘效果。落位失败（路径不在图库）回到无图状态。
+    /// 一次成功显示的提交：落位记账归播放序列，核心只做计时与效果
+    /// 编排（从完成时刻计满一个间隔，产出预加载与跨启动落盘效果）。
+    /// 落位失败（路径不在图库）回到无图状态。
     fn commit_display(&mut self, path: &PathBuf, landing: Landing, now_ms: u64) -> Vec<Effect> {
-        let landed = match landing {
-            Landing::Fresh => self.playlist.record_fresh(path, &mut *self.rng),
-            // 历史落位若因转场期间切换模式清了游标而落空，退到只落位不记账：
-            // 这张图已经成功显示，不能反而清成无图状态。
-            Landing::Back => {
-                self.playlist.land_history(path, Direction::Prev)
-                    || self.playlist.land_restored(path)
-            }
-            Landing::Forward => {
-                self.playlist.land_history(path, Direction::Next)
-                    || self.playlist.land_restored(path)
-            }
-            Landing::Restored => self.playlist.land_restored(path),
-        };
-        if !landed {
+        if !self.playlist.land(landing, path) {
             self.playlist.clear_current();
             self.deadline_ms = None;
             return Vec::new();
@@ -374,15 +315,19 @@ impl FrameCore {
         } else {
             None
         };
-        let mut effects = match self.playlist.preload_target(&mut *self.rng) {
+        let mut effects = match self.playlist.preload_target() {
             Some(next) => vec![Effect::Preload { path: next }],
             None => Vec::new(),
         };
-        // 成功显示即提交落盘：当前图、本轮进度与历史（工单 13）。
+        // 成功显示即提交落盘：当前图、本轮进度与历史（工单 13），
+        // 内容取播放序列的续播快照。
+        let snapshot = self.playlist.resume_snapshot();
         effects.push(Effect::SaveResumeState {
-            current: path.clone(),
-            seen: self.playlist.seen_paths(),
-            history: self.playlist.history().to_vec(),
+            current: snapshot
+                .current
+                .expect("a landed display has a current path"),
+            seen: snapshot.seen,
+            history: snapshot.history,
         });
         effects
     }
@@ -410,7 +355,6 @@ impl FrameCore {
             Intent::FolderPicked(folder) => {
                 // 改选文件夹不是重启恢复：旧文件夹的恢复数据作废。
                 self.resume = None;
-                self.restore_target = None;
                 self.scan = Some(ScanKind::Initial);
                 self.folder = Some(folder.clone());
                 vec![Effect::SaveFolder(folder.clone()), Effect::Scan(folder)]
@@ -434,126 +378,88 @@ impl FrameCore {
                 self.recount_on_settle = false;
                 let mode = self.playlist.mode();
                 if was_rescan {
-                    // 手动重扫（工单 16）：把增删并入现有播放序列，不走首图/恢复流程。
+                    // 手动重扫（工单 16）：增删合并与替代候选由播放序列
+                    // 决定（工单 03 深挖），核心只按结果编排时序与效果。
                     self.pending = None;
-                    let old_current = self.playlist.current_path().cloned();
-                    let items = paths.clone();
-                    let survived = self.playlist.rescan(paths, &mut *self.rng);
-                    if self.playlist.is_empty() {
-                        // 图库已空：落盘状态同步清掉，重启不恢复已剔除的路径。
-                        return vec![Effect::ClearResumeState];
-                    }
-                    if survived {
-                        // 当前图不打断：轮播时刻保持，只刷新预加载与落盘状态。
-                        self.deadline_ms = kept_deadline;
-                        let current = self
-                            .playlist
-                            .current_path()
-                            .expect("current confirmed by the rescan survival check")
-                            .clone();
-                        let mut effects = Vec::new();
-                        if let Some(target) = self.playlist.preload_target(&mut *self.rng) {
-                            effects.push(Effect::Preload { path: target });
+                    match self.playlist.rescan(paths) {
+                        RescanPlan::EmptyLibrary => {
+                            // 图库已空：落盘状态同步清掉，重启不恢复已剔除的路径。
+                            vec![Effect::ClearResumeState]
                         }
-                        effects.push(Effect::SaveResumeState {
-                            current,
-                            seen: self.playlist.seen_paths(),
-                            history: self.playlist.history().to_vec(),
-                        });
-                        return effects;
+                        RescanPlan::Survived => {
+                            // 当前图不打断：轮播时刻保持，只刷新预加载与落盘状态。
+                            self.deadline_ms = kept_deadline;
+                            let snapshot = self.playlist.resume_snapshot();
+                            let mut effects = Vec::new();
+                            if let Some(target) = self.playlist.preload_target() {
+                                effects.push(Effect::Preload { path: target });
+                            }
+                            effects.push(Effect::SaveResumeState {
+                                current: snapshot
+                                    .current
+                                    .expect("current confirmed by the rescan survival check"),
+                                seen: snapshot.seen,
+                                history: snapshot.history,
+                            });
+                            effects
+                        }
+                        RescanPlan::Missing { candidates } => {
+                            // 当前图缺失：替代图成功显示后才提交状态。
+                            self.pending = Some(Pending::Initial);
+                            vec![Effect::Load { candidates }]
+                        }
                     }
-                    // 当前图缺失：与恢复共用同一套模式规则找替代图，成功显示后才提交。
-                    self.pending = Some(Pending::Initial);
-                    let candidates = candidates_when_current_missing(
-                        &mut self.playlist,
-                        &mut *self.rng,
-                        &items,
-                        old_current.as_ref(),
+                } else if let Some(resume) = self.resume.take() {
+                    // 跨启动恢复（工单 13）：播放序列按保存状态重建并
+                    // 产出首图计划（恢复当前图优先，缺失按模式规则）。
+                    self.playlist = Playlist::restored(
+                        paths,
+                        mode,
+                        Box::new(SystemRandom::new()),
+                        resume.current,
+                        resume.seen,
+                        resume.history,
                     );
-                    return vec![Effect::Load { candidates }];
-                }
-                let Some(resume) = self.resume.take() else {
-                    self.playlist = Playlist::new(paths, mode);
-                    self.restore_target = None;
                     if self.playlist.is_empty() {
                         self.pending = None;
                         return vec![Effect::ClearResumeState];
                     }
                     self.pending = Some(Pending::Initial);
-                    // 随机模式的首图也是新选择：候选来自洗牌袋，而非自然序（工单 12）。
-                    let candidates = match mode {
-                        PlaybackMode::Random => self.playlist.bag_candidates(&mut *self.rng),
-                        PlaybackMode::Sequential => self.playlist.items().to_vec(),
-                    };
-                    return vec![Effect::Load { candidates }];
-                };
-                // 跨启动恢复（工单 13）：先按保存状态重建播放序列，再决定首图。
-                let saved_current = resume.current.clone();
-                let in_library = saved_current
-                    .as_ref()
-                    .is_some_and(|path| paths.contains(path));
-                // 随机模式当前图已不在图库：清空旧本轮进度，对当前图库开始新一轮；
-                // 顺序模式保留进度（准则 4/5 的区别只在随机清空）。
-                let seen = if mode == PlaybackMode::Random && saved_current.is_some() && !in_library
-                {
-                    Vec::new()
+                    let candidates = self.playlist.plan_resume_load();
+                    vec![Effect::Load { candidates }]
                 } else {
-                    resume.seen
-                };
-                self.playlist =
-                    Playlist::restored(paths, mode, saved_current.clone(), seen, resume.history);
-                if self.playlist.is_empty() {
-                    self.pending = None;
-                    self.restore_target = None;
-                    return vec![Effect::ClearResumeState];
+                    self.playlist = Playlist::new(paths, mode, Box::new(SystemRandom::new()));
+                    if self.playlist.is_empty() {
+                        self.pending = None;
+                        return vec![Effect::ClearResumeState];
+                    }
+                    self.pending = Some(Pending::Initial);
+                    let candidates = self.playlist.plan_first_load();
+                    vec![Effect::Load { candidates }]
                 }
-                self.pending = Some(Pending::Initial);
-                let candidates = if in_library {
-                    // 先恢复当前图；它加载失败时继续按模式找下一张，不卡死在坏图上。
-                    self.restore_target = saved_current.clone();
-                    let mut candidates = vec![saved_current.expect("current is in library")];
-                    candidates.extend(match mode {
-                        PlaybackMode::Random => self.playlist.bag_candidates(&mut *self.rng),
-                        PlaybackMode::Sequential => {
-                            self.playlist.rotation_candidates(Direction::Next)
-                        }
-                    });
-                    candidates
-                } else {
-                    self.restore_target = None;
-                    let items = self.playlist.items().to_vec();
-                    candidates_when_current_missing(
-                        &mut self.playlist,
-                        &mut *self.rng,
-                        &items,
-                        saved_current.as_ref(),
-                    )
-                };
-                vec![Effect::Load { candidates }]
             }
             Intent::LoadCompleted { shown, now_ms } => {
                 let pending = self.pending.take().unwrap_or(Pending::Initial);
                 let recount = std::mem::take(&mut self.recount_on_settle);
-                let restore_target = self.restore_target.take();
                 let mut effects = match shown {
                     Some(path) => {
                         // 导航加载成功且已有当前图：先起滑动转场，完成时才提交显示
                         //（工单 14）；首图加载与无当前图的防御路径直接提交。
                         let start = match pending {
                             Pending::Navigate {
-                                kind, direction, ..
+                                landing, direction, ..
                             } => self
                                 .playlist
                                 .current_path()
                                 .cloned()
-                                .map(|from| (from, kind, direction)),
+                                .map(|from| (from, landing, direction)),
                             _ => None,
                         };
                         match start {
-                            Some((from, kind, direction)) => {
+                            Some((from, landing, direction)) => {
                                 self.transition = Some(Transition {
                                     target: path.clone(),
-                                    kind,
+                                    landing,
                                 });
                                 vec![Effect::StartTransition {
                                     from,
@@ -562,12 +468,11 @@ impl FrameCore {
                                 }]
                             }
                             None => {
+                                // 首图加载的落位由播放序列按胜出者判定
+                                // （恢复当前图只落位，其余新鲜记账）。
                                 let landing = match pending {
-                                    Pending::Navigate { kind, .. } => kind,
-                                    _ if restore_target.as_ref() == Some(&path) => {
-                                        Landing::Restored
-                                    }
-                                    _ => Landing::Fresh,
+                                    Pending::Navigate { landing, .. } => landing,
+                                    _ => self.playlist.initial_landing(&path),
                                 };
                                 self.commit_display(&path, landing, now_ms)
                             }
@@ -635,7 +540,8 @@ impl FrameCore {
                 let Some(transition) = self.transition.take() else {
                     return Vec::new();
                 };
-                let mut effects = self.commit_display(&transition.target, transition.kind, now_ms);
+                let mut effects =
+                    self.commit_display(&transition.target, transition.landing, now_ms);
                 effects.extend(self.drain_queued_nav());
                 effects
             }
