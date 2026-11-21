@@ -17,7 +17,7 @@ use moe_frame::{
     app_core::{Effect, FrameCore, Intent, View},
     autostart::{autostart_command, AutostartStore, AutostartSync, RUN_KEY_PATH, RUN_VALUE_NAME},
     config::PlaybackMode,
-    config_sync::{ConfigSync, GeometryRecord},
+    config_sync::ConfigSync,
     decode_validation::DisplayMode,
     display::display_size,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
@@ -28,7 +28,7 @@ use moe_frame::{
     settings_session::{
         EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
     },
-    window_geom::{aspect_locked_size, bottom_right_position, offscreen_position, MIN_WINDOW_SIDE},
+    window_geom::{GeomCommand, GeomObservation, GeometryMachine, MIN_WINDOW_SIDE},
 };
 #[cfg(windows)]
 use std::{
@@ -125,7 +125,6 @@ fn run() -> Result<(), Box<dyn Error>> {
                 command_tx,
                 reply_rx,
                 started: false,
-                placed: saved_position.is_some(),
                 texture: None,
                 incoming: None,
                 slide: None,
@@ -138,12 +137,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                 settings_open: false,
                 settings_positioned: false,
                 pipeline: DisplayPipeline::new(),
-                locked_aspect: host_init.locked_aspect,
-                last_inner: host_init.last_inner,
-                saved_geom: host_init.saved_geom,
-                geom_candidate: Debounce::new(),
-                observed_geom: None,
-                startup_clamp_done: false,
+                geometry: GeometryMachine::new(
+                    host_init.saved_geom,
+                    host_init.locked_aspect,
+                    host_init.last_inner,
+                    host_init.saved_position.is_some(),
+                ),
                 autostart: autostart_sync,
                 autostart_store: RegAutostartStore,
                 session: SettingsSession::new(),
@@ -342,10 +341,6 @@ const INTERVAL_PRESETS: [(&str, i64); 6] = [
 /// 设置窗尺寸（工单 18）：建窗与屏幕居中计算共用。
 const SETTINGS_SIZE: [f32; 2] = [420.0, 630.0];
 
-/// 相框默认尺寸（工单 20 恢复默认用）：480×320 逻辑尺寸。
-#[cfg(windows)]
-const DEFAULT_FRAME_SIZE: [f32; 2] = [480.0, 320.0];
-
 /// 设置窗的视口标识（工单 18）：全程只有一块。
 fn settings_viewport_id() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("moe-frame-settings")
@@ -371,34 +366,6 @@ fn track_draft_field(
     }
 }
 
-/// 停稳防抖（工单 20）：候选值保持不变满 settle_secs 后 observe 返回
-/// true（结算一次）；值一变就重新计时。窗口几何落盘用（工单 20）。
-#[cfg(windows)]
-struct Debounce<T> {
-    candidate: Option<(T, f64)>,
-}
-
-#[cfg(windows)]
-impl<T: PartialEq> Debounce<T> {
-    fn new() -> Self {
-        Self { candidate: None }
-    }
-
-    fn observe(&mut self, value: T, now_secs: f64, settle_secs: f64) -> bool {
-        match &self.candidate {
-            Some((candidate, since)) if *candidate == value => now_secs - since >= settle_secs,
-            _ => {
-                self.candidate = Some((value, now_secs));
-                false
-            }
-        }
-    }
-
-    fn clear(&mut self) {
-        self.candidate = None;
-    }
-}
-
 /// 一段进行中的滑动转场（工单 14）：方向与起始时刻（egui UI 时钟，秒）。
 #[cfg(windows)]
 #[derive(Clone, Copy)]
@@ -415,7 +382,6 @@ struct FrameApp {
     command_tx: Sender<Command>,
     reply_rx: Receiver<Reply>,
     started: bool,
-    placed: bool,
     texture: Option<egui::TextureHandle>,
     /// 刚加载完成、等待核心决定直接提交还是开始转场的目标图纹理（工单 14）。
     incoming: Option<egui::TextureHandle>,
@@ -440,19 +406,10 @@ struct FrameApp {
     /// 转正、过期判定与刷新决策都在库 display_data 里；纹理句柄归宿主，
     /// 按它的当前/传入槽位对应持有。
     pipeline: DisplayPipeline,
-    /// 宽高比锁定（工单 20）：Some(比例) 为锁定中，比例在打开开关那一刻
-    /// 捕获（或启动时由存档尺寸推导）；开关本身落盘在 config。
-    locked_aspect: Option<f32>,
-    /// 上一帧观察到的窗口逻辑内尺寸：锁定修正的「哪边变了」基准。
-    last_inner: [f32; 2],
-    /// 最近一次落盘的窗口几何（x, y, 宽, 高）。
-    saved_geom: GeometryRecord,
-    /// 几何变化的停稳防抖：停稳 0.6 秒才落盘。
-    geom_candidate: Debounce<GeometryRecord>,
-    /// 最近一次观察到的窗口几何：退出时冲刷未落盘的最后位置（工单 20）。
-    observed_geom: Option<GeometryRecord>,
-    /// 启动离屏钳制是否已检查（工单 20，只查一次）。
-    startup_clamp_done: bool,
+    /// 窗口几何状态机（工单 20 的生命周期，architecture-deepening
+    /// 工单 05 起归库 window_geom）：宿主每帧喂观察、执行命令，几何
+    /// 落盘经 config_sync，退出结算经它的 exit_settle 交接。
+    geometry: GeometryMachine,
     /// 开机自启的真实状态（工单 21）：菜单与设置窗都读它；注册表实现
     /// 经接缝注入，切换失败时状态不动（回滚）。
     autostart: AutostartSync,
@@ -551,9 +508,11 @@ impl FrameApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 Effect::Exit => {
-                    // 退出收尾归 config_sync：最后观察到的几何一次结清
-                    // （工单 20 的退出冲刷），宿主只同步落盘基准。
-                    self.saved_geom = self.sync.shutdown(self.observed_geom, self.saved_geom);
+                    // 退出收尾归 config_sync：几何状态机交出（最近
+                    // 观察值、落盘基准），shutdown 一次结清（工单 20
+                    // 的退出冲刷、工单 04 的收尾职责）。
+                    let (observed, saved) = self.geometry.exit_settle();
+                    self.sync.shutdown(observed, saved);
                     // 明确退出（工单 17）：先摘托盘图标再关窗口，关闭请求不拦截。
                     self.exiting = true;
                     self.tray = None;
@@ -644,17 +603,10 @@ impl FrameApp {
                     self.apply_fit_mode(ctx, mode);
                 }
                 SessionAction::ApplyAspectLock(locked) => {
-                    if locked {
-                        // 打开那一刻捕获当前窗口比例（工单 20），不固定成默认比例。
-                        self.locked_aspect = Some(if self.last_inner[1] > 0.0 {
-                            self.last_inner[0] / self.last_inner[1]
-                        } else {
-                            DEFAULT_FRAME_SIZE[0] / DEFAULT_FRAME_SIZE[1]
-                        });
-                    } else {
-                        self.locked_aspect = None;
-                    }
-                    self.sync.save_lock_aspect(locked);
+                    // 比例捕获归几何状态机（工单 05）：按它最近的观察
+                    // 值捕获，宿主只转发开关并执行返回的保存命令。
+                    let commands = self.geometry.set_lock(locked);
+                    self.execute_geometry_commands(ctx, commands);
                 }
                 SessionAction::RestoreDefaultGeometry => {
                     self.restore_default_geometry(ctx);
@@ -698,7 +650,7 @@ impl FrameApp {
         let mode_now = self.core.playback_mode();
         let interval_now = self.core.interval_secs();
         let fit_now = self.fit_mode;
-        let lock_now = self.locked_aspect.is_some();
+        let lock_now = self.geometry.is_locked();
         let autostart_now = self.autostart.enabled();
         let mut picks = Picks::default();
         let mut viewport_focused_now = true;
@@ -820,72 +772,68 @@ impl FrameApp {
         }
     }
 
-    /// 窗口几何维护（工单 20）：启动离屏钳制（只查一次）、宽高比锁定
-    /// 修正、几何落盘（变化停稳 0.6 秒写一次，拖动中不反复写盘）。
+    /// 窗口几何维护（工单 20 的生命周期，工单 05 起归库状态机）：
+    /// 每帧采样观察值喂给几何状态机，执行它返回的抽象命令。
     fn update_window_geometry(&mut self, ctx: &egui::Context) {
-        let (outer, inner, monitor) = ctx.input(|input| {
+        let observation = ctx.input(|input| {
             let viewport = input.viewport();
-            (
-                viewport.outer_rect,
-                viewport.inner_rect,
-                viewport.monitor_size,
-            )
+            GeomObservation {
+                outer_pos: viewport.outer_rect.map(|rect| [rect.min.x, rect.min.y]),
+                outer_size: viewport
+                    .outer_rect
+                    .map(|rect| [rect.width(), rect.height()]),
+                inner: viewport
+                    .inner_rect
+                    .map(|rect| [rect.width(), rect.height()]),
+                monitor: viewport.monitor_size.map(|size| [size.x, size.y]),
+                pointer_down: input.pointer.any_down(),
+                frame_visible: self.core.frame_visible(),
+                now_secs: input.time,
+            }
         });
-        if !self.startup_clamp_done {
-            if let (Some(outer), Some(monitor)) = (outer, monitor) {
-                self.startup_clamp_done = true;
-                if let Some(pos) = offscreen_position(
-                    [outer.min.x, outer.min.y],
-                    [outer.width(), outer.height()],
-                    [monitor.x, monitor.y],
-                ) {
+        let commands = self.geometry.observe(&observation);
+        self.execute_geometry_commands(ctx, commands);
+    }
+
+    /// 执行几何状态机的抽象命令：位置/尺寸翻译成 ViewportCommand，
+    /// 保存类经 config_sync 落盘，ShowFrame 经行为核心显示相框。
+    fn execute_geometry_commands(&mut self, ctx: &egui::Context, commands: Vec<GeomCommand>) {
+        for command in commands {
+            match command {
+                GeomCommand::SetOuterPosition(pos) => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
                         pos[0], pos[1],
                     )));
                 }
-            }
-        }
-        let Some(inner) = inner else {
-            return;
-        };
-        let cur = [inner.width(), inner.height()];
-        if let Some(aspect) = self.locked_aspect {
-            // 指针按下（拖动/缩放进行中）时不抢，停稳后按偏离修正一次。
-            let pointer_down = ctx.input(|input| input.pointer.any_down());
-            if !pointer_down && cur != self.last_inner {
-                let corrected = aspect_locked_size(self.last_inner, cur, aspect);
-                if (corrected[0] - cur[0]).abs() > 0.5 || (corrected[1] - cur[1]).abs() > 0.5 {
+                GeomCommand::SetInnerSize(size) => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-                        corrected[0],
-                        corrected[1],
+                        size[0], size[1],
                     )));
+                }
+                GeomCommand::SaveGeometry(geom) => {
+                    self.sync.save_window_geometry(geom);
+                }
+                GeomCommand::SaveLockAspect(locked) => {
+                    self.sync.save_lock_aspect(locked);
+                }
+                GeomCommand::ShowFrame => {
+                    let effects = self.core.handle(Intent::ToggleVisibilityRequested);
+                    self.dispatch(ctx, effects);
                 }
             }
         }
-        self.last_inner = cur;
-        if !self.core.frame_visible() {
-            return;
-        }
-        let Some(outer) = outer else {
-            return;
-        };
-        let geom = (
-            Some(outer.min.x.round() as i64),
-            Some(outer.min.y.round() as i64),
-            cur[0].round() as u32,
-            cur[1].round() as u32,
-        );
-        self.observed_geom = Some(geom);
-        if geom == self.saved_geom {
-            self.geom_candidate.clear();
-            return;
-        }
-        let now_secs = ctx.input(|input| input.time);
-        if self.geom_candidate.observe(geom, now_secs, 0.6) {
-            self.sync.save_window_geometry(geom);
-            self.saved_geom = geom;
-            self.geom_candidate.clear();
-        }
+    }
+
+    /// 恢复默认位置与大小（工单 20）：裁决与命令组成归几何状态机，
+    /// 这里只采样显示器与可见性并执行。
+    fn restore_default_geometry(&mut self, ctx: &egui::Context) {
+        let monitor = ctx
+            .input(|input| input.viewport().monitor_size)
+            .map(|size| [size.x, size.y]);
+        let commands = self
+            .geometry
+            .restore_default(monitor, self.core.frame_visible());
+        self.execute_geometry_commands(ctx, commands);
     }
 
     /// 切换开机自启（工单 21）：先写注册表，成功才保存配置镜像
@@ -904,38 +852,6 @@ impl FrameApp {
         {
             self.sync.save_autostart_mirror(value);
         }
-    }
-
-    /// 恢复默认位置与大小（工单 20）：立即 480×320、当前屏右下角内缩
-    /// 24px 并落盘；相框隐藏时按主屏口径放置并显示相框（与托盘开设置
-    /// 不唤出相框相区别）；锁定开启时，锁定的宽高比同步改为默认尺寸的比例。
-    fn restore_default_geometry(&mut self, ctx: &egui::Context) {
-        let size = DEFAULT_FRAME_SIZE;
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-            size[0], size[1],
-        )));
-        let monitor = ctx.input(|input| input.viewport().monitor_size);
-        let pos = monitor.map(|m| bottom_right_position(size, [m.x, m.y]));
-        if let Some(pos) = pos {
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-                pos[0], pos[1],
-            )));
-        }
-        if !self.core.frame_visible() {
-            let effects = self.core.handle(Intent::ToggleVisibilityRequested);
-            self.dispatch(ctx, effects);
-        }
-        if self.locked_aspect.is_some() {
-            self.locked_aspect = Some(size[0] / size[1]);
-        }
-        let (x, y) = match pos {
-            Some(p) => (Some(p[0].round() as i64), Some(p[1].round() as i64)),
-            None => (self.saved_geom.0, self.saved_geom.1),
-        };
-        self.sync
-            .save_window_geometry((x, y, size[0] as u32, size[1] as u32));
-        self.saved_geom = (x, y, size[0] as u32, size[1] as u32);
-        self.geom_candidate.clear();
     }
 
     fn drain_replies(&mut self, ctx: &egui::Context) {
@@ -1019,20 +935,6 @@ impl FrameApp {
         self.incoming =
             Some(ctx.load_texture("moe-frame-incoming", color, egui::TextureOptions::LINEAR));
     }
-
-    fn place_bottom_right(&mut self, ctx: &egui::Context) {
-        if self.placed {
-            return;
-        }
-        let Some(monitor) = ctx.input(|input| input.viewport().monitor_size) else {
-            return;
-        };
-        let rect = ctx.viewport_rect();
-        let placed = bottom_right_position([rect.width(), rect.height()], [monitor.x, monitor.y]);
-        let pos = egui::pos2(placed[0], placed[1]);
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
-        self.placed = true;
-    }
 }
 
 #[cfg(windows)]
@@ -1046,7 +948,6 @@ impl eframe::App for FrameApp {
         }
         self.drain_replies(&ctx);
         self.update_window_geometry(&ctx);
-        self.place_bottom_right(&ctx);
         let now = now_ms(&ctx);
         let tick_effects = self.core.handle(Intent::Tick { now_ms: now });
         self.dispatch(&ctx, tick_effects);
