@@ -76,6 +76,10 @@ pub enum Intent {
     Tick { now_ms: u64 },
     /// 菜单「退出」。
     ExitRequested,
+    /// 关闭相框（标题栏关闭、Alt+F4）：只隐藏，不退出（工单 17）。
+    CloseRequested,
+    /// 托盘左键单击或托盘菜单「显示/隐藏」：切换相框可见性（工单 17）。
+    ToggleVisibilityRequested,
 }
 
 /// 核心要求宿主执行的效果。
@@ -116,6 +120,10 @@ pub enum Effect {
     },
     /// 图库已空：清掉落盘的当前图、本轮进度与历史，重启不恢复已剔除状态（工单 16）。
     ClearResumeState,
+    /// 隐藏相框窗口（进程与轮播继续，工单 17）。
+    HideFrame,
+    /// 显示相框窗口（工单 17）。
+    ShowFrame,
     Exit,
 }
 
@@ -183,6 +191,8 @@ pub struct FrameCore {
     /// 在飞的扫描种类（工单 16）：None 表示无扫描在飞。重扫的回送按合并
     /// 语义处理，不走首图/恢复流程；扫描在飞期间不重复发起扫描。
     scan: Option<ScanKind>,
+    /// 相框当前是否可见（工单 17）：隐藏只影响可见性，播放与历史照常推进。
+    frame_visible: bool,
 }
 
 /// 扫描种类：决定扫描回送走首图/恢复流程还是重扫合并（工单 16）。
@@ -233,6 +243,7 @@ impl FrameCore {
             restore_target: None,
             gesture: GestureMachine::new(gesture_thresholds),
             scan: None,
+            frame_visible: true,
         }
     }
 
@@ -245,6 +256,11 @@ impl FrameCore {
 
     pub fn folder(&self) -> Option<&PathBuf> {
         self.folder.as_ref()
+    }
+
+    /// 相框当前是否可见（工单 17）：宿主据此同步托盘菜单文案。
+    pub fn frame_visible(&self) -> bool {
+        self.frame_visible
     }
 
     pub fn is_playing(&self) -> bool {
@@ -679,6 +695,23 @@ impl FrameCore {
                 effects
             }
             Intent::ExitRequested => vec![Effect::Exit],
+            Intent::CloseRequested => {
+                // 关闭即隐藏（工单 17）：播放状态、当前图与截止时刻都不动。
+                if self.frame_visible {
+                    self.frame_visible = false;
+                    vec![Effect::HideFrame]
+                } else {
+                    Vec::new()
+                }
+            }
+            Intent::ToggleVisibilityRequested => {
+                self.frame_visible = !self.frame_visible;
+                if self.frame_visible {
+                    vec![Effect::ShowFrame]
+                } else {
+                    vec![Effect::HideFrame]
+                }
+            }
         }
     }
 }

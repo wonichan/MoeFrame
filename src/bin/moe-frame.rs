@@ -173,10 +173,80 @@ fn run() -> Result<(), Box<dyn Error>> {
                 load_seq: 0,
                 load_in_flight: false,
                 wheel_acc: 0.0,
+                tray: None,
+                tray_tried: false,
+                tray_state: None,
+                exiting: false,
             }))
         }),
     )?;
     Ok(())
+}
+
+/// 托盘菜单项句柄（工单 17）：留住菜单项以便按核心状态更新文案。
+struct TrayHandles {
+    _icon: tray_icon::TrayIcon,
+    show_hide: tray_icon::menu::MenuItem,
+    play_pause: tray_icon::menu::MenuItem,
+    prev: tray_icon::menu::MenuItem,
+    next: tray_icon::menu::MenuItem,
+    exit: tray_icon::menu::MenuItem,
+}
+
+/// 托盘图标（工单 17）：需求文档 8.3 定的内置 PNG（仓库 assets/tray-icon.png，
+/// 红框白底、琥珀色太阳、青色山峦），编译时嵌入，运行时解码为 RGBA。
+fn tray_icon_image() -> tray_icon::Icon {
+    let image = image::load_from_memory(include_bytes!("../../assets/tray-icon.png"))
+        .expect("内置托盘图标 PNG 固定可解码")
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    tray_icon::Icon::from_rgba(image.into_raw(), width, height).expect("托盘图标像素格式固定")
+}
+
+/// 建托盘图标与右键菜单（工单 17）：菜单项与相框菜单走同一套核心意图；
+/// 「设置」入口等工单 18 接入设置窗后再加，不先摆无效项。失败返回 None，
+/// 相框本体照常运行（托盘是常驻入口，不是相框的前置条件）。
+fn build_tray(frame_visible: bool, playing: bool) -> Option<TrayHandles> {
+    use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
+    let menu = Menu::new();
+    // 文案用词汇表的动作名：可见时是「关闭」（只隐藏不退出），播放时是「暂停」。
+    let show_hide = MenuItem::new(
+        if frame_visible {
+            "关闭相框"
+        } else {
+            "显示相框"
+        },
+        true,
+        None,
+    );
+    let play_pause = MenuItem::new(if playing { "暂停" } else { "播放" }, true, None);
+    let prev = MenuItem::new("上一张", true, None);
+    let next = MenuItem::new("下一张", true, None);
+    let exit = MenuItem::new("退出", true, None);
+    menu.append_items(&[
+        &show_hide,
+        &play_pause,
+        &PredefinedMenuItem::separator(),
+        &prev,
+        &next,
+        &PredefinedMenuItem::separator(),
+        &exit,
+    ])
+    .ok()?;
+    let icon = tray_icon::TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_icon(tray_icon_image())
+        .with_tooltip("萌框 MoeFrame")
+        .build()
+        .ok()?;
+    Some(TrayHandles {
+        _icon: icon,
+        show_hide,
+        play_pause,
+        prev,
+        next,
+        exit,
+    })
 }
 
 /// 用系统默认看图器打开原图（工单 15）：菜单项与双击效果共用这一处；
@@ -255,6 +325,14 @@ struct FrameApp {
     load_in_flight: bool,
     /// 滚轮平滑滚动量的累积，攒够一格才触发一次切换。
     wheel_acc: f32,
+    /// 托盘（工单 17）：首帧懒建（须在事件循环内建）；建失败为 None，相框照常。
+    tray: Option<TrayHandles>,
+    tray_tried: bool,
+    /// 上次同步到托盘菜单的（可见性、播放中）状态：None 表示尚未同步，
+    /// 首帧从核心现读一次，之后只在变化时改文案。
+    tray_state: Option<(bool, bool)>,
+    /// 已明确选择退出（工单 17）：关闭请求不再拦截，托盘图标先行移除。
+    exiting: bool,
 }
 
 #[cfg(windows)]
@@ -338,7 +416,17 @@ impl FrameApp {
                         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
                     }
                 }
+                Effect::HideFrame => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                }
+                Effect::ShowFrame => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
                 Effect::Exit => {
+                    // 明确退出（工单 17）：先摘托盘图标再关窗口，关闭请求不拦截。
+                    self.exiting = true;
+                    self.tray = None;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
@@ -438,6 +526,50 @@ impl eframe::App for FrameApp {
         let now = now_ms(&ctx);
         let tick_effects = self.core.handle(Intent::Tick { now_ms: now });
         self.dispatch(&ctx, tick_effects);
+        // 托盘（工单 17）：首帧在事件循环内建托盘；之后每帧收托盘事件——
+        // 左键单击切换显示，菜单项走与相框菜单完全相同的核心意图，隐藏时同样有效。
+        if !self.tray_tried {
+            self.tray_tried = true;
+            self.tray = build_tray(self.core.frame_visible(), self.core.is_playing());
+        }
+        let mut tray_intents: Vec<Intent> = Vec::new();
+        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+            if let tray_icon::TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                button_state: tray_icon::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                tray_intents.push(Intent::ToggleVisibilityRequested);
+            }
+        }
+        if let Some(tray) = &self.tray {
+            while let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
+                let id = event.id();
+                if id == tray.show_hide.id() {
+                    tray_intents.push(Intent::ToggleVisibilityRequested);
+                } else if id == tray.play_pause.id() {
+                    tray_intents.push(Intent::PlayPauseToggled { now_ms: now });
+                } else if id == tray.prev.id() {
+                    tray_intents.push(Intent::PrevRequested);
+                } else if id == tray.next.id() {
+                    tray_intents.push(Intent::NextRequested);
+                } else if id == tray.exit.id() {
+                    tray_intents.push(Intent::ExitRequested);
+                }
+            }
+        }
+        for intent in tray_intents {
+            let effects = self.core.handle(intent);
+            self.dispatch(&ctx, effects);
+        }
+        // 关闭只隐藏（工单 17）：拦截窗口关闭请求（含 Alt+F4）改走核心的
+        // 关闭即隐藏；明确退出已置 exiting 时不拦截，关窗即结束进程。
+        if !self.exiting && ctx.input(|input| input.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            let effects = self.core.handle(Intent::CloseRequested);
+            self.dispatch(&ctx, effects);
+        }
         self.handle_keys_and_wheel(&ctx, now);
         // 滑动转场推进（工单 14）：到时先把目标图转正并通知核心提交，再绘制。
         if let Some(slide) = self.slide {
@@ -591,7 +723,26 @@ impl eframe::App for FrameApp {
             let effects = self.core.handle(intent);
             self.dispatch(&ctx, effects);
         }
-        if self.load_in_flight {
+        // 托盘菜单文案跟随核心的真实状态（工单 17），只在变化时更新。
+        if let Some(tray) = &self.tray {
+            let state = (self.core.frame_visible(), self.core.is_playing());
+            if self.tray_state != Some(state) {
+                self.tray_state = Some(state);
+                tray.show_hide.set_text(if state.0 {
+                    "关闭相框"
+                } else {
+                    "显示相框"
+                });
+                tray.play_pause
+                    .set_text(if state.1 { "暂停" } else { "播放" });
+            }
+        }
+        if !self.core.frame_visible() {
+            // 隐藏期间保持低频心跳（工单 17）：托盘事件在 ui() 里轮询，暂停且
+            // 隐藏时没有轮播截止时刻可唤醒，心跳保证托盘点击/菜单及时被处理；
+            // 轮播 Tick 仍按各自截止时刻在心跳帧上判定，不受影响。
+            ctx.request_repaint_after(Duration::from_millis(250));
+        } else if self.load_in_flight {
             ctx.request_repaint_after(Duration::from_millis(50));
         } else if let Some(deadline) = self.core.next_deadline_ms() {
             // 睡到下一次自动切换时刻再唤醒，避免空转重绘。

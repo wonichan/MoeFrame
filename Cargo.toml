@@ -33,6 +33,8 @@ rfd = "=0.15.4"
 rand = "=0.10.4"
 
 [target.'cfg(windows)'.dependencies]
+# tray-icon（需求文档 8.3 类别）：工单 17 起托盘常驻、托盘菜单与左键切换显示；仅正式相框用，门控在 Windows。
+tray-icon = "=0.21.3"
 # raw-window-handle/windows-sys 只服务诊断日志的 Win32 观测：客户区、DPI 感知、窗口样式、前台窗口、
 # 以及工单 09 的进程内存采样（GetProcessMemoryInfo）。
 raw-window-handle = "=0.6.2"

@@ -1436,3 +1436,78 @@ fn rescan_is_ignored_while_a_load_is_in_flight() {
         vec![Effect::Scan(path("D:\\图库"))]
     );
 }
+
+#[test]
+fn closing_the_frame_hides_it_instead_of_exiting() {
+    let (mut core, _) = showing_core(&["a.png", "b.png"], 30);
+    assert_eq!(core.handle(Intent::CloseRequested), vec![Effect::HideFrame]);
+    assert!(!core.frame_visible());
+    // 当前图与播放状态不动；隐藏中再关一次无动作；明确退出仍然有效。
+    assert_eq!(core.view(), View::Showing(img("a.png")));
+    assert!(core.is_playing());
+    assert_eq!(core.handle(Intent::CloseRequested), vec![]);
+    assert_eq!(core.handle(Intent::ExitRequested), vec![Effect::Exit]);
+}
+
+#[test]
+fn toggling_visibility_alternates_between_show_and_hide() {
+    let (mut core, _) = showing_core(&["a.png", "b.png"], 30);
+    assert_eq!(
+        core.handle(Intent::ToggleVisibilityRequested),
+        vec![Effect::HideFrame]
+    );
+    assert_eq!(
+        core.handle(Intent::ToggleVisibilityRequested),
+        vec![Effect::ShowFrame]
+    );
+    assert_eq!(
+        core.handle(Intent::ToggleVisibilityRequested),
+        vec![Effect::HideFrame]
+    );
+    assert!(!core.frame_visible());
+}
+
+#[test]
+fn the_slideshow_and_navigation_continue_while_hidden() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    core.handle(Intent::CloseRequested);
+    // 隐藏期间到点自动轮播，走同一套加载与提交（含落盘）。
+    assert_eq!(
+        core.handle(Intent::Tick { now_ms: 30_000 }),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("c.png")],
+        }]
+    );
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 30_000,
+    });
+    let effects = settle_transition(&mut core, 30_000);
+    assert!(effects.contains(&Effect::SaveResumeState {
+        current: img("b.png"),
+        seen: vec![img("a.png"), img("b.png")],
+        history: vec![img("a.png"), img("b.png")],
+    }));
+    // 隐藏期间手动导航同样有效。
+    assert_eq!(
+        core.handle(Intent::NextRequested),
+        vec![Effect::Load {
+            candidates: vec![img("c.png"), img("a.png")],
+        }]
+    );
+    // 唤回后看到的是实际当前图。
+    assert_eq!(
+        core.handle(Intent::ToggleVisibilityRequested),
+        vec![Effect::ShowFrame]
+    );
+    assert_eq!(core.view(), View::Showing(img("b.png")));
+}
+
+#[test]
+fn pausing_from_the_tray_stops_the_hidden_slideshow() {
+    let (mut core, _) = showing_core(&["a.png", "b.png"], 30);
+    core.handle(Intent::CloseRequested);
+    core.handle(Intent::PlayPauseToggled { now_ms: 1_000 });
+    assert!(!core.is_playing());
+    assert_eq!(core.handle(Intent::Tick { now_ms: 60_000 }), vec![]);
+}
