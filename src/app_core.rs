@@ -11,9 +11,13 @@
 //! 滑动转场（工单 14）：导航加载成功后核心先发 `StartTransition`，宿主渲染约
 //! 300ms 滑动并以 `TransitionCompleted` 回送，核心在完成时才提交这次显示
 //! （记账、落盘、重计间隔都在完成时）；转场期间的新导航意图只保留最后一个。
+//! 指针手势（工单 15）：按下/移动/松开/右键事件经手势机（`crate::gesture`）
+//! 按系统阈值判定，单击成立走与菜单同一套导航，双击产出打开原图效果，
+//! 右键取消未完成动作并在拖动中产出位置回滚效果。
 
 use crate::{
     config::PlaybackMode,
+    gesture::{GestureMachine, GestureOutcome, GestureThresholds, Zone},
     library::{natural_successor_index, rotation_from},
     playlist::{Direction, Playlist, RandomSource},
 };
@@ -27,8 +31,8 @@ pub struct ResumeData {
     pub history: Vec<PathBuf>,
 }
 
-/// 用户与宿主送入的意图/结果。
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// 用户与宿主送入的意图/结果（手势意图带浮点坐标，故只 PartialEq）。
+#[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
     /// 宿主完成启动装配后送入一次。
     Started,
@@ -44,6 +48,18 @@ pub enum Intent {
     LoadCompleted { shown: Option<PathBuf>, now_ms: u64 },
     /// 宿主渲染完一段滑动转场的效果回送：核心此刻才提交这次显示（工单 14）。
     TransitionCompleted { now_ms: u64 },
+    /// 左键在内容区按下（工单 15）：位置为窗口内逻辑坐标，附按下时的相框宽度。
+    PointerDown {
+        pos: [f32; 2],
+        frame_width: f32,
+        now_ms: u64,
+    },
+    /// 左键移动（工单 15）。
+    PointerMoved { pos: [f32; 2] },
+    /// 左键松开（工单 15）：附松开位置，位移超阈值同样按拖动处理。
+    PointerUp { pos: [f32; 2], now_ms: u64 },
+    /// 右键按下（工单 15）：取消未完成的左键动作；菜单由宿主照常打开。
+    RightPressed,
     /// 上一张（菜单、左方向键、滚轮向上共用同一意图）。
     PrevRequested,
     /// 下一张（菜单、右方向键、滚轮向下共用同一意图）。
@@ -74,6 +90,13 @@ pub enum Effect {
     Preload {
         path: PathBuf,
     },
+    /// 双击成立：用系统默认看图器打开这张原图（工单 15）。路径是第一下
+    /// 按下时正在显示的图，不随转场目标变化。
+    OpenImage {
+        path: PathBuf,
+    },
+    /// 右键在拖动中按下：宿主把相框位置恢复到该次按下时的位置（工单 15）。
+    RollbackFrameDrag,
     /// 目标图已就绪：宿主开始渲染从当前图到目标图的滑动转场（工单 14）。
     /// 方向来自导航方向：Next 时目标从右向左进入，Prev 相反。
     StartTransition {
@@ -151,6 +174,8 @@ pub struct FrameCore {
     resume: Option<ResumeData>,
     /// 本次启动要恢复显示的当前图：它成功显示时只落位不记账（防重复例外）。
     restore_target: Option<PathBuf>,
+    /// 指针手势判定（工单 15）：阈值由宿主按系统设置注入。
+    gesture: GestureMachine,
 }
 
 impl FrameCore {
@@ -160,6 +185,7 @@ impl FrameCore {
         mode: PlaybackMode,
         rng: Box<dyn RandomSource>,
         resume: Option<ResumeData>,
+        gesture_thresholds: GestureThresholds,
     ) -> Self {
         Self {
             folder: saved_folder,
@@ -174,6 +200,7 @@ impl FrameCore {
             rng,
             resume,
             restore_target: None,
+            gesture: GestureMachine::new(gesture_thresholds),
         }
     }
 
@@ -200,13 +227,38 @@ impl FrameCore {
         self.playlist.mode()
     }
 
-    /// 下一次自动切换时刻，供宿主安排重绘唤醒。
+    /// 下一次需要唤醒的时刻（自动切换或等待单击结算），供宿主安排重绘唤醒。
     pub fn next_deadline_ms(&self) -> Option<u64> {
-        self.deadline_ms
+        match (self.deadline_ms, self.gesture.settle_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
     }
 
     fn interval_ms(&self) -> u64 {
         (self.interval_secs.max(1) as u64) * 1000
+    }
+
+    /// 执行手势判定结果：单击按分区走与菜单/按键同一套导航，双击打开原图。
+    fn apply_gesture(&mut self, outcomes: Vec<GestureOutcome>) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        for outcome in outcomes {
+            match outcome {
+                GestureOutcome::Click(Zone::Left) => {
+                    effects.extend(self.navigate(Direction::Prev, false));
+                }
+                GestureOutcome::Click(Zone::Right) => {
+                    effects.extend(self.navigate(Direction::Next, false));
+                }
+                GestureOutcome::Click(Zone::Middle) => {}
+                GestureOutcome::DoubleClick(path) => {
+                    effects.push(Effect::OpenImage { path });
+                }
+            }
+        }
+        effects
     }
 
     fn navigate(&mut self, direction: Direction, auto: bool) -> Vec<Effect> {
@@ -451,6 +503,34 @@ impl FrameCore {
                 }
                 effects
             }
+            Intent::PointerDown {
+                pos,
+                frame_width,
+                now_ms,
+            } => {
+                // 双击要打开的图在第一下按下时就固定为当时正在显示的图。
+                let displayed = self.playlist.current_path().cloned();
+                let outcomes = self
+                    .gesture
+                    .pointer_down(pos, frame_width, displayed, now_ms);
+                self.apply_gesture(outcomes)
+            }
+            Intent::PointerMoved { pos } => {
+                let outcomes = self.gesture.pointer_moved(pos);
+                self.apply_gesture(outcomes)
+            }
+            Intent::PointerUp { pos, .. } => {
+                let outcomes = self.gesture.pointer_up(pos);
+                self.apply_gesture(outcomes)
+            }
+            Intent::RightPressed => {
+                // 取消未完成的左键动作；拖动中还要回滚位置。已在播的转场不取消。
+                if self.gesture.right_pressed() {
+                    vec![Effect::RollbackFrameDrag]
+                } else {
+                    Vec::new()
+                }
+            }
             Intent::TransitionCompleted { now_ms } => {
                 // 无转场在飞的回送（宿主在重扫后取消了渲染等）直接忽略。
                 let Some(transition) = self.transition.take() else {
@@ -497,17 +577,23 @@ impl FrameCore {
                 vec![Effect::SavePlaybackMode(mode)]
             }
             Intent::Tick { now_ms } => {
-                if !self.playing
-                    || self.pending.is_some()
-                    || self.transition.is_some()
-                    || self.playlist.len() < 2
+                let mut effects = Vec::new();
+                // 等待中的单击到双击窗口结束即成立，与播放/暂停状态无关。
+                if let Some(zone) = self.gesture.settle_due(now_ms) {
+                    effects.extend(self.apply_gesture(vec![GestureOutcome::Click(zone)]));
+                }
+                if self.playing
+                    && self.pending.is_none()
+                    && self.transition.is_none()
+                    && self.playlist.len() >= 2
                 {
-                    return Vec::new();
+                    if let Some(deadline) = self.deadline_ms {
+                        if now_ms >= deadline {
+                            effects.extend(self.navigate(Direction::Next, true));
+                        }
+                    }
                 }
-                match self.deadline_ms {
-                    Some(deadline) if now_ms >= deadline => self.navigate(Direction::Next, true),
-                    _ => Vec::new(),
-                }
+                effects
             }
             Intent::ExitRequested => vec![Effect::Exit],
         }

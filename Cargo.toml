@@ -27,6 +27,8 @@ image = { version = "=0.25.10", default-features = false, features = ["bmp", "gi
 # walkdir（目录遍历）、rfd（文件夹选择框，仅正式相框二进制使用）、rand（随机播放序列）。
 toml_edit = "=0.22.27"
 walkdir = "=2.5.0"
+# open（需求文档 8.3 类别）：工单 15 起用系统默认看图器打开原图、打开所在文件夹。
+open = "=5.4.5"
 rfd = "=0.15.4"
 rand = "=0.10.4"
 

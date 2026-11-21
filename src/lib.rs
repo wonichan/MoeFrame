@@ -6,6 +6,7 @@ pub mod app_core;
 pub mod config;
 pub mod decode_validation;
 pub mod diagnostics;
+pub mod gesture;
 pub mod library;
 pub mod loading;
 pub mod playlist;

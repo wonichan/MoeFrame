@@ -6,6 +6,7 @@ mod common;
 use common::{IdentityRng, ZeroRng};
 use moe_frame::app_core::{Effect, FrameCore, Intent, ResumeData, View};
 use moe_frame::config::PlaybackMode;
+use moe_frame::gesture::GestureThresholds;
 use moe_frame::playlist::Direction;
 use std::path::PathBuf;
 
@@ -18,6 +19,15 @@ fn img(name: &str) -> PathBuf {
 }
 
 /// 驱动核心到「已显示第一张图」的状态（t=0 完成加载），返回核心与首图加载产生的效果。
+/// 手势阈值（工单 15）：拖动 4px、双击 500ms/4px，与系统默认值同量级，测试可控。
+fn test_thresholds() -> GestureThresholds {
+    GestureThresholds {
+        drag_threshold: [4.0, 4.0],
+        double_click_ms: 500,
+        double_click_dist: [4.0, 4.0],
+    }
+}
+
 /// 导航加载成功后核心先起转场；这一步把转场结算掉，返回提交效果（工单 14）。
 fn settle_transition(core: &mut FrameCore, now_ms: u64) -> Vec<Effect> {
     core.handle(Intent::TransitionCompleted { now_ms })
@@ -38,6 +48,7 @@ fn showing_core_mode(
         mode,
         Box::new(IdentityRng),
         None,
+        test_thresholds(),
     );
     core.handle(Intent::Started);
     let list: Vec<PathBuf> = names.iter().map(|name| img(name)).collect();
@@ -59,6 +70,7 @@ fn first_run_without_a_saved_folder_prompts_once_and_cancel_stays_empty() {
         PlaybackMode::Sequential,
         Box::new(IdentityRng),
         None,
+        test_thresholds(),
     );
     assert_eq!(core.handle(Intent::Started), vec![Effect::PickFolder]);
     assert_eq!(core.handle(Intent::FolderPickCancelled), vec![]);
@@ -73,6 +85,7 @@ fn picking_a_folder_saves_scans_loads_and_shows_the_first_image() {
         PlaybackMode::Sequential,
         Box::new(IdentityRng),
         None,
+        test_thresholds(),
     );
     core.handle(Intent::Started);
     let folder = path("D:\\图库");
@@ -110,6 +123,7 @@ fn a_saved_folder_skips_the_prompt_on_the_next_launch() {
         PlaybackMode::Sequential,
         Box::new(IdentityRng),
         None,
+        test_thresholds(),
     );
     assert_eq!(
         core.handle(Intent::Started),
@@ -125,6 +139,7 @@ fn an_empty_scan_enters_the_empty_state_without_loading() {
         PlaybackMode::Sequential,
         Box::new(IdentityRng),
         None,
+        test_thresholds(),
     );
     core.handle(Intent::Started);
     assert_eq!(core.handle(Intent::ScanCompleted(vec![])), vec![]);
@@ -139,6 +154,7 @@ fn when_every_candidate_fails_the_frame_stays_operable_and_empty() {
         PlaybackMode::Sequential,
         Box::new(IdentityRng),
         None,
+        test_thresholds(),
     );
     core.handle(Intent::Started);
     core.handle(Intent::ScanCompleted(vec![path("D:\\坏图库\\x.png")]));
@@ -172,6 +188,7 @@ fn exit_is_an_explicit_effect() {
         PlaybackMode::Sequential,
         Box::new(IdentityRng),
         None,
+        test_thresholds(),
     );
     assert_eq!(core.handle(Intent::ExitRequested), vec![Effect::Exit]);
 }
@@ -634,6 +651,7 @@ fn a_random_first_image_is_drawn_from_the_shuffle_bag() {
         PlaybackMode::Random,
         Box::new(ZeroRng),
         None,
+        test_thresholds(),
     );
     core.handle(Intent::Started);
     // ZeroRng 洗牌 [a,b,c] → [b,c,a]：首图候选是袋序，不是自然序。
@@ -658,6 +676,7 @@ fn resumed_core(mode: PlaybackMode, resume: ResumeData) -> FrameCore {
         mode,
         Box::new(IdentityRng),
         Some(resume),
+        test_thresholds(),
     );
     core.handle(Intent::Started);
     core
@@ -825,6 +844,7 @@ fn playback_state_survives_across_two_launches() {
         PlaybackMode::Random,
         Box::new(IdentityRng),
         None,
+        test_thresholds(),
     );
     first.handle(Intent::Started);
     first.handle(Intent::ScanCompleted(vec![
@@ -1046,4 +1066,260 @@ fn a_failed_navigation_after_a_transition_keeps_the_new_image() {
         vec![]
     );
     assert_eq!(core.view(), View::Showing(img("b.png")));
+}
+
+// ---------- 工单 15：指针手势 ----------
+
+/// 在 480 宽相框的右区（x=440）点一下：按下并松开，不移动。
+fn tap_right(core: &mut FrameCore, now_ms: u64) {
+    core.handle(Intent::PointerDown {
+        pos: [440.0, 160.0],
+        frame_width: 480.0,
+        now_ms,
+    });
+    core.handle(Intent::PointerUp {
+        pos: [440.0, 160.0],
+        now_ms,
+    });
+}
+
+#[test]
+fn a_side_click_settles_only_after_the_double_click_window() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    tap_right(&mut core, 1_000);
+    // 窗口未结束：不切换。窗口结束（松开后 500ms）：单击成立，下一张。
+    assert_eq!(core.handle(Intent::Tick { now_ms: 1_499 }), vec![]);
+    assert_eq!(
+        core.handle(Intent::Tick { now_ms: 1_500 }),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("c.png")],
+        }]
+    );
+    // 中间 60% 单击结算后无动作。
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 1_500,
+    });
+    settle_transition(&mut core, 1_500);
+    core.handle(Intent::PointerDown {
+        pos: [240.0, 160.0],
+        frame_width: 480.0,
+        now_ms: 2_000,
+    });
+    core.handle(Intent::PointerUp {
+        pos: [240.0, 160.0],
+        now_ms: 2_000,
+    });
+    assert_eq!(core.handle(Intent::Tick { now_ms: 2_500 }), vec![]);
+    assert_eq!(core.view(), View::Showing(img("b.png")));
+}
+
+#[test]
+fn a_double_click_opens_the_image_shown_at_the_first_press() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    // 第一下落在右区：若按单击处理本会切到 b；双击成立则不切换、打开 a。
+    tap_right(&mut core, 1_000);
+    core.handle(Intent::PointerDown {
+        pos: [442.0, 160.0],
+        frame_width: 480.0,
+        now_ms: 1_200,
+    });
+    assert_eq!(
+        core.handle(Intent::PointerUp {
+            pos: [442.0, 160.0],
+            now_ms: 1_250,
+        }),
+        vec![Effect::OpenImage { path: img("a.png") }]
+    );
+    assert_eq!(core.view(), View::Showing(img("a.png")));
+    // 双击后没有等待中的单击残留。
+    assert_eq!(core.handle(Intent::Tick { now_ms: 9_999 }), vec![]);
+}
+
+#[test]
+fn a_second_press_beyond_the_double_click_distance_settles_the_first_click() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    tap_right(&mut core, 1_000);
+    // 第二下落在左区（远超双击距离）：按下瞬间先把第一下结算成下一张，
+    // 第二下自己重新进入等待，结算时按左区走上一张。
+    assert_eq!(
+        core.handle(Intent::PointerDown {
+            pos: [40.0, 160.0],
+            frame_width: 480.0,
+            now_ms: 1_200,
+        }),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("c.png")],
+        }]
+    );
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 1_200,
+    });
+    settle_transition(&mut core, 1_200);
+    core.handle(Intent::PointerUp {
+        pos: [40.0, 160.0],
+        now_ms: 1_250,
+    });
+    assert_eq!(
+        core.handle(Intent::Tick { now_ms: 1_750 }),
+        vec![Effect::Load {
+            candidates: vec![img("a.png"), img("c.png")],
+        }]
+    );
+}
+
+#[test]
+fn a_press_that_becomes_a_drag_never_clicks() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    core.handle(Intent::PointerDown {
+        pos: [440.0, 160.0],
+        frame_width: 480.0,
+        now_ms: 1_000,
+    });
+    core.handle(Intent::PointerMoved {
+        pos: [460.0, 160.0],
+    });
+    assert_eq!(
+        core.handle(Intent::PointerUp {
+            pos: [460.0, 160.0],
+            now_ms: 1_100,
+        }),
+        vec![]
+    );
+    assert_eq!(core.handle(Intent::Tick { now_ms: 9_999 }), vec![]);
+    assert_eq!(core.view(), View::Showing(img("a.png")));
+}
+
+#[test]
+fn a_second_press_turning_into_a_drag_settles_the_first_click_at_once() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    tap_right(&mut core, 1_000);
+    core.handle(Intent::PointerDown {
+        pos: [441.0, 160.0],
+        frame_width: 480.0,
+        now_ms: 1_200,
+    });
+    // 第二下移动超过拖动阈值：第一下立即按单击结算；这次拖动本身不切换。
+    assert_eq!(
+        core.handle(Intent::PointerMoved {
+            pos: [470.0, 160.0]
+        }),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("c.png")],
+        }]
+    );
+    assert_eq!(
+        core.handle(Intent::PointerUp {
+            pos: [470.0, 160.0],
+            now_ms: 1_300,
+        }),
+        vec![]
+    );
+}
+
+#[test]
+fn a_right_press_cancels_a_waiting_click_and_rolls_back_an_active_drag() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    // 等待中的单击被右键取消：窗口结束也不切换。
+    tap_right(&mut core, 1_000);
+    assert_eq!(core.handle(Intent::RightPressed), vec![]);
+    assert_eq!(core.handle(Intent::Tick { now_ms: 9_999 }), vec![]);
+    assert_eq!(core.view(), View::Showing(img("a.png")));
+    // 拖动中右键：取消并产出位置回滚效果；松开不再有后续。
+    core.handle(Intent::PointerDown {
+        pos: [240.0, 160.0],
+        frame_width: 480.0,
+        now_ms: 2_000,
+    });
+    core.handle(Intent::PointerMoved {
+        pos: [300.0, 160.0],
+    });
+    assert_eq!(
+        core.handle(Intent::RightPressed),
+        vec![Effect::RollbackFrameDrag]
+    );
+    assert_eq!(
+        core.handle(Intent::PointerUp {
+            pos: [300.0, 160.0],
+            now_ms: 2_100,
+        }),
+        vec![]
+    );
+}
+
+#[test]
+fn a_click_settled_during_a_transition_joins_the_last_intent_rule() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    // 先起一段 a→b 的转场。
+    core.handle(Intent::NextRequested);
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 500,
+    });
+    // 转场中在左区点一下：结算时核心正忙，只登记为最后意图，不立即加载。
+    tap_right(&mut core, 600);
+    assert_eq!(core.handle(Intent::Tick { now_ms: 1_100 }), vec![]);
+    // 转场提交后，排队的右区单击（下一张）才执行。
+    let effects = settle_transition(&mut core, 1_100);
+    assert!(effects.contains(&Effect::Load {
+        candidates: vec![img("c.png"), img("a.png")],
+    }));
+}
+
+#[test]
+fn a_second_press_dragging_by_release_displacement_settles_the_first_click() {
+    // 系统拖动期间移动事件不送达应用：第二下只在松开时凭总位移判成拖动，
+    // 第一张的第一下仍要在这一刻按单击结算（决定 01 第 4 条）。
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    tap_right(&mut core, 1_000);
+    core.handle(Intent::PointerDown {
+        pos: [441.0, 160.0],
+        frame_width: 480.0,
+        now_ms: 1_200,
+    });
+    assert_eq!(
+        core.handle(Intent::PointerUp {
+            pos: [480.0, 160.0],
+            now_ms: 1_300,
+        }),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("c.png")],
+        }]
+    );
+    assert_eq!(core.view(), View::Showing(img("a.png")));
+}
+
+#[test]
+fn the_double_click_window_is_measured_from_the_first_press() {
+    // 第一下按住 400ms 才松开：双击窗口在按下后 500ms（即 1_500）关闭，
+    // 1_600 的第二下（距松开只 200ms）不再组成双击，而是先结算第一下。
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
+    core.handle(Intent::PointerDown {
+        pos: [440.0, 160.0],
+        frame_width: 480.0,
+        now_ms: 1_000,
+    });
+    core.handle(Intent::PointerUp {
+        pos: [440.0, 160.0],
+        now_ms: 1_400,
+    });
+    assert_eq!(
+        core.handle(Intent::PointerDown {
+            pos: [441.0, 160.0],
+            frame_width: 480.0,
+            now_ms: 1_600,
+        }),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("c.png")],
+        }]
+    );
+    // 第二下自身干净松开也不产出打开原图（它只是新的一下）。
+    assert_eq!(
+        core.handle(Intent::PointerUp {
+            pos: [441.0, 160.0],
+            now_ms: 1_650,
+        }),
+        vec![]
+    );
 }

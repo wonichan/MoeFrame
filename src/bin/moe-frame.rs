@@ -17,6 +17,7 @@ use moe_frame::{
     app_core::{Effect, FrameCore, Intent, ResumeData, View},
     config::{ConfigStore, PlaybackMode},
     decode_validation::DisplayMode,
+    gesture::GestureThresholds,
     loading::LoadRequest,
     playlist::{Direction, RandomSource},
     resize_cursor, resize_direction,
@@ -157,6 +158,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                     playback_mode,
                     Box::new(SystemRandom::new()),
                     resume,
+                    system_gesture_thresholds(cc.egui_ctx.pixels_per_point()),
                 ),
                 store,
                 fit_mode,
@@ -167,6 +169,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 texture: None,
                 incoming: None,
                 slide: None,
+                press_window_pos: None,
                 load_seq: 0,
                 load_in_flight: false,
                 wheel_acc: 0.0,
@@ -174,6 +177,49 @@ fn run() -> Result<(), Box<dyn Error>> {
         }),
     )?;
     Ok(())
+}
+
+/// 用系统默认看图器打开原图（工单 15）：菜单项与双击效果共用这一处；
+/// 失败不崩溃。路径含中文、空格与特殊字符时由系统打开命令原样处理。
+#[cfg(windows)]
+fn open_image(path: &std::path::Path) {
+    let _ = open::that(path);
+}
+
+/// 手势阈值取 Windows 系统设置（工单 15）：拖动阈值、双击时间与距离，
+/// 不写死另一套值；系统接口异常时退到与系统默认同量级的值。系统值是物理
+/// 像素，按当前缩放换算成 egui 逻辑点，与指针事件坐标同口径。
+#[cfg(windows)]
+fn system_gesture_thresholds(pixels_per_point: f32) -> GestureThresholds {
+    use windows_sys::Win32::UI::{
+        Input::KeyboardAndMouse::GetDoubleClickTime,
+        WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXDOUBLECLK, SM_CXDRAG, SM_CYDOUBLECLK, SM_CYDRAG,
+        },
+    };
+    let scale = if pixels_per_point > 0.0 {
+        pixels_per_point
+    } else {
+        1.0
+    };
+    let metric = |index: i32| {
+        let value = unsafe { GetSystemMetrics(index) };
+        if value > 0 {
+            value as f32 / scale
+        } else {
+            4.0
+        }
+    };
+    let double_click_ms = unsafe { GetDoubleClickTime() };
+    GestureThresholds {
+        drag_threshold: [metric(SM_CXDRAG), metric(SM_CYDRAG)],
+        double_click_ms: if double_click_ms > 0 {
+            u64::from(double_click_ms)
+        } else {
+            500
+        },
+        double_click_dist: [metric(SM_CXDOUBLECLK), metric(SM_CYDOUBLECLK)],
+    }
 }
 
 /// 滑动转场时长（秒）：约 300ms、ease-out（父规格 §5）。
@@ -202,6 +248,8 @@ struct FrameApp {
     incoming: Option<egui::TextureHandle>,
     /// 进行中的滑动转场渲染状态；源图是 texture、目标图是 incoming（工单 14）。
     slide: Option<Slide>,
+    /// 本次左键按下时窗口的外框位置：右键取消拖动时回滚到这里（工单 15）。
+    press_window_pos: Option<egui::Pos2>,
     /// 当前一轮加载的序号；新一轮扫描开始即作废在飞的旧加载结果。
     load_seq: u64,
     load_in_flight: bool,
@@ -276,6 +324,14 @@ impl FrameApp {
                         let seen = paths_to_strings(&seen);
                         let history = paths_to_strings(&history);
                         let _ = self.store.save_resume_state(Some(current), &seen, &history);
+                    }
+                }
+                Effect::OpenImage { path } => {
+                    open_image(&path);
+                }
+                Effect::RollbackFrameDrag => {
+                    if let Some(pos) = self.press_window_pos.take() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
                     }
                 }
                 Effect::Exit => {
@@ -442,6 +498,10 @@ impl eframe::App for FrameApp {
         let playing = self.core.is_playing();
         let current_interval = self.core.interval_secs();
         let current_mode = self.core.playback_mode();
+        let current_path = match self.core.view() {
+            View::Showing(path) => Some(path),
+            View::Empty => None,
+        };
         panel.response.context_menu(|ui| {
             if ui.button("选择文件夹…").clicked() {
                 menu_intent = Some(Intent::FolderPickRequested);
@@ -489,6 +549,23 @@ impl eframe::App for FrameApp {
                     }
                 }
             });
+            if let Some(current) = &current_path {
+                ui.separator();
+                if ui.button("打开当前原图").clicked() {
+                    open_image(current);
+                    ui.close();
+                }
+                if ui.button("打开所在文件夹").clicked() {
+                    if let Some(parent) = current.parent() {
+                        let _ = open::that(parent);
+                    }
+                    ui.close();
+                }
+                if ui.button("复制图片路径").clicked() {
+                    ui.ctx().copy_text(current.to_string_lossy().into_owned());
+                    ui.close();
+                }
+            }
             ui.separator();
             if ui.button("退出").clicked() {
                 menu_intent = Some(Intent::ExitRequested);
@@ -552,7 +629,11 @@ impl FrameApp {
 
 #[cfg(windows)]
 impl FrameApp {
-    /// Content drag and eight-direction resize, reusing the geometry validated in ticket 08.
+    /// 指针事件（工单 15）：按发生顺序把内容区的按下/移动/松开与右键按下
+    /// 转发给行为核心按系统阈值判定（单击/双击/拖动/取消），窗口拖动与边缘
+    /// 缩放仍走原生命令；边缘按下只缩放，不进入手势判定。系统拖动期间移动
+    /// 事件不送达应用，核心以松开时的总位移兜底判定拖动；拖动中右键的取消
+    /// 与位置恢复由系统拖动环本身处理，核心侧的回滚效果是事件可达时的保障。
     fn handle_pointer(&mut self, ctx: &egui::Context) {
         if ctx.current_pass_index() != 0 {
             return;
@@ -565,37 +646,68 @@ impl FrameApp {
                 }
             }
         }
-        // A right-click opens the menu; it must never start a drag or resize.
-        if ctx.input(|input| input.pointer.secondary_pressed()) {
-            return;
-        }
-        let pressed = ctx.input(|input| {
-            if !input.pointer.primary_down() {
-                return None;
-            }
-            input.events.iter().rev().find_map(|event| match event {
+        let maximized_or_fullscreen = ctx.input(|input| {
+            input.viewport().maximized == Some(true) || input.viewport().fullscreen == Some(true)
+        });
+        let now = now_ms(ctx);
+        let events: Vec<egui::Event> = ctx.input(|input| input.events.clone());
+        for event in &events {
+            match event {
                 egui::Event::PointerButton {
                     pos,
                     button: egui::PointerButton::Primary,
                     pressed: true,
                     ..
-                } => Some(*pos),
-                _ => None,
-            })
-        });
-        let Some(pos) = pressed.filter(|pos| rect.contains(*pos)) else {
-            return;
-        };
-        let maximized_or_fullscreen = ctx.input(|input| {
-            input.viewport().maximized == Some(true) || input.viewport().fullscreen == Some(true)
-        });
-        if maximized_or_fullscreen {
-            return;
-        }
-        if let Some(direction) = resize_direction(rect, pos) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
-        } else {
-            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                } if rect.contains(*pos) => {
+                    if let Some(direction) = resize_direction(rect, *pos) {
+                        if !maximized_or_fullscreen {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+                        }
+                        continue;
+                    }
+                    self.press_window_pos = ctx
+                        .input(|input| input.viewport().outer_rect)
+                        .map(|r| r.min);
+                    let effects = self.core.handle(Intent::PointerDown {
+                        pos: [pos.x - rect.left(), pos.y - rect.top()],
+                        frame_width: rect.width(),
+                        now_ms: now,
+                    });
+                    self.dispatch(ctx, effects);
+                    if !maximized_or_fullscreen {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    }
+                }
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    ..
+                } => {
+                    let effects = self.core.handle(Intent::PointerUp {
+                        pos: [pos.x - rect.left(), pos.y - rect.top()],
+                        now_ms: now,
+                    });
+                    self.dispatch(ctx, effects);
+                }
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Secondary,
+                    pressed: true,
+                    ..
+                } => {
+                    // 右键只取消未完成的左键动作并照常开菜单（egui 上下文菜单），
+                    // 从不启动拖动或缩放，也不取消已在播的转场。
+                    let effects = self.core.handle(Intent::RightPressed);
+                    self.dispatch(ctx, effects);
+                }
+                egui::Event::PointerMoved(pos) => {
+                    let effects = self.core.handle(Intent::PointerMoved {
+                        pos: [pos.x - rect.left(), pos.y - rect.top()],
+                    });
+                    self.dispatch(ctx, effects);
+                }
+                _ => {}
+            }
         }
     }
 }
