@@ -94,12 +94,8 @@ fn test_app() -> (super::FrameApp, std::path::PathBuf) {
         }
     }
 
-    let temp = std::env::temp_dir().join(format!(
-        "moe-frame-ui-regression-{}-{}",
-        std::process::id(),
-        std::thread::current().name().unwrap_or("test")
-    ));
-    let _ = std::fs::create_dir_all(&temp);
+    let temp = std::env::temp_dir().join(format!("moe-frame-ui-regression-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).expect("test temp directory can be created");
     let config_path = temp.join("config.toml");
     let log_path = temp.join("test.log");
     let (sync, package) =
