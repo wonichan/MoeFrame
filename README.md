@@ -1,26 +1,64 @@
 # MoeFrame
 
-Windows 10/11 x64 的无边框相框程序（Rust + eframe/egui）。V1 规格见
-[.scratch/v1-exe/spec.md](.scratch/v1-exe/spec.md)；票 10–21 的功能已实现：
-图库扫描与自然排序、顺序/随机轮播（历史不重复）、续播、转场、托盘常驻与左键切换、
-设置窗（路径与秒数草稿、校验）、窗口位置与 DPI 恢复、开机自启、点击/双击/拖动分界。
+Windows 10/11 x64 的无边框相框：选一个图片文件夹，它按你的高度把整张图铺满窗口，
+按间隔自动轮播，托盘常驻，最小化到后台继续放。
 
-发布验收尚未完成：[22 资源达标](.scratch/v1-exe/issues/22-release-resource-budgets.md)
-与 [23 端到端验收](.scratch/v1-exe/issues/23-release-acceptance.md) 仍在待办，
-当前产物不是交付版本。
+免安装：`target\release\MoeFrame.exe` 是静态链接的单文件，拷到任意目录双击即可运行。
 
-## 构建与运行
+## 第一次使用
 
-目标为 Windows 10/11 x64；工具链版本与组件由 `rust-toolchain.toml` 固定（含 clippy、rustfmt、rust-analyzer）。
+首次启动（`%APPDATA%\MoeFrame\config.toml` 不存在或没有图库路径）会弹出系统文件夹对话框，
+选一个图片文件夹即可。之后可以随时在设置窗里改。
+
+## 操作
+
+| 操作 | 结果 |
+| --- | --- |
+| 拖动相框内容区 | 移动窗口 |
+| 拖八条边/四个角 | 等比缩放（窗口比例始终等于当前图片比例） |
+| 键盘 ← / → | 上一张 / 下一张 |
+| 右键 | 相框菜单：上一张、下一张、播放/暂停、重新扫描、选择文件夹、打开当前原图、复制图片路径、设置、退出 |
+| 双击 | 用系统默认程序打开当前原图 |
+| 单击、滚轮 | 不切图（避免误触） |
+| 托盘左键 | 显示 / 隐藏相框 |
+| 托盘右键 | 托盘菜单：显示/隐藏、上一张、下一张、播放/暂停、设置、退出 |
+
+图片始终完整显示，不裁切也不留黑边：窗口高度由你决定，宽度随当前图片比例变化。
+切图瞬时完成，没有滑动转场。
+
+## 轮播
+
+顺序模式按自然序循环（连续数字按数值比较，其余按 Unicode 码点）；随机模式按洗牌袋
+抽完一轮再重抽，本轮内不重复。已看过的图会记进历史，回到最新图后继续未看的；
+关掉程序再打开，会恢复上次显示的图和本轮进度。
+
+- 关闭窗口（右上 × 或 Alt+F4）= 隐藏到托盘，轮播继续。
+- 托盘或菜单里的「退出」= 结束进程，同时按当前状态写回配置。
+
+## 设置
+
+设置窗是独立窗口，改动先存草稿，点「保存」才生效；直接关掉设置窗就丢弃草稿。
+间隔有 10 秒、30 秒、1 分钟、5 分钟、10 分钟、30 分钟六档，也可在自定义里填
+3 到 99999999 之间的整数秒；
+填同一个值不会被记成新改动。
+
+三个配置键目前保留但尚未生效：悬停暂停（`playback.pause_on_hover`）、
+动画类型（`playback.animation`）、显示文件名（`display.show_filename`）。
+
+## 配置与日志
+
+- 配置：`%APPDATA%\MoeFrame\config.toml`（程序自动维护，也可以手改，重启生效）
+- 日志：`%APPDATA%\MoeFrame\moe_frame.log`（跳过坏图时会记下路径和原因）
+- 开机自启：设置窗里勾选，写入当前用户的 Run 键；写入失败会回滚勾选状态
+
+## 构建与检查
+
+工具链版本与组件由 `rust-toolchain.toml` 固定（含 clippy、rustfmt、rust-analyzer）。
 
 ```powershell
 cargo build --release --bin MoeFrame --locked
 .\target\release\MoeFrame.exe
 ```
-
-配置在 `%APPDATA%\MoeFrame\config.toml`，日志在 `%APPDATA%\MoeFrame\moe_frame.log`。
-
-## 检查
 
 `scripts/check.sh` 是唯一检查入口，CI 跑同一套：
 
@@ -28,20 +66,13 @@ cargo build --release --bin MoeFrame --locked
 bash scripts/check.sh   # cargo fmt --check + clippy -D warnings + test --all-targets
 ```
 
-## 运行验证工具
+## 验证工具与文档
 
-08 的窗口验证程序仍在：
-
-```powershell
-cargo build --release --bin window-validation --locked
-.\target\release\window-validation.exe
-```
-
-- 内容区拖动移动，四边/四角缩放，最小 120×120 逻辑尺寸。
-- `F9` 记快照，`F10` 最大化/还原，`Esc` 退出。
-- 日志在 `%APPDATA%\MoeFrame\window-validation\`，每次启动独立保存。
-
-操作清单与实测记录见 [窗口验证清单](docs/window-validation.md)。用户已在本机（Windows 11 x64 Build 26200、150% 缩放）操作确认通过；Windows 10、Build 26100、100% 缩放与混合 DPI 双屏仍未验证。编译、日志或截图都不代表人工验收。
+- `cargo run --release --bin window-validation`：08 的窗口验证程序（`F9` 快照、`F10` 最大化、`Esc` 退出），
+  清单见 [窗口验证清单](docs/window-validation.md)。
+- 发布资源测量：`scripts/measure-release.ps1`，历史结果见 [发布测量记录](docs/release-measurements.md)。
+- 规格与实施票：[.scratch/v1-exe/spec.md](.scratch/v1-exe/spec.md)、[最终验收票](.scratch/v1-exe/issues/23-release-acceptance.md)
+- 架构决定：[docs/adr/](docs/adr/)；工程笔记：[.agents/notes/](.agents/notes/)
 
 ## 目录
 
@@ -50,7 +81,7 @@ src/lib.rs                      egui 输入 → 视口命令（拖动、八方�
 src/app_core.rs、playlist.rs    轮播状态机与历史
 src/config.rs、config_sync.rs   配置读写与跨进程同步
 src/library.rs、loading.rs      图库扫描与解码
-src/display.rs、display_data.rs 转场显示与共享帧数据
+src/display.rs、display_data.rs 显示数据与共享帧
 src/window_geom.rs              窗口位置/尺寸与 DPI 恢复
 src/diagnostics.rs              真实文件日志与窗口观测
 src/bin/moe-frame.rs            正式相框入口：main、日志、配置装载
