@@ -80,7 +80,7 @@ pub fn load_image(path: &Path, request: LoadRequest) -> Result<DisplayImage, Dec
     decoder_call(path, || decoder.set_limits(limits))?;
     let [tw, th] = request.target_pixels;
     let [dw, dh] =
-        display_size([width, height], request.target_pixels, request.mode).map_err(&fail)?;
+        display_size([width, height], request.target_pixels, request.mode).map_err(fail)?;
     let coverage_bytes = u64::from(dw)
         .checked_mul(u64::from(dh))
         .and_then(|n| n.checked_mul(u64::from(decoder.color_type().bytes_per_pixel().max(4))));

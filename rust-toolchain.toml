@@ -1,0 +1,4 @@
+[toolchain]
+# 本地与 CI 用同一条工具链；组件随 toolchain 自动补齐，避免 clippy / rust-analyzer 缺失后才现装。
+channel = "1.99.1"
+components = ["rustfmt", "clippy", "rust-analyzer"]

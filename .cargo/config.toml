@@ -1,0 +1,8 @@
+# target/debug/incremental 在 Windows 上收尾时会偶发「拒绝访问 (os error 5)」，
+# 每次构建刷一行与代码无关的伪错误。关掉 dev/test 增量编译，换干净的构建日志；
+# release 本来就不做增量。CI 由 scripts/check.sh 再显式设一次 CARGO_INCREMENTAL=0。
+[profile.dev]
+incremental = false
+
+[profile.test]
+incremental = false

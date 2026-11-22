@@ -27,8 +27,10 @@ pub struct ProcessMemory {
     pub page_fault_count: u32,
 }
 pub fn process_memory() -> io::Result<ProcessMemory> {
-    let mut counters = PROCESS_MEMORY_COUNTERS_EX::default();
-    counters.cb = mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32;
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX {
+        cb: mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        ..Default::default()
+    };
     // SAFETY: Current-process pseudo handle is live and must not be closed. The EX struct is
     // initialized, starts with PROCESS_MEMORY_COUNTERS, and has the supplied byte count.
     let ok = unsafe {
@@ -49,8 +51,10 @@ pub fn process_memory() -> io::Result<ProcessMemory> {
     })
 }
 pub fn system_version() -> io::Result<String> {
-    let mut version = OSVERSIONINFOW::default();
-    version.dwOSVersionInfoSize = mem::size_of::<OSVERSIONINFOW>() as u32;
+    let mut version = OSVERSIONINFOW {
+        dwOSVersionInfoSize: mem::size_of::<OSVERSIONINFOW>() as u32,
+        ..Default::default()
+    };
     // SAFETY: Initialized, correctly-sized OSVERSIONINFOW output; read-only system query.
     let status = unsafe { RtlGetVersion(&mut version) };
     if status < 0 {

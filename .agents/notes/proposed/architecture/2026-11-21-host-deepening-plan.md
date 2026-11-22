@@ -4,7 +4,7 @@ Status: proposed
 
 ## Problem
 
-工单 10–21 之后，库层模块（app_core、playlist、gesture、config）深度良好，但宿主 `src/bin/moe-frame.rs`（1656 行，近 14 个提交改 8 次）没有任何 module 边界：工单 17/18 之间发生分叉，18 票起的新职责（显示方式、草稿、几何、自启）全部绕开行为核心、以「字段 + 方法」直接长在 FrameApp 上。后果是宿主侧行为（纹理转正记账、设置窗帧编排、几何生命周期、托盘接线、重绘调度等）零自动化覆盖，只靠未执行的实机清单兜底；「当前纹理与所显示图片的口径一致」这类不变量靠三处手抄维系；每个新持久化设置要改六处。2026-11-21 用 improve-codebase-architecture 技能完成架构评审（六个 deepening 候选），并逐个 grilling 走完决策树，结论如下。本笔记记录定案，实施另行拆票。
+工单 10–21 之后，库层模块（app_core、playlist、gesture、config）深度良好，但宿主 `src/bin/moe-frame.rs`（评审时 1656 行，近 14 个提交改 8 次；2026-11-22 已按职责机械拆到 `src/bin/moe-frame/`，入口剩 220 行，见 [拆分笔记](../../implemented/architecture/2026-11-22-host-module-split.md)，六个候选的定案不受影响）没有任何 module 边界：工单 17/18 之间发生分叉，18 票起的新职责（显示方式、草稿、几何、自启）全部绕开行为核心、以「字段 + 方法」直接长在 FrameApp 上。后果是宿主侧行为（纹理转正记账、设置窗帧编排、几何生命周期、托盘接线、重绘调度等）零自动化覆盖，只靠未执行的实机清单兜底；「当前纹理与所显示图片的口径一致」这类不变量靠三处手抄维系；每个新持久化设置要改六处。2026-11-21 用 improve-codebase-architecture 技能完成架构评审（六个 deepening 候选），并逐个 grilling 走完决策树，结论如下。本笔记记录定案，实施另行拆票。
 
 ## Proposal
 

@@ -1,0 +1,14 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 工具链与组件由 rust-toolchain.toml 决定，这里不重复声明版本。
+      - run: bash scripts/check.sh
+        shell: bash

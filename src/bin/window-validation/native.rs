@@ -46,8 +46,10 @@ pub fn report_startup_error(message: &str) {
     }
 }
 pub fn system_version() -> io::Result<String> {
-    let mut version = OSVERSIONINFOW::default();
-    version.dwOSVersionInfoSize = mem::size_of::<OSVERSIONINFOW>() as u32;
+    let mut version = OSVERSIONINFOW {
+        dwOSVersionInfoSize: mem::size_of::<OSVERSIONINFOW>() as u32,
+        ..Default::default()
+    };
     // SAFETY: The initialized output struct has the size required by RtlGetVersion.
     let status = unsafe { RtlGetVersion(&mut version) };
     if status < 0 {
