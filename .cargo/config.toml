@@ -6,3 +6,8 @@ incremental = false
 
 [profile.test]
 incremental = false
+# 交付形态是"单个 exe 拷到任何机器就能跑"：静态链接 MSVC CRT，
+# 否则 exe 依赖 VCRUNTIME140.dll / api-ms-win-crt-*（需装 VC++ 可再发行组件）。
+# 只对 Windows 目标生效，不影响 Linux 上的测试副本。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

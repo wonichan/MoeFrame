@@ -90,4 +90,4 @@
 | 不依赖 WebView | `Cargo.lock` 无 `webview2-com`/`wry`/`tauri`/`webkit`；eframe 用 `glow`（OpenGL）后端 | ✅ |
 | 不依赖开发环境 | 用独立临时 `%APPDATA%` 即可运行，不需要 Rust 工具链或 SDK | ✅ |
 
-遗留观察（不阻塞本条款，未改）：exe 的导入表仍含 `VCRUNTIME140.dll` 与 `api-ms-win-crt-*`，即需要 Visual C++ 可再发行组件（本机 System32 已有）。若要真正"单个 exe 拷走就能跑"，需改用静态 CRT（`+crt-static`）。当前判定为可接受：目标机器是常规 Windows 11 桌面。
+静态 CRT（2026-11-22 用户要求"单个 exe 拷到任何机器就能跑"，已落地）：`.cargo/config.toml` 增加 `[target.x86_64-pc-windows-msvc] rustflags = ["-C", "target-feature=+crt-static"]`。改动前导入表含 `VCRUNTIME140.dll` 与 6 个 `api-ms-win-crt-*`；改动后 CRT 运行时 DLL 导入为 **0**，只剩 OS 自带 DLL（`kernel32/user32/opengl32/dwrite/bcryptprimitives/…`）。体积 7.86 → **8.02MB**，启动/工作集/CPU 复测：首图 **290ms**、稳态工作集 **72.23MB**、CPU **0.11%**，全部仍在预算内。
