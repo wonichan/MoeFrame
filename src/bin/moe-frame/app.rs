@@ -50,8 +50,8 @@ pub(crate) struct FrameApp {
     pub(crate) autostart_store: RegAutostartStore,
     /// 当前外观模式（V2 相框外观专题工单 01）：宿主持有，几何观察
     /// 与解码口径的四边内距经 effective_insets 给出（内置画框按画框
-    /// 参数、自定义相框图按分析结果缩放、回退时按内置）；设置窗切换
-    /// 时更新本字段并经 config_sync 写回。
+    /// 参数、自定义相框图按分析结果缩放、回退时按内置默认画框）；
+    /// 设置窗切换时更新本字段并经 config_sync 写回。
     pub(crate) appearance: AppearanceMode,
     /// 内置画框参数（V2 相框外观专题工单 02）：框体预设与框宽 /
     /// 卡纸宽；内置模式的内距（框宽 + 卡纸宽）与三层绘制都读它，
@@ -181,9 +181,10 @@ pub(crate) enum FrameArtHost {
         pixels: Option<Vec<u8>>,
         texture: Option<egui::TextureHandle>,
     },
-    /// 文件缺失或分析拒绝：按内置画框回退（行为取内置模式的
-    /// 当前内距与绘制），原因在设置窗显示、日志记一行；已保存
-    /// 的外观模式与路径不改，用户修好图后切回自定义即恢复。
+    /// 文件缺失或分析拒绝：按内置默认画框回退（胡桃木 + 默认
+    /// 宽，与用户自己的内置参数无关，spec 定案），原因在设置窗
+    /// 显示、日志记一行；已保存的外观模式与路径不改，用户修好
+    /// 图后切回自定义即恢复。
     Fallback { reason: String },
 }
 
@@ -223,17 +224,24 @@ impl FrameApp {
         }
     }
 
-    /// 当前生效的四边内距（逻辑像素）：自定义且分析成功时为检测
-    /// 内距按「窗口内宽 ÷ 相框图原宽」缩放；自定义回退或未选图
-    /// 时按内置画框的当前内距（与内置模式同行为，工单 02 的绘制
-    /// 落地后即胡桃木框）；其余模式按模式自身内距。
+    /// 当前生效外观（库 frame_layout 一次裁决）：绘制计划、生效
+    /// 内距与内置绘制参数都只消费这一份结论，「自定义未生效即
+    /// 回退内置默认画框」的规则不在宿主重复编码。
+    pub(crate) fn effective_appearance(&self) -> EffectiveAppearance {
+        effective_appearance(self.appearance, self.custom_art_active(), self.frame)
+    }
+
+    /// 当前生效的四边内距（逻辑像素）：自定义生效时为检测内距
+    /// 按「窗口内宽 ÷ 相框图原宽」缩放；其余结论（极简全 0、
+    /// 内置按用户参数、回退按默认参数）的内距由结论自身给出。
     pub(crate) fn effective_insets(&self, inner_width: f32) -> Insets {
-        match self.appearance {
-            AppearanceMode::Custom => match &self.frame_art {
+        match self.effective_appearance() {
+            EffectiveAppearance::CustomArt => match &self.frame_art {
                 FrameArtHost::Loaded { analysis, .. } => analysis.insets_at(inner_width),
-                _ => AppearanceMode::Builtin.insets(self.frame),
+                // CustomArt 只在分析成功时裁决得出，此分支不可达。
+                _ => Insets::ZERO,
             },
-            mode => mode.insets(self.frame),
+            effective => effective.insets(),
         }
     }
 

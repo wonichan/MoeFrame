@@ -11,7 +11,10 @@
 //! 混入内置层与阴影、透明处不铺底）钉在这张计划表上，宿主不再
 //! 自行拼条件。
 
-use crate::{config::AppearanceMode, window_geom::Insets};
+use crate::{
+    config::{AppearanceMode, BuiltinFrame},
+    window_geom::Insets,
+};
 
 /// 平面矩形（逻辑像素）：布局接缝的输入输出口径。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -83,6 +86,54 @@ pub fn builtin_layers(window: LayoutRect, insets: Insets, frame_width: f32) -> B
     }
 }
 
+/// 生效外观：把「外观模式 × 相框图是否生效 × 用户内置参数」一次
+/// 裁决成宿主各处共用的结论——绘制计划、生效内距与内置绘制参数
+/// 都只消费这一份结论，「自定义未生效即回退内置」的规则只在这里
+/// 编码一次。
+///
+/// 回退的口径是内置**默认**画框（胡桃木 + 默认宽，spec 定案），
+/// 不是用户当前的内置参数：回退是运行期状态，只读不改已保存的
+/// 设置；用户把相框图修好后自定义即恢复，用户参数全程无痕。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EffectiveAppearance {
+    /// 极简：不画任何画框层，内距全 0（V1 行为）。
+    Minimal,
+    /// 按内置画框绘制，携带生效参数：内置模式是用户参数，
+    /// 自定义回退时是默认参数。
+    Builtin(BuiltinFrame),
+    /// 自定义相框图生效：画框层只有九宫格，内距来自分析结果
+    /// 按窗口宽度缩放（宿主在该分支另行给出）。
+    CustomArt,
+}
+
+/// 生效外观裁决：自定义且相框图分析成功才走相框图，其余自定义
+/// 一律回退内置默认画框。
+pub fn effective_appearance(
+    appearance: AppearanceMode,
+    custom_active: bool,
+    frame: BuiltinFrame,
+) -> EffectiveAppearance {
+    match appearance {
+        AppearanceMode::Minimal => EffectiveAppearance::Minimal,
+        AppearanceMode::Builtin => EffectiveAppearance::Builtin(frame),
+        AppearanceMode::Custom if custom_active => EffectiveAppearance::CustomArt,
+        AppearanceMode::Custom => EffectiveAppearance::Builtin(BuiltinFrame::default()),
+    }
+}
+
+impl EffectiveAppearance {
+    /// 本结论的静态四边内距：内置按生效参数（单边 = 框宽 +
+    /// 卡纸宽），极简全 0。自定义生效时这里也是全 0——其生效
+    /// 内距是分析结果，宿主在 CustomArt 分支换成缩放后的检测
+    /// 内距，不经此方法。
+    pub fn insets(self) -> Insets {
+        match self {
+            EffectiveAppearance::Builtin(frame) => AppearanceMode::Builtin.insets(frame),
+            EffectiveAppearance::Minimal | EffectiveAppearance::CustomArt => Insets::ZERO,
+        }
+    }
+}
+
 /// 一帧要画的画框层（工单 04 的绘制计划）：三选一，互斥——尤其
 /// 自定义相框图生效时只有九宫格一层，自绘软阴影只随内置层出现，
 /// 异形因此不可能混入阴影。
@@ -122,15 +173,15 @@ pub struct PaintPlan {
     pub hint: HintPaint,
 }
 
-/// 绘制计划裁决（外观模式 × 相框图是否生效 × 是否有图）：自定义
-/// 未生效（未选图或分析回退）即回退内置——画框层与面板口径与
-/// 内置模式逐项一致；自定义生效时相框图是唯一的画框层。
-pub fn paint_plan(appearance: AppearanceMode, custom_active: bool, has_image: bool) -> PaintPlan {
-    let frame_paint = match appearance {
-        AppearanceMode::Builtin => FramePaint::Builtin,
-        AppearanceMode::Custom if custom_active => FramePaint::CustomArt,
-        AppearanceMode::Custom => FramePaint::Builtin,
-        AppearanceMode::Minimal => FramePaint::None,
+/// 绘制计划裁决（生效外观 × 是否有图）：回退与否已在
+/// effective_appearance 里裁决完毕，这里只把结论翻成画框层、
+/// 面板与提示三项；生效外观是内置（含回退）时画框层与面板口径
+/// 与内置模式逐项一致，自定义生效时相框图是唯一的画框层。
+pub fn paint_plan(effective: EffectiveAppearance, has_image: bool) -> PaintPlan {
+    let frame_paint = match effective {
+        EffectiveAppearance::Builtin(_) => FramePaint::Builtin,
+        EffectiveAppearance::CustomArt => FramePaint::CustomArt,
+        EffectiveAppearance::Minimal => FramePaint::None,
     };
     let hint = if has_image {
         HintPaint::None

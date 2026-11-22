@@ -5,8 +5,11 @@
 //! 纯函数回归测试。
 
 use moe_frame::{
-    config::AppearanceMode,
-    frame_layout::{builtin_layers, paint_plan, shadow_layers, FramePaint, HintPaint, LayoutRect},
+    config::{AppearanceMode, BuiltinFrame, FramePreset},
+    frame_layout::{
+        builtin_layers, effective_appearance, paint_plan, shadow_layers, EffectiveAppearance,
+        FramePaint, HintPaint, LayoutRect, PaintPlan,
+    },
     window_geom::Insets,
 };
 
@@ -21,6 +24,24 @@ fn uniform(side: f32) -> Insets {
         right: side,
         bottom: side,
     }
+}
+
+/// 用户自己的内置参数（原木、框宽 30 / 卡纸宽 6，故意远离默认
+/// 值）：回退口径的测试靠它区分「用用户参数」与「用默认参数」。
+fn user_frame() -> BuiltinFrame {
+    BuiltinFrame {
+        preset: FramePreset::Oak,
+        frame_width: 30.0,
+        mat_width: 6.0,
+    }
+}
+
+/// 经生效外观裁决再问绘制计划（宿主的实际问法）。
+fn plan_for(mode: AppearanceMode, custom_active: bool, has_image: bool) -> PaintPlan {
+    paint_plan(
+        effective_appearance(mode, custom_active, user_frame()),
+        has_image,
+    )
 }
 
 #[test]
@@ -77,7 +98,7 @@ fn per_side_insets_place_the_image_area_exactly() {
 fn builtin_mode_paints_the_builtin_frame_without_panel_fill() {
     // 内置模式：画框层是内置三层（自绘阴影只随这一层出现），
     // 面板不铺底——框体层自铺满整个窗口。
-    let plan = paint_plan(AppearanceMode::Builtin, false, true);
+    let plan = plan_for(AppearanceMode::Builtin, false, true);
     assert_eq!(plan.frame_paint, FramePaint::Builtin);
     assert!(!plan.panel_opaque);
 }
@@ -87,7 +108,7 @@ fn custom_active_paints_only_the_art_no_builtin_no_shadow() {
     // 异形（工单 04）的钉子：自定义生效时画框层只有九宫格相框
     // 图——计划里不存在内置层，自绘阴影因此无从混入；面板不
     // 铺底，相框图的透明像素（洞与不规则外轮廓）直接透出桌面。
-    let plan = paint_plan(AppearanceMode::Custom, true, true);
+    let plan = plan_for(AppearanceMode::Custom, true, true);
     assert_eq!(plan.frame_paint, FramePaint::CustomArt);
     assert!(!plan.panel_opaque);
 }
@@ -96,7 +117,7 @@ fn custom_active_paints_only_the_art_no_builtin_no_shadow() {
 fn custom_inactive_falls_back_to_the_builtin_frame() {
     // 自定义未生效（未选图或分析回退）：回退即内置，画框层与
     // 内置模式逐项一致（含自绘阴影的资格）。
-    let plan = paint_plan(AppearanceMode::Custom, false, true);
+    let plan = plan_for(AppearanceMode::Custom, false, true);
     assert_eq!(plan.frame_paint, FramePaint::Builtin);
     assert!(!plan.panel_opaque);
 }
@@ -104,7 +125,7 @@ fn custom_inactive_falls_back_to_the_builtin_frame() {
 #[test]
 fn minimal_keeps_the_v1_opaque_panel_and_no_frame() {
     // 极简：不画任何画框层，面板铺黑底保持 V1 视觉。
-    let plan = paint_plan(AppearanceMode::Minimal, false, true);
+    let plan = plan_for(AppearanceMode::Minimal, false, true);
     assert_eq!(plan.frame_paint, FramePaint::None);
     assert!(plan.panel_opaque);
 }
@@ -117,28 +138,62 @@ fn empty_state_hint_placement_follows_the_frame_layer() {
         AppearanceMode::Builtin,
         AppearanceMode::Custom,
     ] {
-        assert_eq!(paint_plan(mode, true, true).hint, HintPaint::None);
+        assert_eq!(plan_for(mode, true, true).hint, HintPaint::None);
     }
     // 自定义生效的空状态：框体（相框图）照画，提示浮在洞中央；
     // 背景是透出的桌面、明暗未知，浅字必须衬深色描影才恒可读。
-    let plan = paint_plan(AppearanceMode::Custom, true, false);
+    let plan = plan_for(AppearanceMode::Custom, true, false);
     assert_eq!(plan.frame_paint, FramePaint::CustomArt);
     assert_eq!(plan.hint, HintPaint::Floating { outline: true });
     // 极简空状态：提示浮在整窗中央，背景是自家黑底，不用描影。
     assert_eq!(
-        paint_plan(AppearanceMode::Minimal, false, false).hint,
+        plan_for(AppearanceMode::Minimal, false, false).hint,
         HintPaint::Floating { outline: false }
     );
     // 内置（含自定义回退）空状态：提示由内置绘制内部按卡纸
     // 在场与否选字色，不走浮排。
     assert_eq!(
-        paint_plan(AppearanceMode::Builtin, false, false).hint,
+        plan_for(AppearanceMode::Builtin, false, false).hint,
         HintPaint::InFrame
     );
     assert_eq!(
-        paint_plan(AppearanceMode::Custom, false, false).hint,
+        plan_for(AppearanceMode::Custom, false, false).hint,
         HintPaint::InFrame
     );
+}
+
+#[test]
+fn builtin_mode_resolves_with_the_users_frame() {
+    // 内置模式：生效参数就是用户参数（单边内距 = 30 + 6）。
+    let effective = effective_appearance(AppearanceMode::Builtin, false, user_frame());
+    assert_eq!(effective, EffectiveAppearance::Builtin(user_frame()));
+    assert_eq!(effective.insets(), uniform(36.0));
+}
+
+#[test]
+fn custom_inactive_falls_back_to_the_default_frame_not_the_users() {
+    // spec 定案：相框图未生效时回退内置「默认」画框——胡桃木 +
+    // 默认宽（单边内距 = 14 + 18），不是用户当前的内置参数
+    // （30 + 6）。回退是运行期状态：裁决只读用户参数、不改写它。
+    let effective = effective_appearance(AppearanceMode::Custom, false, user_frame());
+    assert_eq!(
+        effective,
+        EffectiveAppearance::Builtin(BuiltinFrame::default())
+    );
+    assert_eq!(effective.insets(), uniform(32.0));
+}
+
+#[test]
+fn custom_active_and_minimal_resolve_directly() {
+    // 自定义生效：画框层只有相框图，用户内置参数不参与裁决。
+    assert_eq!(
+        effective_appearance(AppearanceMode::Custom, true, user_frame()),
+        EffectiveAppearance::CustomArt
+    );
+    // 极简：无画框层、内距全 0（V1 行为）。
+    let minimal = effective_appearance(AppearanceMode::Minimal, false, user_frame());
+    assert_eq!(minimal, EffectiveAppearance::Minimal);
+    assert_eq!(minimal.insets(), Insets::ZERO);
 }
 
 #[test]

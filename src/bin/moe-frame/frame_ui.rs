@@ -81,12 +81,8 @@ impl eframe::App for FrameApp {
         // 不铺底，相框图的透明像素（洞与异形外轮廓）直接透出
         // 桌面，宿主只画画面区域的插画与九宫格八区。
         self.ensure_frame_art_texture(&ctx);
-        let custom_active = self.custom_art_active();
-        let plan = moe_frame::frame_layout::paint_plan(
-            self.appearance,
-            custom_active,
-            self.texture.is_some(),
-        );
+        let effective = self.effective_appearance();
+        let plan = moe_frame::frame_layout::paint_plan(effective, self.texture.is_some());
         let panel_fill = if plan.panel_opaque {
             egui::Color32::BLACK
         } else {
@@ -98,9 +94,10 @@ impl eframe::App for FrameApp {
                 let rect = ui.max_rect();
                 let painter = ui.painter();
                 // 内置画框（含自定义未生效时的回退）由 frame_paint
-                // 整窗绘制：三层、阴影与空状态提示都在其内部。
-                if plan.frame_paint == moe_frame::frame_layout::FramePaint::Builtin {
-                    self.paint_builtin_frame(painter, rect);
+                // 整窗绘制：三层、阴影与空状态提示都在其内部；绘制
+                // 参数取生效外观携带的那份（回退时是默认参数）。
+                if let EffectiveAppearance::Builtin(frame) = effective {
+                    self.paint_builtin_frame(painter, rect, frame);
                     return;
                 }
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));

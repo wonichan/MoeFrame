@@ -53,8 +53,15 @@ impl FrameApp {
     /// 内置画框模式的一帧绘制：阴影与三层都在窗口矩形内完成——
     /// 窗口尺寸即外框尺寸，窗外没有可绘制的像素，自绘软阴影落在
     /// 框体外沿内侧的扩散带上（布局接缝 shadow_layers 产出层序）。
-    pub(crate) fn paint_builtin_frame(&self, painter: &egui::Painter, rect: egui::Rect) {
-        let frame = self.frame;
+    /// `frame` 是生效外观携带的生效参数：内置模式下是用户参数，
+    /// 自定义回退时是默认参数——本函数不读宿主保存的用户参数，
+    /// 画出来的永远是裁决给的那一份。
+    pub(crate) fn paint_builtin_frame(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        frame: BuiltinFrame,
+    ) {
         let layers = builtin_layers(
             to_layout_rect(rect),
             AppearanceMode::Builtin.insets(frame),

@@ -52,7 +52,10 @@ use moe_frame::{
     decode_validation::DisplayMode,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
     frame_art::FrameArtAnalysis,
-    frame_layout::{builtin_layers, shadow_layers, LayoutRect, SHADOW_STEP_PX},
+    frame_layout::{
+        builtin_layers, effective_appearance, shadow_layers, EffectiveAppearance, LayoutRect,
+        SHADOW_STEP_PX,
+    },
     gesture::GestureThresholds,
     loading::LoadRequest,
     resize_cursor, resize_direction,
