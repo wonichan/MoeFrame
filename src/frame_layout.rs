@@ -1,12 +1,17 @@
 //! 布局接缝（V2 相框外观专题工单 02）：画框绘制的全部矩形由这里的
 //! 纯函数产出，宿主只照单绘制。内置画框的三层（框体 / 卡纸 / 画面）
-//! 与自绘软阴影的扩散层都在这里；工单 03 的九宫格矩形也将落在这里。
+//! 与自绘软阴影的扩散层都在这里；工单 03 的九宫格矩形在 frame_art。
 //!
 //! 坐标是逻辑像素的平面矩形，不依赖 egui 类型：几何状态机给出的
 //! 画面区域口径（窗口 − 四边内距）在这里逐项复现，画面层矩形与
 //! 几何口径必须一致，纹理才与解码目标对齐。
+//!
+//! 工单 04 起，每帧「画哪一层、面板铺不铺底、空状态提示怎么落」
+//! 也由这里的 paint_plan 一次裁决：异形的约束（自定义生效时绝不
+//! 混入内置层与阴影、透明处不铺底）钉在这张计划表上，宿主不再
+//! 自行拼条件。
 
-use crate::window_geom::Insets;
+use crate::{config::AppearanceMode, window_geom::Insets};
 
 /// 平面矩形（逻辑像素）：布局接缝的输入输出口径。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -75,6 +80,71 @@ pub fn builtin_layers(window: LayoutRect, insets: Insets, frame_width: f32) -> B
         body: window,
         mat: window.shrink_uniform(frame_width),
         image: window.shrink(insets),
+    }
+}
+
+/// 一帧要画的画框层（工单 04 的绘制计划）：三选一，互斥——尤其
+/// 自定义相框图生效时只有九宫格一层，自绘软阴影只随内置层出现，
+/// 异形因此不可能混入阴影。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FramePaint {
+    /// 不画任何画框层（极简：插画贴边铺满整窗）。
+    None,
+    /// 内置画框三层 + 自绘软阴影（宿主照 builtin_layers 与
+    /// shadow_layers 绘制）。
+    Builtin,
+    /// 自定义相框图九宫格八区（洞区不画、插画在下层），无阴影。
+    CustomArt,
+}
+
+/// 无图（空状态）时提示文字的落点（工单 04 的绘制计划）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HintPaint {
+    /// 有图：不画提示。
+    None,
+    /// 由内置画框绘制内部处理：背景是自家卡纸 / 框体，字色按
+    /// 卡纸在场与否在绘制层内选。
+    InFrame,
+    /// 提示浮在画面区域中央（极简是整窗、自定义生效时是洞）：
+    /// outline 为真时浅字衬一层深色描影——自定义空状态的背景
+    /// 是透出的桌面、明暗未知，不衬影在浅色桌面上会看不清。
+    Floating { outline: bool },
+}
+
+/// 一帧的绘制计划：宿主先问计划再照单绘制。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaintPlan {
+    /// 面板是否铺不透明底：只有极简铺黑底保持 V1 视觉；内置由
+    /// 框体层自铺满整窗，自定义生效时必须透明——洞与不规则外
+    /// 轮廓的透明像素要直接透出桌面，铺底即假镂空。
+    pub panel_opaque: bool,
+    pub frame_paint: FramePaint,
+    pub hint: HintPaint,
+}
+
+/// 绘制计划裁决（外观模式 × 相框图是否生效 × 是否有图）：自定义
+/// 未生效（未选图或分析回退）即回退内置——画框层与面板口径与
+/// 内置模式逐项一致；自定义生效时相框图是唯一的画框层。
+pub fn paint_plan(appearance: AppearanceMode, custom_active: bool, has_image: bool) -> PaintPlan {
+    let frame_paint = match appearance {
+        AppearanceMode::Builtin => FramePaint::Builtin,
+        AppearanceMode::Custom if custom_active => FramePaint::CustomArt,
+        AppearanceMode::Custom => FramePaint::Builtin,
+        AppearanceMode::Minimal => FramePaint::None,
+    };
+    let hint = if has_image {
+        HintPaint::None
+    } else {
+        match frame_paint {
+            FramePaint::Builtin => HintPaint::InFrame,
+            FramePaint::CustomArt => HintPaint::Floating { outline: true },
+            FramePaint::None => HintPaint::Floating { outline: false },
+        }
+    };
+    PaintPlan {
+        panel_opaque: matches!(frame_paint, FramePaint::None),
+        frame_paint,
+        hint,
     }
 }
 

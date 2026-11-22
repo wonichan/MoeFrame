@@ -5,7 +5,8 @@
 //! 纯函数回归测试。
 
 use moe_frame::{
-    frame_layout::{builtin_layers, shadow_layers, LayoutRect},
+    config::AppearanceMode,
+    frame_layout::{builtin_layers, paint_plan, shadow_layers, FramePaint, HintPaint, LayoutRect},
     window_geom::Insets,
 };
 
@@ -70,6 +71,74 @@ fn per_side_insets_place_the_image_area_exactly() {
     let layers = builtin_layers(window(), insets, 6.0);
     assert_eq!(layers.image, LayoutRect::new(20.0, 10.0, 460.0, 260.0));
     assert_eq!(layers.mat, LayoutRect::new(6.0, 6.0, 474.0, 314.0));
+}
+
+#[test]
+fn builtin_mode_paints_the_builtin_frame_without_panel_fill() {
+    // 内置模式：画框层是内置三层（自绘阴影只随这一层出现），
+    // 面板不铺底——框体层自铺满整个窗口。
+    let plan = paint_plan(AppearanceMode::Builtin, false, true);
+    assert_eq!(plan.frame_paint, FramePaint::Builtin);
+    assert!(!plan.panel_opaque);
+}
+
+#[test]
+fn custom_active_paints_only_the_art_no_builtin_no_shadow() {
+    // 异形（工单 04）的钉子：自定义生效时画框层只有九宫格相框
+    // 图——计划里不存在内置层，自绘阴影因此无从混入；面板不
+    // 铺底，相框图的透明像素（洞与不规则外轮廓）直接透出桌面。
+    let plan = paint_plan(AppearanceMode::Custom, true, true);
+    assert_eq!(plan.frame_paint, FramePaint::CustomArt);
+    assert!(!plan.panel_opaque);
+}
+
+#[test]
+fn custom_inactive_falls_back_to_the_builtin_frame() {
+    // 自定义未生效（未选图或分析回退）：回退即内置，画框层与
+    // 内置模式逐项一致（含自绘阴影的资格）。
+    let plan = paint_plan(AppearanceMode::Custom, false, true);
+    assert_eq!(plan.frame_paint, FramePaint::Builtin);
+    assert!(!plan.panel_opaque);
+}
+
+#[test]
+fn minimal_keeps_the_v1_opaque_panel_and_no_frame() {
+    // 极简：不画任何画框层，面板铺黑底保持 V1 视觉。
+    let plan = paint_plan(AppearanceMode::Minimal, false, true);
+    assert_eq!(plan.frame_paint, FramePaint::None);
+    assert!(plan.panel_opaque);
+}
+
+#[test]
+fn empty_state_hint_placement_follows_the_frame_layer() {
+    // 有图时任何模式都不画提示。
+    for mode in [
+        AppearanceMode::Minimal,
+        AppearanceMode::Builtin,
+        AppearanceMode::Custom,
+    ] {
+        assert_eq!(paint_plan(mode, true, true).hint, HintPaint::None);
+    }
+    // 自定义生效的空状态：框体（相框图）照画，提示浮在洞中央；
+    // 背景是透出的桌面、明暗未知，浅字必须衬深色描影才恒可读。
+    let plan = paint_plan(AppearanceMode::Custom, true, false);
+    assert_eq!(plan.frame_paint, FramePaint::CustomArt);
+    assert_eq!(plan.hint, HintPaint::Floating { outline: true });
+    // 极简空状态：提示浮在整窗中央，背景是自家黑底，不用描影。
+    assert_eq!(
+        paint_plan(AppearanceMode::Minimal, false, false).hint,
+        HintPaint::Floating { outline: false }
+    );
+    // 内置（含自定义回退）空状态：提示由内置绘制内部按卡纸
+    // 在场与否选字色，不走浮排。
+    assert_eq!(
+        paint_plan(AppearanceMode::Builtin, false, false).hint,
+        HintPaint::InFrame
+    );
+    assert_eq!(
+        paint_plan(AppearanceMode::Custom, false, false).hint,
+        HintPaint::InFrame
+    );
 }
 
 #[test]

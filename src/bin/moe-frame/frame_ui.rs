@@ -73,31 +73,33 @@ impl eframe::App for FrameApp {
         self.handle_keys(&ctx, now);
         let mut menu_intent: Option<Intent> = None;
         let mut menu_settings = false;
-        // 窗口永远透明创建（V2 相框外观专题工单 01）：极简模式靠
-        // 这层铺满视口的不透明填充保持 V1 视觉；内置画框模式面板
-        // 底透明，三层与阴影由 frame_paint 照布局接缝绘制（工单
-        // 02）；自定义相框图生效时（工单 03）不铺底——相框图的
-        // 透明像素直接透出桌面，宿主只画画面区域的插画与九宫格
-        // 八区，异形的完整行为在工单 04。
+        // 窗口永远透明创建（V2 相框外观专题工单 01）：画哪一层、
+        // 面板铺不铺底、空状态提示怎么落，由布局接缝的绘制计划
+        // 一次裁决（frame_layout::paint_plan，工单 04）——极简靠
+        // 面板黑底保持 V1 视觉；内置三层与阴影由 frame_paint 照
+        // 计划绘制（工单 02）；自定义相框图生效时（工单 03）面板
+        // 不铺底，相框图的透明像素（洞与异形外轮廓）直接透出
+        // 桌面，宿主只画画面区域的插画与九宫格八区。
         self.ensure_frame_art_texture(&ctx);
         let custom_active = self.custom_art_active();
-        let panel_fill = if self.appearance == AppearanceMode::Builtin || custom_active {
-            egui::Color32::TRANSPARENT
-        } else {
+        let plan = moe_frame::frame_layout::paint_plan(
+            self.appearance,
+            custom_active,
+            self.texture.is_some(),
+        );
+        let panel_fill = if plan.panel_opaque {
             egui::Color32::BLACK
+        } else {
+            egui::Color32::TRANSPARENT
         };
         let panel = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(panel_fill))
             .show(ui, |ui| {
                 let rect = ui.max_rect();
                 let painter = ui.painter();
-                // 内置模式、以及自定义模式未生效（未选图或分析回退）
-                // 时，都按内置画框绘制：回退即内置的本义（工单 03 的
-                // 回退在工单 02 落地后用真实三层与内距，见
-                // effective_insets 的回退臂）。
-                if self.appearance == AppearanceMode::Builtin
-                    || (self.appearance == AppearanceMode::Custom && !custom_active)
-                {
+                // 内置画框（含自定义未生效时的回退）由 frame_paint
+                // 整窗绘制：三层、阴影与空状态提示都在其内部。
+                if plan.frame_paint == moe_frame::frame_layout::FramePaint::Builtin {
                     self.paint_builtin_frame(painter, rect);
                     return;
                 }
@@ -111,18 +113,33 @@ impl eframe::App for FrameApp {
                 );
                 if let Some(texture) = &self.texture {
                     painter.image(texture.id(), image_rect, uv, egui::Color32::WHITE);
-                } else {
+                } else if let moe_frame::frame_layout::HintPaint::Floating { outline } = plan.hint {
+                    // 空状态提示浮在画面区域中央：自定义生效时这里
+                    // 是相框图的洞，背景是透出的桌面——先衬一层深色
+                    // 描影再落浅字，明暗桌面上都可读（工单 04）。
+                    let hint_text = "右键打开设置，选择图库文件夹";
+                    let hint_font = egui::FontId::proportional(15.0);
+                    if outline {
+                        painter.text(
+                            image_rect.center() + egui::vec2(1.0, 1.0),
+                            egui::Align2::CENTER_CENTER,
+                            hint_text,
+                            hint_font.clone(),
+                            egui::Color32::from_black_alpha(160),
+                        );
+                    }
                     painter.text(
                         image_rect.center(),
                         egui::Align2::CENTER_CENTER,
-                        "右键打开设置，选择图库文件夹",
-                        egui::FontId::proportional(15.0),
+                        hint_text,
+                        hint_font,
                         egui::Color32::from_rgb(200, 200, 200),
                     );
                 }
                 // 自定义相框图九宫格（工单 03）：八区盖在插画之上，
-                // 洞区不绘制；相框图的透明像素不被覆画。
-                if custom_active {
+                // 洞区不绘制；相框图的透明像素不被覆画——异形外
+                // 轮廓的透明处因此直接透出桌面（工单 04）。
+                if plan.frame_paint == moe_frame::frame_layout::FramePaint::CustomArt {
                     if let FrameArtHost::Loaded {
                         analysis,
                         texture: Some(art_texture),
