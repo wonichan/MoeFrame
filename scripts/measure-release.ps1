@@ -84,7 +84,7 @@ show_filename = false
 [general]
 autostart = false
 "@
-    Set-Content -Path (Join-Path $dir "config.toml") -Value $config -Encoding UTF8
+    Set-Content -Path (Join-Path $dir "MoeFrame\config.toml") -Value $config -Encoding UTF8
     return $dir
 }
 

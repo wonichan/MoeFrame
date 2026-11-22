@@ -105,6 +105,53 @@ fn app_directory() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("MoeFrame"))
 }
 
+/// 当前进程工作集（MB）：启动标记自带的资源读数，供发布资源门免采样直读。
+#[cfg(windows)]
+fn working_set_mb() -> u64 {
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct ProcessMemoryCounters {
+        cb: u32,
+        PageFaultCount: u32,
+        PeakWorkingSetSize: usize,
+        WorkingSetSize: usize,
+        QuotaPeakPagedPoolUsage: usize,
+        QuotaPagedPoolUsage: usize,
+        QuotaPeakNonPagedPoolUsage: usize,
+        QuotaNonPagedPoolUsage: usize,
+        PagefileUsage: usize,
+        PeakPagefileUsage: usize,
+    }
+    extern "system" {
+        fn GetCurrentProcess() -> *mut core::ffi::c_void;
+        fn K32GetProcessMemoryInfo(
+            process: *mut core::ffi::c_void,
+            counters: *mut ProcessMemoryCounters,
+            cb: u32,
+        ) -> i32;
+    }
+    let mut counters = ProcessMemoryCounters {
+        cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
+        PageFaultCount: 0,
+        PeakWorkingSetSize: 0,
+        WorkingSetSize: 0,
+        QuotaPeakPagedPoolUsage: 0,
+        QuotaPagedPoolUsage: 0,
+        QuotaPeakNonPagedPoolUsage: 0,
+        QuotaNonPagedPoolUsage: 0,
+        PagefileUsage: 0,
+        PeakPagefileUsage: 0,
+    };
+    let requested = counters.cb;
+    // SAFETY: 两个 Win32 调用都只写 `counters`，`requested` 是它自身的字节数。
+    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, requested) };
+    if ok == 0 {
+        0
+    } else {
+        (counters.WorkingSetSize / (1024 * 1024)) as u64
+    }
+}
+
 /// 启动耗时标记（NFR-4）：与调试日志同文件、不同前缀，只写一行，不参与行为。
 #[cfg(windows)]
 fn startup_marker(event: &str, details: &str) {
@@ -120,8 +167,9 @@ fn startup_marker(event: &str, details: &str) {
         .map_or(0, |elapsed| elapsed.as_millis());
     let _ = writeln!(
         file,
-        "[startup] unix_ms={unix_ms} pid={} event={event} {details}",
-        std::process::id()
+        "[startup] unix_ms={unix_ms} pid={} ws_mb={} event={event} {details}",
+        std::process::id(),
+        working_set_mb()
     );
 }
 
