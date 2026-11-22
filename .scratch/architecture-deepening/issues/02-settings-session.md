@@ -30,3 +30,4 @@
 - 结构决定：会话状态（open、两草稿、pending、焦点记忆、视口焦点记忆、模式快照）全归 SettingsSession；宿主 settings_open 只镜像窗口存在性。帧尾结算的生效值在 module 内随点选推进，与旧宿主 commit 时现读等价（双轴审查 (c) 项核对）。
 - 双轴审查（基线 1bcc653）：Standards 无硬违规，判断项三条全采纳（OpenRequest 改名 OpenDecision、旁白注释改陈述式、文档标点）；Spec 九条全满足、行为等价 (a)–(g) 全成立、无范围蔓延；审查中补加 2 项旧用例对应测试（无效/空白路径、秒数同值）。
 - 2026-11-22 对齐（提交 `7861e5f`，决定见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`）：会话即时点选已不含显示方式与宽高比锁定（对应 Picks 字段与 SessionAction 已删）；其余会话语义（草稿时序、关闭丢弃、重扫否决、快照作废）不变。深挖实机清单工单 02 节的即时控件项已改写。
+- 2026-11-22 对齐（菜单与设置窗再分工）：会话扩展 Picks::folder_pick / SessionAction::PickFolder（否决语义与 rescan 同形）与当前图三点选 Picks::{open_image, open_folder, copy_path} / SessionAction::{OpenCurrentImage, OpenCurrentFolder, CopyCurrentPath}（即时动作，不碰草稿）；会话层测试增至 20 项。详见实施笔记 .agents/notes/implemented/feature/2026-11-22-menu-settings-split.md 与 .scratch/menu-settings-split/issues/01-menu-settings-split.md。
