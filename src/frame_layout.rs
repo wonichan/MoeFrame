@@ -299,47 +299,103 @@ pub struct EdgeShade {
 /// 框带造型线的落笔矩形（宿主以 1px 内侧描边画出）：外沿压线、
 /// 凹槽（窄框放不下时缺席）、紧贴卡纸层边界的内唇亮线。造型
 /// 集中在带内侧——真实画框截面的凹凸多在内唇一带，外沿只压
-/// 一道暗线收边。
+/// 一道暗线收边。各线另带圆角半径（圆角工单 01）：按落笔矩形
+/// 在框带中的分位在外沿与框体内沿半径之间插值，宿主描边时
+/// 直接取用、沿弧连续。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProfileLines {
     pub outer_rim: LayoutRect,
     pub groove: Option<LayoutRect>,
     pub lip: LayoutRect,
+    pub outer_radius: f32,
+    pub groove_radius: Option<f32>,
+    pub lip_radius: f32,
 }
 
 /// 一道贴边淡出的影：以 rect 的边界为最深处，向 rect 内部淡出
 /// depth 距离，边界处黑色透明度 max_alpha。宿主以逐层内收的
-/// 描边环落笔，四边均匀。
+/// 描边环落笔，四边均匀。radius 是 rect 边界的圆角半径（圆角
+/// 工单 01）：描边环逐层内收时半径同步递减，影沿弧连续。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FadeBand {
     pub rect: LayoutRect,
     pub depth: f32,
     pub max_alpha: u8,
+    pub radius: f32,
 }
 
 /// 卡纸着色：框体投在卡纸上的影（框宽为 0 时无框可投，缺席）、
 /// 卡纸内口的斜切面、卡纸投在画面上的影。斜切面以外沿矩形
 /// 给出：外沿 = 画面外扩 bevel_width，宿主画外沿与画面之间的
-/// 一圈近白色，即 45° 切面受光的那一面。
+/// 一圈近白色，即 45° 切面受光的那一面；bevel_radius 是此外
+/// 沿矩形的圆角半径（圆角工单 01）= 画面边缘半径 + 切面宽。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MatShading {
     pub cast_shadow: Option<FadeBand>,
     pub bevel: LayoutRect,
     pub bevel_width: f32,
+    pub bevel_radius: f32,
     pub image_shadow: FadeBand,
 }
 
+/// 一个角边界的圆角数据（圆角工单 01）：四角圆心（顺序左上、
+/// 右上、右下、左下）与夹紧后的半径。宿主一切沿弧落笔（圆角
+/// 填充、弧带、描边）都只消费这份数据，不自行推导半径。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CornerBoundary {
+    pub radius: f32,
+    pub centers: [(f32, f32); 4],
+}
+
+impl CornerBoundary {
+    /// 由边界矩形与夹紧后的半径组装：圆心是矩形四角各向内收
+    /// 半径的落点。
+    fn of(rect: LayoutRect, radius: f32) -> Self {
+        Self {
+            radius,
+            centers: [
+                (rect.left + radius, rect.top + radius),
+                (rect.right - radius, rect.top + radius),
+                (rect.right - radius, rect.bottom - radius),
+                (rect.left + radius, rect.bottom - radius),
+            ],
+        }
+    }
+}
+
+/// 内置画框三个角边界的圆角（圆角工单 01）：窗口外沿、框体
+/// 内沿（即卡纸外沿）、卡纸内沿（即画面边缘），半径独立定值
+/// （见 builtin_shading 旁的常量），互不同心。框宽为 0 时框体
+/// 内沿边界不存在——外沿直接落在卡纸外沿上。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameCorners {
+    pub outer: CornerBoundary,
+    pub frame_inner: Option<CornerBoundary>,
+    pub image: CornerBoundary,
+}
+
 /// 内置画框的着色计划：三层矩形 + 框带截面着色 + 造型线 + 卡纸
-/// 着色，全部纯数据，宿主只照单落笔（颜色按预设在宿主侧合成）。
-/// 深度线索来自截面明暗、两道贴边投影与卡纸斜切面——窗口尺寸
-/// 即外框尺寸、窗外无可绘制像素，投影只能落在相邻层面上（框
-/// 影落卡纸、卡纸影落画面），不存在游离的灰带。
+/// 着色 + 三个角边界的圆角 + 截面条带的角部弧半径，全部纯数据，
+/// 宿主只照单落笔（颜色按预设在宿主侧合成）。深度线索来自截面
+/// 明暗、两道贴边投影与卡纸斜切面——窗口尺寸即外框尺寸、窗外
+/// 无可绘制像素，投影只能落在相邻层面上（框影落卡纸、卡纸影
+/// 落画面），不存在游离的灰带。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BuiltinShading {
     pub layers: BuiltinLayers,
     pub edges: [EdgeShade; 4],
     pub profile: Option<ProfileLines>,
     pub mat: Option<MatShading>,
+    pub corners: FrameCorners,
+    /// 截面条带在四角逐圈描弧的弧中心半径（外沿 → 内沿序，与
+    /// 直边条带同分位同带数）：以外沿圆心为心，按条带中心分位
+    /// 自外沿半径起逐带递减（每带框宽 / 带数），止于外沿半径
+    /// − 框宽。框带比外沿半径还宽时，带中心越过圆心的尾部各
+    /// 带钳到 0（该带在角部无弧可描，宿主跳过）。四角共用同
+    /// 一组半径，圆心各取 corners.outer（圆角工单 01 评审修复：
+    /// 弧半径与造型线半径同一手法，由接缝按分位插值给出，
+    /// 宿主不推导）。
+    pub corner_strip_radii: [f32; CORNER_STRIP_COUNT],
 }
 
 /// 截面明暗走向（分位，基础倍率）：外沿略暗 → 中段隆起受光 →
@@ -357,6 +413,18 @@ const BEVEL_WIDTH: f32 = 2.0;
 const IMAGE_SHADOW_DEPTH: f32 = 5.0;
 /// 画面影边界透明度：卡纸薄，影淡于框影。
 const IMAGE_SHADOW_ALPHA: u8 = 46;
+/// 窗口外沿圆角半径定值（逻辑像素，圆角工单 01；原型四变体
+/// 对比后用户选定 C「更圆润」口径，与 PROFILE_STOPS 同级的可
+/// 调绘制常量，不入配置）。
+const OUTER_CORNER_RADIUS: f32 = 20.0;
+/// 框体内沿（卡纸外沿）圆角半径定值（逻辑像素）。
+const FRAME_INNER_CORNER_RADIUS: f32 = 10.0;
+/// 卡纸内沿（画面边缘）圆角半径定值（逻辑像素）。
+const IMAGE_CORNER_RADIUS: f32 = 12.0;
+/// 截面条带的角部弧半径采样带数：与宿主直边条带的细分同为
+/// 12 分，角部弧半径按同一分位逐带给出（见 BuiltinShading
+/// 的 corner_strip_radii）。
+const CORNER_STRIP_COUNT: usize = 12;
 /// 造型线成立的最小框宽：低于此带内只剩截面渐变本身。
 const PROFILE_MIN_FRAME_WIDTH: f32 = 2.0;
 /// 凹槽成立的最小框宽。
@@ -374,6 +442,31 @@ pub fn builtin_shading(
 ) -> BuiltinShading {
     let layers = builtin_layers(window, insets, frame_width);
     let (body, mat_rect) = (layers.body, layers.mat);
+    // 圆角半径夹紧（圆角工单 01 的 spec 口径）：每条边界的
+    // 半径 = min(定值，相邻带厚，窗口半宽 / 半高较小者，本边界
+    // 矩形半宽 / 半高较小者)。外沿的相邻带是整幅单边内距（框
+    // 带缺席时即只剩卡纸带，外沿落到卡纸带上夹紧）；框体内沿
+    // 的相邻带是框带；画面边缘的相邻带是卡纸带，卡纸缺席时
+    // 是框带（画面边缘此时由框体内沿呈现）。相邻带厚为 0 的
+    // 边界半径归 0，退化回直角。
+    let half = |rect: LayoutRect| (rect.width().min(rect.height()) / 2.0).max(0.0);
+    let outer_radius = OUTER_CORNER_RADIUS
+        .min(frame_width + mat_width)
+        .min(half(body));
+    let frame_inner_radius = FRAME_INNER_CORNER_RADIUS
+        .min(frame_width)
+        .min(half(mat_rect));
+    let image_band = if mat_width > 0.0 {
+        mat_width
+    } else {
+        frame_width
+    };
+    let image_radius = IMAGE_CORNER_RADIUS.min(image_band).min(half(layers.image));
+    let corners = FrameCorners {
+        outer: CornerBoundary::of(body, outer_radius),
+        frame_inner: (frame_width > 0.0).then(|| CornerBoundary::of(mat_rect, frame_inner_radius)),
+        image: CornerBoundary::of(layers.image, image_radius),
+    };
     let edge = |edge: FrameEdge, rect: LayoutRect, light: f32| EdgeShade {
         edge,
         rect,
@@ -406,11 +499,26 @@ pub fn builtin_shading(
     // 造型线落笔矩形（1px 内侧描边）：外沿线即窗口边；凹槽在
     // 内沿外 3px 起、内唇在内沿外 1px 起——描边向矩形内侧落，
     // 矩形内收量 = 带内距 − 线宽方向的偏移。
+    // 造型线圆角半径：按落笔矩形距外沿的分位在外沿半径与框体
+    // 内沿半径之间线性插值（分位 = 内收量 / 框宽）。
+    let radius_at =
+        |inset: f32| outer_radius + (frame_inner_radius - outer_radius) * (inset / frame_width);
     let profile = (frame_width >= PROFILE_MIN_FRAME_WIDTH).then(|| ProfileLines {
         outer_rim: body,
         groove: (frame_width >= GROOVE_MIN_FRAME_WIDTH)
             .then(|| body.shrink_uniform(frame_width - 3.0)),
         lip: body.shrink_uniform(frame_width - 1.0),
+        outer_radius,
+        groove_radius: (frame_width >= GROOVE_MIN_FRAME_WIDTH)
+            .then(|| radius_at(frame_width - 3.0)),
+        lip_radius: radius_at(frame_width - 1.0),
+    });
+    // 截面条带在四角的弧中心半径：与造型线半径同一手法，按
+    // 条带中心分位在外沿圆心下逐带内收（分位 × 框宽即该带在
+    // 框带中的内收量），宿主只照单描弧。
+    let corner_strip_radii = std::array::from_fn(|i| {
+        let fm = (i as f32 + 0.5) / CORNER_STRIP_COUNT as f32;
+        (outer_radius - fm * frame_width).max(0.0)
     });
     let mat = (mat_width > 0.0).then(|| {
         let bevel_width = BEVEL_WIDTH.min(mat_width);
@@ -419,13 +527,16 @@ pub fn builtin_shading(
                 rect: mat_rect,
                 depth: CAST_SHADOW_DEPTH.min(mat_width),
                 max_alpha: CAST_SHADOW_ALPHA,
+                radius: frame_inner_radius,
             }),
             bevel: layers.image.shrink_uniform(-bevel_width),
             bevel_width,
+            bevel_radius: image_radius + bevel_width,
             image_shadow: FadeBand {
                 rect: layers.image,
                 depth: IMAGE_SHADOW_DEPTH,
                 max_alpha: IMAGE_SHADOW_ALPHA,
+                radius: image_radius,
             },
         }
     });
@@ -434,5 +545,7 @@ pub fn builtin_shading(
         edges,
         profile,
         mat,
+        corners,
+        corner_strip_radii,
     }
 }
