@@ -142,16 +142,90 @@ impl eframe::App for FrameApp {
                     .set_text(if state.1 { "暂停" } else { "播放" });
             }
         }
-        if !self.core.frame_visible() {
-            // 隐藏期间保持低频心跳（工单 17）：托盘事件在 ui() 里轮询，暂停且
-            // 隐藏时没有轮播截止时刻可唤醒，心跳保证托盘点击/菜单及时被处理；
-            // 轮播 Tick 仍按各自截止时刻在心跳帧上判定，不受影响。
-            ctx.request_repaint_after(Duration::from_millis(250));
-        } else if self.pipeline.load_in_flight() {
-            ctx.request_repaint_after(Duration::from_millis(50));
-        } else if let Some(deadline) = self.core.next_deadline_ms() {
-            // 睡到下一次自动切换时刻再唤醒，避免空转重绘。
-            ctx.request_repaint_after(Duration::from_millis(deadline.saturating_sub(now)));
+        if let Some(delay) = next_frame_delay(
+            self.core.frame_visible(),
+            self.pipeline.load_in_flight(),
+            self.heal_repaint_until_ms,
+            self.core.next_deadline_ms(),
+            now,
+        ) {
+            ctx.request_repaint_after(delay);
         }
+    }
+}
+
+/// 帧尾的下一帧唤醒裁决（纯函数，回归测试钉住），优先级从高到低：
+/// 隐藏低频心跳 → 导航加载轮询 → 治愈保活 → 睡到轮播截止；都不
+/// 命中则不唤醒（None），避免空转重绘。
+pub(crate) fn next_frame_delay(
+    frame_visible: bool,
+    load_in_flight: bool,
+    heal_repaint_until_ms: u64,
+    next_deadline_ms: Option<u64>,
+    now_ms: u64,
+) -> Option<Duration> {
+    if !frame_visible {
+        // 隐藏期间保持低频心跳（工单 17）：托盘事件在 ui() 里轮询，暂停且
+        // 隐藏时没有轮播截止时刻可唤醒，心跳保证托盘点击/菜单及时被处理；
+        // 轮播 Tick 仍按各自截止时刻在心跳帧上判定，不受影响。
+        Some(Duration::from_millis(250))
+    } else if load_in_flight {
+        Some(Duration::from_millis(50))
+    } else if now_ms < heal_repaint_until_ms {
+        // 治愈保活（.scratch/blur-heal 工单 01）：当前图口径已过期、刷新
+        // 在等停稳计时走完；保活出帧让它不依赖聚焦等外部唤醒。
+        Some(Duration::from_millis(50))
+    } else {
+        // 睡到下一次自动切换时刻再唤醒。
+        next_deadline_ms.map(|deadline| Duration::from_millis(deadline.saturating_sub(now_ms)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_frame_delay;
+    use std::time::Duration;
+
+    #[test]
+    fn hidden_frame_keeps_the_slow_heartbeat_above_all() {
+        assert_eq!(
+            next_frame_delay(false, true, u64::MAX, Some(0), 1_000),
+            Some(Duration::from_millis(250))
+        );
+    }
+
+    #[test]
+    fn load_in_flight_polls_fast() {
+        assert_eq!(
+            next_frame_delay(true, true, 0, Some(9_000), 1_000),
+            Some(Duration::from_millis(50))
+        );
+    }
+
+    #[test]
+    fn heal_keepalive_beats_the_slide_deadline() {
+        // 保活窗口内（now < 截止）：50ms 出帧，不睡到轮播截止。
+        assert_eq!(
+            next_frame_delay(true, false, 3_000, Some(60_000), 1_000),
+            Some(Duration::from_millis(50))
+        );
+    }
+
+    #[test]
+    fn expired_heal_window_falls_back_to_the_slide_deadline() {
+        assert_eq!(
+            next_frame_delay(true, false, 3_000, Some(60_000), 3_000),
+            Some(Duration::from_millis(57_000))
+        );
+        // 截止已过按 0 处理，不欠账。
+        assert_eq!(
+            next_frame_delay(true, false, 0, Some(500), 1_000),
+            Some(Duration::from_millis(0))
+        );
+    }
+
+    #[test]
+    fn idle_without_deadline_requests_nothing() {
+        assert_eq!(next_frame_delay(true, false, 0, None, 1_000), None);
     }
 }

@@ -276,6 +276,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                 settings_open: false,
                 settings_positioned: false,
                 pipeline: DisplayPipeline::new(),
+                heal_repaint_until_ms: 0,
+                stale_target_seen: None,
                 geometry: GeometryMachine::new(
                     host_init.saved_geom,
                     None,
