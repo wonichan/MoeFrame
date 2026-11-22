@@ -12,7 +12,7 @@
 
 **Blocked by:** None（spec 与原型已在集成 分支 feature/rounded-corners 上）。
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -77,3 +77,7 @@
   CornerRadius 的 u8 取整三项差异注记，见 spec Further
   Notes 评审后补记 1–3。
 
+- 2026-11-22 真机验收通过：用户已跑完真机清单「圆角」一节，四点
+  全过（四角圆润无锯齿、外角透桌面正常、内角压图自然、滑杆极值
+  不穿帮），清单四项已勾选；PR #3 已由用户合并入 main
+  （cc3e975）。Status 置 resolved，工单关闭。
