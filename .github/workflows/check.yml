@@ -2,8 +2,19 @@ name: check
 
 on:
   push:
+# 纯文档/笔记改动不触发 ci（用户 2026-11-22 要求）：只改这些路径的推送
+    # 不跑；同时改了 src/tests/Cargo/脚本的照旧跑。
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.scratch/**'
+      - '.agents/**'
   pull_request:
-
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.scratch/**'
+      - '.agents/**'
 jobs:
   check:
     runs-on: windows-latest
