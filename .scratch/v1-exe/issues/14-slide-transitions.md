@@ -29,3 +29,4 @@
 - 2026-11-21 实现完成，状态置 needs-info：代码与自动化验证齐备（全量 120 项测试全绿，Windows 目标 check/clippy 通过），只剩验收标准 9 的实机演示——并入仓库根目录 `real-machine-check-10-14.md` 的工单 14 一节，与工单 10–13 合并确认后转 resolved。实施笔记：`.agents/notes/implemented/feature/2026-11-21-slide-transitions.md`。
 - 核心设计：提交点从加载完成移到转场完成。导航加载成功先发 `StartTransition`，宿主渲染 300ms 后回送 `TransitionCompleted`，核心此时才记账、落盘与重计间隔；首图无源图可滑出，直接提交。
 - 双轴审查（基线 eaae43b）：Spec 轴一项真实缺陷已修正——转场期间切换播放模式会清历史游标，向前返回的提交可能落空并把画面清成无图；现退到只落位不记账并加回归测试。Standards 轴无硬违规；落位类型由双份（NavKind/Landing）合并为一份，宿主纹理转正改按 slide 状态判断。
+- 2026-11-22 对齐（提交 `7861e5f`，决定见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`）：滑动转场已整体关闭——切图在加载成功后即时提交，不再播放约 300ms 滑动。本票验收标准描述的滑动行为不再是现行行为，本票作为历史实现记录保留；核心的提交/记账路径仍在（转场回执改为即时）。实机清单工单 14 节整节作废，改验新行为复测节的「无动画即时切换」。

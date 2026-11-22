@@ -28,3 +28,4 @@ FrameCore 入参打包在本票兑现（工单 03 只减不打包）；ADR-0002/
 - 2026-11-21 实现完成，状态置 needs-info：八条验收标准在本侧全满足；本票动了全部持久化路径与启动装配，宿主接线无自动化覆盖，实机项已追加到 `real-machine-check-deepening.md` 的工单 04 小节（重启恢复、自启对账、几何恢复、锁定持久化、写回失败可见），确认后转 resolved。实施笔记：`.agents/notes/implemented/feature/2026-11-21-config-sync.md`。
 - 口径变化一处（标准 4 的既定结果，非漂移）：开机自启镜像的保存失败此前静默吞掉，现并入统一口径——多记一行日志，行为不变。
 - 双轴审查（基线 2ed5882）：Standards 1 处硬违规已修（删除宿主 paths_to_strings 时文档注释残留到 app_directory 头上并留下重复 cfg 属性——复发模式的删除变体；注释随函数迁入 config_sync），判断项三条全采纳（几何记录统一用 config_sync 的 GeometryRecord 名、宿主 SavedGeom 别名删除；HostInit 字段文档补齐；write 改名 note_write_result）；Spec 八条全满足、行为等价 (a)–(g) 全成立、无范围蔓延。
+- 2026-11-22 对齐（提交 `7861e5f`，决定见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`）：`save_fit_mode`、`save_lock_aspect` 写回已随功能移除而删除；旧配置的 `display.fit_mode`、`window.lock_aspect` 由文件适配层在读取时清除。深挖实机清单工单 04 节的「宽高比锁定持久化」项已作废、「重启恢复」项已去掉显示方式。

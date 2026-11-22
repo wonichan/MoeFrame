@@ -21,3 +21,7 @@
 父决策：`.agents/notes/proposed/architecture/2026-11-21-host-deepening-plan.md` 候选 5（grilling Q1–Q8 定案）；父规格：[宿主层深挖规格](../spec.md)。
 
 本票是本专题最后一票，排在 V1 发布门之后，不挡 V1 交付。
+
+## Comments
+
+- 2026-11-22 前提变化（提交 `7861e5f`，决定见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`）：现行决定明示内部 `DisplayMode`/填充路径暂时保留、其删除不属本票原范围；候选 5 原定的「fit/fill 计算合一」在本票开工前须先与用户重新定界（合一，还是随填充路径删除而简化），再按定界后的范围执行。其余合流决定（产品侧承接、验证 adapter、等价测试转常驻）不变。

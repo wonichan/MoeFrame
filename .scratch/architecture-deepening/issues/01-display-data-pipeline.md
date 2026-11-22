@@ -30,3 +30,4 @@
 - 2026-11-21 实现完成，状态置 needs-info：十条验收标准在本侧全满足（全量 188 项测试、Windows check/clippy、双轴审查），但宿主纹理搬运（上传/转正/Swap）无自动化覆盖且从未在真实 Windows 上运行——显示刷新路径的实机确认并入仓库根目录 `real-machine-check-deepening.md` 的工单 01 一节，按专题顺序在工单 01–05 后、发布门前与 10–21 清单同轮执行，确认后转 resolved。实施笔记：`.agents/notes/implemented/feature/2026-11-21-display-data-pipeline.md`。
 - 结构决定：管线只记账与裁决，纹理句柄按当前/传入槽位归宿主；刷新失败同键压制是与旧实现唯一的有意行为变化（旧为帧驱动重试，可见结果相同），已在模块头与笔记中明文。
 - 双轴审查（基线 8a2ead2）：Standards 无硬违规，判断项三条全采纳（重载/刷新用词统一、删 DisplayKey::new、字段注释对齐术语界线，另修正 Debounce 过期注释）；Spec 十条全满足，行为等价 (a)–(e) 成立，(f) invalidate 连带清理的边角时序差异已记入笔记 Consequences。
+- 2026-11-22 对齐（提交 `7861e5f`，决定见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`）：显示口径已固定为完整显示，适应/填充切换不再存在；管线与内部 `DisplayMode` 暂时保留，填充路径处于闲置，删除与否另行决定（不属深挖 07 原范围）。深挖实机清单工单 01 节涉及模式切换的两项已作废。

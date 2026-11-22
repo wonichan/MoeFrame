@@ -29,3 +29,4 @@
 - 2026-11-21 实现完成，状态置 needs-info：九条验收标准在本侧全满足，但宿主接线（egui 焦点跟踪、视口焦点采样、TextEdit 借文字渲染）无自动化覆盖且未在真实 Windows 上运行——设置窗交互的实机确认并入仓库根目录 `real-machine-check-deepening.md` 的工单 02 一节，按专题顺序在工单 01–05 后、发布门前同轮执行，确认后转 resolved。实施笔记：`.agents/notes/implemented/feature/2026-11-21-settings-session.md`。
 - 结构决定：会话状态（open、两草稿、pending、焦点记忆、视口焦点记忆、模式快照）全归 SettingsSession；宿主 settings_open 只镜像窗口存在性。帧尾结算的生效值在 module 内随点选推进，与旧宿主 commit 时现读等价（双轴审查 (c) 项核对）。
 - 双轴审查（基线 1bcc653）：Standards 无硬违规，判断项三条全采纳（OpenRequest 改名 OpenDecision、旁白注释改陈述式、文档标点）；Spec 九条全满足、行为等价 (a)–(g) 全成立、无范围蔓延；审查中补加 2 项旧用例对应测试（无效/空白路径、秒数同值）。
+- 2026-11-22 对齐（提交 `7861e5f`，决定见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`）：会话即时点选已不含显示方式与宽高比锁定（对应 Picks 字段与 SessionAction 已删）；其余会话语义（草稿时序、关闭丢弃、重扫否决、快照作废）不变。深挖实机清单工单 02 节的即时控件项已改写。
