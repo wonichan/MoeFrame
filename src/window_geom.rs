@@ -145,6 +145,11 @@ impl GeometryMachine {
                     }
                 }
             }
+        } else if let Some((geom, _)) = self.candidate.take() {
+            // 隐藏帧不再更新观测量，待落盘的几何就没有下一位继承者了：
+            // 立刻落盘，避免"移动后马上关到托盘"丢掉位置。
+            self.saved_geom = geom;
+            commands.push(GeomCommand::SaveGeometry(geom));
         }
         // 首次放置：无存档位置时，第一帧取到显示器就放右下角内缩。
         if !self.placed {
@@ -193,6 +198,12 @@ impl GeometryMachine {
 
     /// 退出结算的交接（工单 04）：把（最近观察到的几何、落盘基准）
     /// 交给 config_sync 的 shutdown 一次结清。
+    /// 待落盘几何的结算时刻（UI 时钟秒）。有候选时宿主应在这一刻前再出一帧，
+    /// 让"停稳 0.6 秒"真正走完；否则要等到下一次轮播唤醒才写盘，
+    /// 期间退出就会丢掉用户刚拖好的位置与尺寸。
+    pub fn settle_deadline_secs(&self) -> Option<f64> {
+        self.candidate.map(|(_, since)| since + SAVE_SETTLE_SECS)
+    }
     pub fn exit_settle(&self) -> (Option<GeometryRecord>, GeometryRecord) {
         (self.observed_geom, self.saved_geom)
     }

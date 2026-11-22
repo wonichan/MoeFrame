@@ -146,6 +146,9 @@ impl eframe::App for FrameApp {
             self.core.frame_visible(),
             self.pipeline.load_in_flight(),
             self.heal_repaint_until_ms,
+            self.geometry
+                .settle_deadline_secs()
+                .map(|secs| (secs.max(0.0) * 1000.0) as u64),
             self.core.next_deadline_ms(),
             now,
         ) {
@@ -155,12 +158,13 @@ impl eframe::App for FrameApp {
 }
 
 /// 帧尾的下一帧唤醒裁决（纯函数，回归测试钉住），优先级从高到低：
-/// 隐藏低频心跳 → 导航加载轮询 → 治愈保活 → 睡到轮播截止；都不
-/// 命中则不唤醒（None），避免空转重绘。
+/// 隐藏低频心跳 → 导航加载轮询 → 治愈保活 → 几何落盘结算与轮播截止
+/// 取更早者；都不命中则不唤醒（None），避免空转重绘。
 pub(crate) fn next_frame_delay(
     frame_visible: bool,
     load_in_flight: bool,
     heal_repaint_until_ms: u64,
+    geom_settle_ms: Option<u64>,
     next_deadline_ms: Option<u64>,
     now_ms: u64,
 ) -> Option<Duration> {
@@ -176,8 +180,16 @@ pub(crate) fn next_frame_delay(
         // 在等停稳计时走完；保活出帧让它不依赖聚焦等外部唤醒。
         Some(Duration::from_millis(50))
     } else {
-        // 睡到下一次自动切换时刻再唤醒。
-        next_deadline_ms.map(|deadline| Duration::from_millis(deadline.saturating_sub(now_ms)))
+        let rotation =
+            next_deadline_ms.map(|deadline| Duration::from_millis(deadline.saturating_sub(now_ms)));
+        let settle =
+            geom_settle_ms.map(|deadline| Duration::from_millis(deadline.saturating_sub(now_ms)));
+        // 几何还没停稳 0.6 秒：结算时刻前必须再出一帧，否则要等下一次
+        // 轮播唤醒才写盘，"移动后随手退出"就会丢位置。
+        match (rotation, settle) {
+            (Some(rotation), Some(settle)) => Some(rotation.min(settle)),
+            (rotation, settle) => rotation.or(settle),
+        }
     }
 }
 
@@ -189,7 +201,7 @@ mod tests {
     #[test]
     fn hidden_frame_keeps_the_slow_heartbeat_above_all() {
         assert_eq!(
-            next_frame_delay(false, true, u64::MAX, Some(0), 1_000),
+            next_frame_delay(false, true, u64::MAX, None, Some(0), 1_000),
             Some(Duration::from_millis(250))
         );
     }
@@ -197,7 +209,7 @@ mod tests {
     #[test]
     fn load_in_flight_polls_fast() {
         assert_eq!(
-            next_frame_delay(true, true, 0, Some(9_000), 1_000),
+            next_frame_delay(true, true, 0, None, Some(9_000), 1_000),
             Some(Duration::from_millis(50))
         );
     }
@@ -206,7 +218,7 @@ mod tests {
     fn heal_keepalive_beats_the_slide_deadline() {
         // 保活窗口内（now < 截止）：50ms 出帧，不睡到轮播截止。
         assert_eq!(
-            next_frame_delay(true, false, 3_000, Some(60_000), 1_000),
+            next_frame_delay(true, false, 3_000, None, Some(60_000), 1_000),
             Some(Duration::from_millis(50))
         );
     }
@@ -214,18 +226,31 @@ mod tests {
     #[test]
     fn expired_heal_window_falls_back_to_the_slide_deadline() {
         assert_eq!(
-            next_frame_delay(true, false, 3_000, Some(60_000), 3_000),
+            next_frame_delay(true, false, 3_000, None, Some(60_000), 3_000),
             Some(Duration::from_millis(57_000))
         );
         // 截止已过按 0 处理，不欠账。
         assert_eq!(
-            next_frame_delay(true, false, 0, Some(500), 1_000),
+            next_frame_delay(true, false, 0, None, Some(500), 1_000),
             Some(Duration::from_millis(0))
         );
     }
 
     #[test]
     fn idle_without_deadline_requests_nothing() {
-        assert_eq!(next_frame_delay(true, false, 0, None, 1_000), None);
+        assert_eq!(next_frame_delay(true, false, 0, None, None, 1_000), None);
+    }
+    #[test]
+    fn geometry_settle_wakes_earlier_than_the_slide_deadline() {
+        // 轮播还剩 10 秒，但几何 0.4 秒后结算：先出帧把位置写盘。
+        assert_eq!(
+            next_frame_delay(true, false, 0, Some(1_400), Some(11_000), 1_000),
+            Some(Duration::from_millis(400))
+        );
+        // 轮播比结算更早时按轮播走。
+        assert_eq!(
+            next_frame_delay(true, false, 0, Some(11_000), Some(1_500), 1_000),
+            Some(Duration::from_millis(500))
+        );
     }
 }
