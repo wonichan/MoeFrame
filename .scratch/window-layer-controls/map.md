@@ -5,6 +5,7 @@
 - 父规格：[spec.md](spec.md)
 - 当前实现票：[01-window-layer-menu](issues/01-window-layer-menu.md)
 - 单票覆盖右键菜单层级操作、会话状态与已确认的宿主 UI 测试接缝；没有依赖票。
+- Windows-only UI test fixtures must use isolated temporary paths with filename-safe, per-test identifiers.
 
 ## Decisions-so-far
 
