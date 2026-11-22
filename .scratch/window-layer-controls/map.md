@@ -16,5 +16,5 @@
 
 ## Fog
 
-- Frontier: [01-window-layer-menu](issues/01-window-layer-menu.md) is claimed; no blockers.
-- Windows native Z-order acceptance is pending real-window verification.
+- Frontier: no unresolved implementation tickets.
+- Windows native Z-order acceptance is pending real-window verification and remains unverified.

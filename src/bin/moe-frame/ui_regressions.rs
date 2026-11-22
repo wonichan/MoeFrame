@@ -81,7 +81,7 @@ fn tray_left_click_toggles_visibility_and_right_click_is_reserved_for_menu() {
     .is_none());
 }
 
-fn test_app() -> (super::FrameApp, std::path::PathBuf) {
+fn test_app(test_id: &str) -> (super::FrameApp, std::path::PathBuf) {
     use std::sync::mpsc::channel;
 
     struct NoAutostart;
@@ -94,7 +94,17 @@ fn test_app() -> (super::FrameApp, std::path::PathBuf) {
         }
     }
 
-    let temp = std::env::temp_dir().join(format!("moe-frame-ui-regression-{}", std::process::id()));
+    assert!(
+        !test_id.is_empty()
+            && test_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+        "test ID must be a filename-safe ASCII slug"
+    );
+    let temp = std::env::temp_dir().join(format!(
+        "moe-frame-ui-regression-{}-{test_id}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&temp).expect("test temp directory can be created");
     let config_path = temp.join("config.toml");
     let log_path = temp.join("test.log");
@@ -174,7 +184,7 @@ fn painted_text_center(output: &egui::FullOutput, text: &str) -> Option<Pos2> {
         .shapes
         .iter()
         .find_map(|clipped| match &clipped.shape {
-            egui::epaint::Shape::Text(shape) if shape.galley.text().contains(text) => {
+            egui::epaint::Shape::Text(shape) if shape.galley.text() == text => {
                 Some(shape.pos + shape.galley.size() * 0.5)
             }
             _ => None,
@@ -221,12 +231,59 @@ fn has_window_level_command(output: &egui::FullOutput, level: egui::WindowLevel)
         .contains(&egui::ViewportCommand::WindowLevel(level))
 }
 
+fn has_geometry_command(output: &egui::FullOutput) -> bool {
+    output.viewport_output[&egui::ViewportId::ROOT]
+        .commands
+        .iter()
+        .any(|command| {
+            matches!(
+                command,
+                egui::ViewportCommand::InnerSize(_) | egui::ViewportCommand::OuterPosition(_)
+            )
+        })
+}
+
 #[test]
 fn real_frame_menu_controls_session_window_level_without_changing_playback_or_visibility() {
-    let (mut app, temp) = test_app();
+    let (mut app, temp) = test_app("window-layer-menu");
     let ctx = Context::default();
+    let current = temp.join("images/current.png");
+    let other = temp.join("images/other.png");
+
+    app.core.handle(moe_frame::app_core::Intent::FolderPicked(
+        temp.join("images"),
+    ));
+    app.core
+        .handle(moe_frame::app_core::Intent::ScanCompleted(vec![
+            current.clone(),
+            other,
+        ]));
+    app.core.handle(moe_frame::app_core::Intent::LoadCompleted {
+        shown: Some(current.clone()),
+        now_ms: 100,
+    });
+    let seq = app
+        .pipeline
+        .begin_load(moe_frame::decode_validation::DisplayMode::Fit, [400, 300]);
+    assert_eq!(
+        app.pipeline.nav_reply(seq, Some(&current)),
+        moe_frame::display_data::NavDecision::Accept
+    );
+    app.pipeline.promote_incoming();
+
+    let before_view = app.core.view();
+    let before_deadline = app.core.next_deadline_ms();
     let before_playing = app.core.is_playing();
     let before_visible = app.core.frame_visible();
+    assert_eq!(
+        before_view,
+        moe_frame::app_core::View::Showing(current.clone())
+    );
+    assert!(before_deadline.is_some(), "seeded playback has a deadline");
+    assert_eq!(
+        app.pipeline.current_key().map(|key| &key.path),
+        Some(&current)
+    );
 
     let opened = open_context_menu(&mut app, &ctx);
     assert!(painted_text_center(&opened, "置于顶层").is_some());
@@ -237,34 +294,47 @@ fn real_frame_menu_controls_session_window_level_without_changing_playback_or_vi
         &top,
         egui::WindowLevel::AlwaysOnTop
     ));
+    assert!(!has_geometry_command(&top));
 
     let opened = open_context_menu(&mut app, &ctx);
     assert!(painted_text_center(&opened, "✓ 置于顶层").is_some());
+    assert!(painted_text_center(&opened, "置于顶层").is_none());
     assert!(painted_text_center(&opened, "置于底层").is_some());
+    assert!(painted_text_center(&opened, "✓ 置于底层").is_none());
     let bottom = choose_menu_item(&mut app, &ctx, "置于底层");
     assert!(has_window_level_command(
         &bottom,
         egui::WindowLevel::AlwaysOnBottom
     ));
+    assert!(!has_geometry_command(&bottom));
 
     let opened = open_context_menu(&mut app, &ctx);
     assert!(painted_text_center(&opened, "置于顶层").is_some());
+    assert!(painted_text_center(&opened, "✓ 置于顶层").is_none());
+    assert!(painted_text_center(&opened, "置于底层").is_none());
     assert!(painted_text_center(&opened, "✓ 置于底层").is_some());
     let normal = choose_menu_item(&mut app, &ctx, "✓ 置于底层");
     assert!(has_window_level_command(&normal, egui::WindowLevel::Normal));
+    assert!(!has_geometry_command(&normal));
 
     let opened = open_context_menu(&mut app, &ctx);
     assert!(painted_text_center(&opened, "置于顶层").is_some());
     assert!(painted_text_center(&opened, "置于底层").is_some());
+    assert!(painted_text_center(&opened, "✓ 置于顶层").is_none());
+    assert!(painted_text_center(&opened, "✓ 置于底层").is_none());
     let top = choose_menu_item(&mut app, &ctx, "置于顶层");
     assert!(has_window_level_command(
         &top,
         egui::WindowLevel::AlwaysOnTop
     ));
+    assert!(!has_geometry_command(&top));
+
     let opened = open_context_menu(&mut app, &ctx);
     assert!(painted_text_center(&opened, "✓ 置于顶层").is_some());
+    assert!(painted_text_center(&opened, "置于顶层").is_none());
     let normal = choose_menu_item(&mut app, &ctx, "✓ 置于顶层");
     assert!(has_window_level_command(&normal, egui::WindowLevel::Normal));
+    assert!(!has_geometry_command(&normal));
 
     open_context_menu(&mut app, &ctx);
     let bottom = choose_menu_item(&mut app, &ctx, "置于底层");
@@ -272,18 +342,30 @@ fn real_frame_menu_controls_session_window_level_without_changing_playback_or_vi
         &bottom,
         egui::WindowLevel::AlwaysOnBottom
     ));
+    assert!(!has_geometry_command(&bottom));
     let opened = open_context_menu(&mut app, &ctx);
     assert!(painted_text_center(&opened, "✓ 置于底层").is_some());
+    assert!(painted_text_center(&opened, "置于底层").is_none());
+
     let top = choose_menu_item(&mut app, &ctx, "置于顶层");
     assert!(has_window_level_command(
         &top,
         egui::WindowLevel::AlwaysOnTop
     ));
+    assert!(!has_geometry_command(&top));
     let opened = open_context_menu(&mut app, &ctx);
     assert!(painted_text_center(&opened, "✓ 置于顶层").is_some());
+    assert!(painted_text_center(&opened, "置于顶层").is_none());
     let normal = choose_menu_item(&mut app, &ctx, "✓ 置于顶层");
     assert!(has_window_level_command(&normal, egui::WindowLevel::Normal));
+    assert!(!has_geometry_command(&normal));
 
+    assert_eq!(app.core.view(), before_view);
+    assert_eq!(app.core.next_deadline_ms(), before_deadline);
+    assert_eq!(
+        app.pipeline.current_key().map(|key| &key.path),
+        Some(&current)
+    );
     assert_eq!(app.core.is_playing(), before_playing);
     assert_eq!(app.core.frame_visible(), before_visible);
     let _ = std::fs::remove_dir_all(temp);
