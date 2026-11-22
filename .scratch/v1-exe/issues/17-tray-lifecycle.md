@@ -28,3 +28,4 @@
 - 2026-11-21 实现完成，状态置 needs-info：代码与自动化验证齐备（全量 146 项测试全绿，Windows 目标 check/clippy 通过），只剩验收标准 8 的实机验证——并入仓库根目录 `real-machine-check-10-17.md` 的工单 17 一节，与工单 10–15 合并确认后转 resolved（需含工单 17 的新版 exe）。实施笔记：`.agents/notes/implemented/feature/2026-11-21-tray-lifecycle.md`。
 - 结构决定：关闭/退出分离落在核心意图层（CloseRequested 只隐藏、ExitRequested 才结束），托盘只是又一个意图输入源，与相框菜单共用行为；隐藏期间宿主以 250ms 心跳保活托盘事件轮询，解决暂停+隐藏时无唤醒的睡死风险。
 - 双轴审查（基线 61e5512）：无硬违规、无范围蔓延。Standards 判断项处置：tray-icon 改 Windows 目标门控、托盘文案改用词汇表「关闭相框」、图标改内置 PNG 合 §8.3 原文、托盘初始状态改从核心现读。Spec 唯一真实风险（暂停+隐藏无唤醒）已以心跳关闭并列入实机必查项。
+- 2026-11-22 对齐（托盘-only 化，用户当日 grill 定案）：托盘左键与菜单「显示/关闭相框」由纯切换改为按焦点三分支召回（隐藏→显示并聚焦；显示无焦点→只召回聚焦；显示有焦点→隐藏），核心 Intent::ToggleVisibilityRequested 携带宿主采样的视口焦点。**父规格用户故事 53「左键切换相框显示与隐藏」的表述以此为准（正文不改写）。** 另：相框与设置窗都不再出现任务栏图标（with_taskbar(false) 定死）。实机清单工单 17 一节已改三分支口径并新增托盘-only 复测节。详见 .agents/notes/implemented/feature/2026-11-22-tray-only.md 与 .scratch/tray-only/issues/01-tray-only.md。
