@@ -89,6 +89,10 @@ pub enum Intent {
     /// 但无焦点 → 只唤回聚焦。focused 是宿主在点击帧采样的视口焦点，
     /// 未知按无焦点处理（只唤回不误藏）。
     ToggleVisibilityRequested { focused: bool },
+    /// 托盘菜单「关闭相框 / 显示相框」：按标签给出的终态执行，不参与
+    /// 焦点三分支。菜单弹出时相框必然失焦，若沿用 ToggleVisibilityRequested
+    /// 就会被判成「只唤回」，导致菜单项点在可见但无焦点的窗口上毫无反应。
+    SetFrameVisibleRequested { visible: bool },
 }
 
 /// 核心要求宿主执行的效果。
@@ -616,6 +620,21 @@ impl FrameCore {
                     vec![Effect::HideFrame]
                 } else {
                     vec![Effect::RaiseFrame]
+                }
+            }
+            Intent::SetFrameVisibleRequested { visible } => {
+                if visible == self.frame_visible {
+                    if visible {
+                        vec![Effect::RaiseFrame]
+                    } else {
+                        Vec::new()
+                    }
+                } else if visible {
+                    self.frame_visible = true;
+                    vec![Effect::ShowFrame]
+                } else {
+                    self.frame_visible = false;
+                    vec![Effect::HideFrame]
                 }
             }
         }

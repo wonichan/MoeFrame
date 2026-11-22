@@ -40,8 +40,10 @@ impl eframe::App for FrameApp {
             while let Ok(event) = self.menu_event_rx.try_recv() {
                 let id = event.id();
                 if id == tray.show_hide.id() {
-                    tray_intents.push(Intent::ToggleVisibilityRequested {
-                        focused: frame_focused(&ctx),
+                    // 菜单项按标签语义给终态：菜单弹出时相框必失焦，走三分支会被
+                    // 判成「只唤回」，「关闭相框」就点不动。
+                    tray_intents.push(Intent::SetFrameVisibleRequested {
+                        visible: !self.core.frame_visible(),
                     });
                 } else if id == tray.play_pause.id() {
                     tray_intents.push(Intent::PlayPauseToggled { now_ms: now });
