@@ -1,7 +1,8 @@
 //! 布局接缝（V2 相框外观专题工单 02 / 03）：画框绘制的全部矩形由
 //! 这里的纯函数产出，宿主只照单绘制。内置画框的三层（框体 /
-//! 卡纸 / 画面）、自绘软阴影的扩散层与自定义相框图的九宫格矩形
-//! 都在这里（spec 定案：一处统一产出，共用 LayoutRect 口径）。
+//! 卡纸 / 画面）与着色计划（截面明暗 / 造型线 / 贴边投影 / 卡纸
+//! 斜切面）、自定义相框图的九宫格矩形都在这里（spec 定案：一处
+//! 统一产出，共用 LayoutRect 口径）。
 //!
 //! 坐标是逻辑像素的平面矩形，不依赖 egui 类型：几何状态机给出的
 //! 画面区域口径（窗口 − 四边内距）在这里逐项复现，画面层矩形与
@@ -67,10 +68,10 @@ impl LayoutRect {
 }
 
 /// 内置画框的三层绘制矩形：框体层即窗口本身，卡纸层是框体内侧的
-/// 区域（卡纸带 + 画面），画面层是插画落点。宿主的画法是逐层填
-/// 满：框体色填 body、卡纸色填 mat、纹理填 image、内沿细线沿
-/// image 边界贴内侧描画。卡纸宽为 0 时 mat 与 image 重合，三层
-/// 退化为两层，宿主跳过卡纸填充即可。
+/// 区域（卡纸带 + 画面），画面层是插画落点。三层只是落点口径：
+/// 框带按截面着色分边落笔、卡纸面带投影与斜切面，着色几何见
+/// builtin_shading。卡纸宽为 0 时 mat 与 image 重合，三层退化
+/// 为两层，宿主跳过卡纸填充即可。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BuiltinLayers {
     pub body: LayoutRect,
@@ -218,8 +219,7 @@ impl EffectiveAppearance {
 pub enum FramePaint {
     /// 不画任何画框层（极简：插画贴边铺满整窗）。
     None,
-    /// 内置画框三层 + 自绘软阴影（宿主照 builtin_layers 与
-    /// shadow_layers 绘制）。
+    /// 内置画框三层 + 着色计划（宿主照 builtin_shading 绘制）。
     Builtin,
     /// 自定义相框图九宫格八区（洞区不画、插画在下层），无阴影。
     CustomArt,
@@ -276,27 +276,163 @@ pub fn paint_plan(effective: EffectiveAppearance, has_image: bool) -> PaintPlan 
     }
 }
 
-/// 自绘软阴影的层数（逻辑像素）：阴影总扩散带宽 = 层数 × 步长。
-const SHADOW_STEPS: usize = 6;
-/// 自绘软阴影的单层内收步长（逻辑像素）：宿主逐层描边的宽度
-/// 与此一致，相邻两层的矩形恰好首尾相接。
-pub const SHADOW_STEP_PX: f32 = 2.0;
-/// 每层的黑色透明度（0–255），由外向内递减：最外层最深，贴近
-/// 框体内部时淡出。
-const SHADOW_ALPHAS: [u8; SHADOW_STEPS] = [64, 48, 36, 26, 18, 12];
+/// 画框的四条边（着色计划口径）。光自左上：方向光倍率上 >
+/// 左 > 右 > 下（见 builtin_shading）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameEdge {
+    Top,
+    Left,
+    Bottom,
+    Right,
+}
 
-/// 自绘软阴影（仅内置画框模式）：窗口尺寸即外框尺寸，窗外没有
-/// 可绘制的像素，阴影落在框体外沿内侧的扩散带上——多层矩形从
-/// 窗口边缘逐层内收、透明度逐层递减，宿主按返回顺序以单层宽度
-/// 的内侧描边逐层画出，得到边缘最深、向内淡出的柔和扩散。
-/// 返回（矩形，该层描边的黑色透明度），最外层在前。
-pub fn shadow_layers(window: LayoutRect) -> Vec<(LayoutRect, u8)> {
-    (0..SHADOW_STEPS)
-        .map(|step| {
-            (
-                window.shrink_uniform(step as f32 * SHADOW_STEP_PX),
-                SHADOW_ALPHAS[step],
-            )
-        })
-        .collect()
+/// 一条边的截面着色：带矩形 + 沿带宽方向（外沿 → 内沿）的明暗
+/// 档位。档位是（分位，亮度倍率）：宿主按预设基色乘倍率、在
+/// 相邻档位间细分条带插值落笔，得到无硬界的截面明暗。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EdgeShade {
+    pub edge: FrameEdge,
+    pub rect: LayoutRect,
+    pub stops: [(f32, f32); 4],
+}
+
+/// 框带造型线的落笔矩形（宿主以 1px 内侧描边画出）：外沿压线、
+/// 凹槽（窄框放不下时缺席）、紧贴卡纸层边界的内唇亮线。造型
+/// 集中在带内侧——真实画框截面的凹凸多在内唇一带，外沿只压
+/// 一道暗线收边。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProfileLines {
+    pub outer_rim: LayoutRect,
+    pub groove: Option<LayoutRect>,
+    pub lip: LayoutRect,
+}
+
+/// 一道贴边淡出的影：以 rect 的边界为最深处，向 rect 内部淡出
+/// depth 距离，边界处黑色透明度 max_alpha。宿主以逐层内收的
+/// 描边环落笔，四边均匀。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FadeBand {
+    pub rect: LayoutRect,
+    pub depth: f32,
+    pub max_alpha: u8,
+}
+
+/// 卡纸着色：框体投在卡纸上的影（框宽为 0 时无框可投，缺席）、
+/// 卡纸内口的斜切面、卡纸投在画面上的影。斜切面以外沿矩形
+/// 给出：外沿 = 画面外扩 bevel_width，宿主画外沿与画面之间的
+/// 一圈近白色，即 45° 切面受光的那一面。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MatShading {
+    pub cast_shadow: Option<FadeBand>,
+    pub bevel: LayoutRect,
+    pub bevel_width: f32,
+    pub image_shadow: FadeBand,
+}
+
+/// 内置画框的着色计划：三层矩形 + 框带截面着色 + 造型线 + 卡纸
+/// 着色，全部纯数据，宿主只照单落笔（颜色按预设在宿主侧合成）。
+/// 深度线索来自截面明暗、两道贴边投影与卡纸斜切面——窗口尺寸
+/// 即外框尺寸、窗外无可绘制像素，投影只能落在相邻层面上（框
+/// 影落卡纸、卡纸影落画面），不存在游离的灰带。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BuiltinShading {
+    pub layers: BuiltinLayers,
+    pub edges: [EdgeShade; 4],
+    pub profile: Option<ProfileLines>,
+    pub mat: Option<MatShading>,
+}
+
+/// 截面明暗走向（分位，基础倍率）：外沿略暗 → 中段隆起受光 →
+/// 凹槽压暗 → 内唇最亮，是木框截面最常见的明暗次序。
+const PROFILE_STOPS: [(f32, f32); 4] = [(0.0, 0.84), (0.55, 1.05), (0.82, 0.76), (1.0, 1.10)];
+/// 框影深度（逻辑像素，spec 口径 6–8）：贴框体内沿在卡纸上
+/// 淡出的距离，钳到卡纸宽内。
+const CAST_SHADOW_DEPTH: f32 = 7.0;
+/// 框影边界透明度：框体厚，影实。
+const CAST_SHADOW_ALPHA: u8 = 58;
+/// 斜切面宽（逻辑像素）：卡纸内口 45° 切面受光的一圈，钳到
+/// 卡纸宽内。
+const BEVEL_WIDTH: f32 = 2.0;
+/// 画面影深度（逻辑像素，spec 口径 4–6）：卡纸投在画面上的影。
+const IMAGE_SHADOW_DEPTH: f32 = 5.0;
+/// 画面影边界透明度：卡纸薄，影淡于框影。
+const IMAGE_SHADOW_ALPHA: u8 = 46;
+/// 造型线成立的最小框宽：低于此带内只剩截面渐变本身。
+const PROFILE_MIN_FRAME_WIDTH: f32 = 2.0;
+/// 凹槽成立的最小框宽。
+const GROOVE_MIN_FRAME_WIDTH: f32 = 5.0;
+
+/// 内置画框着色计划：与 builtin_layers 同吃窗口矩形 + 四边
+/// 内距，另需框宽与卡纸宽定着色几何。框宽为 0 时四边矩形退化
+/// 为零面积（宿主跳过）、造型线缺席；卡纸宽为 0 时卡纸着色
+/// 缺席，与三层退化口径一致。
+pub fn builtin_shading(
+    window: LayoutRect,
+    insets: Insets,
+    frame_width: f32,
+    mat_width: f32,
+) -> BuiltinShading {
+    let layers = builtin_layers(window, insets, frame_width);
+    let (body, mat_rect) = (layers.body, layers.mat);
+    let edge = |edge: FrameEdge, rect: LayoutRect, light: f32| EdgeShade {
+        edge,
+        rect,
+        stops: PROFILE_STOPS.map(|(frac, tone)| (frac, tone * light)),
+    };
+    // 方向光（光自左上）：上 1.07 > 左 1.02 > 右 0.95 > 下 0.89。
+    // 上、下边通宽含四角，左、右边夹在中间，四边恰好铺满框带。
+    let edges = [
+        edge(
+            FrameEdge::Top,
+            LayoutRect::new(body.left, body.top, body.right, mat_rect.top),
+            1.07,
+        ),
+        edge(
+            FrameEdge::Left,
+            LayoutRect::new(body.left, mat_rect.top, mat_rect.left, mat_rect.bottom),
+            1.02,
+        ),
+        edge(
+            FrameEdge::Bottom,
+            LayoutRect::new(body.left, mat_rect.bottom, body.right, body.bottom),
+            0.89,
+        ),
+        edge(
+            FrameEdge::Right,
+            LayoutRect::new(mat_rect.right, mat_rect.top, body.right, mat_rect.bottom),
+            0.95,
+        ),
+    ];
+    // 造型线落笔矩形（1px 内侧描边）：外沿线即窗口边；凹槽在
+    // 内沿外 3px 起、内唇在内沿外 1px 起——描边向矩形内侧落，
+    // 矩形内收量 = 带内距 − 线宽方向的偏移。
+    let profile = (frame_width >= PROFILE_MIN_FRAME_WIDTH).then(|| ProfileLines {
+        outer_rim: body,
+        groove: (frame_width >= GROOVE_MIN_FRAME_WIDTH)
+            .then(|| body.shrink_uniform(frame_width - 3.0)),
+        lip: body.shrink_uniform(frame_width - 1.0),
+    });
+    let mat = (mat_width > 0.0).then(|| {
+        let bevel_width = BEVEL_WIDTH.min(mat_width);
+        MatShading {
+            cast_shadow: (frame_width > 0.0).then(|| FadeBand {
+                rect: mat_rect,
+                depth: CAST_SHADOW_DEPTH.min(mat_width),
+                max_alpha: CAST_SHADOW_ALPHA,
+            }),
+            bevel: layers.image.shrink_uniform(-bevel_width),
+            bevel_width,
+            image_shadow: FadeBand {
+                rect: layers.image,
+                depth: IMAGE_SHADOW_DEPTH,
+                max_alpha: IMAGE_SHADOW_ALPHA,
+            },
+        }
+    });
+    BuiltinShading {
+        layers,
+        edges,
+        profile,
+        mat,
+    }
 }

@@ -8,8 +8,8 @@ use moe_frame::{
     config::{AppearanceMode, BuiltinFrame, FramePreset},
     frame_art::{FrameArtAnalysis, HoleRect},
     frame_layout::{
-        builtin_layers, effective_appearance, nine_slice_layout, paint_plan, shadow_layers,
-        EffectiveAppearance, FramePaint, HintPaint, LayoutRect, PaintPlan,
+        builtin_layers, builtin_shading, effective_appearance, nine_slice_layout, paint_plan,
+        EffectiveAppearance, FrameEdge, FramePaint, HintPaint, LayoutRect, PaintPlan,
     },
     window_geom::Insets,
 };
@@ -269,25 +269,127 @@ fn nine_slice_edges_stretch_only_along_their_length() {
 }
 
 #[test]
-fn shadow_layers_diffuse_inward_from_the_window_edge() {
-    // 自绘软阴影：多层矩形从窗口边缘逐层内收，透明度逐层递减，
-    // 宿主按返回顺序逐层描画即得扩散效果。
-    let layers = shadow_layers(window());
-    assert!(layers.len() >= 4, "阴影至少四层扩散：{layers:?}");
-    assert_eq!(layers[0].0, window(), "最外层贴窗口边缘");
-    for pair in layers.windows(2) {
-        let (outer_rect, outer_alpha) = pair[0];
-        let (inner_rect, inner_alpha) = pair[1];
+fn shading_carries_the_same_three_layers() {
+    // 着色计划只是三层之上的光影数据：三层矩形与 builtin_layers
+    // 逐项一致，宿主换用着色计划不许漂移绘制口径。
+    let shading = builtin_shading(window(), uniform(32.0), 14.0, 18.0);
+    assert_eq!(
+        shading.layers,
+        builtin_layers(window(), uniform(32.0), 14.0)
+    );
+}
+
+#[test]
+fn shading_edges_tile_the_band_and_face_the_light() {
+    // 四边矩形恰好铺满框带：上、下边通宽（含四角），左、右边夹
+    // 在中间。光自左上：同一档位上边最亮、左边次之、右边再次、
+    // 下边最暗；每条边沿带宽方向（外沿 → 内沿）的档位走向是
+    // 画框截面：外沿略暗、中段提亮、凹槽压暗、内唇最亮。
+    let shading = builtin_shading(window(), uniform(32.0), 14.0, 18.0);
+    let edges = shading.edges;
+    assert_eq!(edges[0].edge, FrameEdge::Top);
+    assert_eq!(edges[0].rect, LayoutRect::new(0.0, 0.0, 480.0, 14.0));
+    assert_eq!(edges[1].edge, FrameEdge::Left);
+    assert_eq!(edges[1].rect, LayoutRect::new(0.0, 14.0, 14.0, 306.0));
+    assert_eq!(edges[2].edge, FrameEdge::Bottom);
+    assert_eq!(edges[2].rect, LayoutRect::new(0.0, 306.0, 480.0, 320.0));
+    assert_eq!(edges[3].edge, FrameEdge::Right);
+    assert_eq!(edges[3].rect, LayoutRect::new(466.0, 14.0, 480.0, 306.0));
+    for (i, edge) in edges.iter().enumerate() {
+        let fracs: Vec<f32> = edge.stops.iter().map(|stop| stop.0).collect();
+        assert_eq!(fracs, vec![0.0, 0.55, 0.82, 1.0], "第 {i} 边分位");
+        let tones: Vec<f32> = edge.stops.iter().map(|stop| stop.1).collect();
         assert!(
-            inner_rect.left > outer_rect.left
-                && inner_rect.top > outer_rect.top
-                && inner_rect.right < outer_rect.right
-                && inner_rect.bottom < outer_rect.bottom,
-            "阴影层逐层严格内收：{outer_rect:?} -> {inner_rect:?}"
+            tones[3] > tones[0] && tones[3] > tones[1],
+            "第 {i} 边内唇最亮：{tones:?}"
         );
         assert!(
-            inner_alpha < outer_alpha,
-            "阴影透明度逐层递减：{outer_alpha} -> {inner_alpha}"
+            tones[2] < tones[0] && tones[2] < tones[1],
+            "第 {i} 边凹槽最暗：{tones:?}"
         );
     }
+    for stop in 0..4 {
+        let (top, left, bottom, right) = (
+            edges[0].stops[stop].1,
+            edges[1].stops[stop].1,
+            edges[2].stops[stop].1,
+            edges[3].stops[stop].1,
+        );
+        assert!(
+            top > left && left > right && right > bottom,
+            "档位 {stop} 方向光序：上 {top} 左 {left} 右 {right} 下 {bottom}"
+        );
+    }
+}
+
+#[test]
+fn shading_profile_lines_ride_the_inner_side_of_the_band() {
+    // 造型线（宿主以 1px 内侧描边落笔）：外沿线即窗口边，凹槽在
+    // 内沿外 3px，内唇紧贴卡纸层边界（内沿外 1px 起）。
+    let shading = builtin_shading(window(), uniform(32.0), 14.0, 18.0);
+    let profile = shading.profile.expect("框宽 14 应有造型线");
+    assert_eq!(profile.outer_rim, window());
+    assert_eq!(
+        profile.groove,
+        Some(LayoutRect::new(11.0, 11.0, 469.0, 309.0))
+    );
+    assert_eq!(profile.lip, LayoutRect::new(13.0, 13.0, 467.0, 307.0));
+    // 窄框放不下凹槽：框宽 4 时只剩外沿与内唇；框宽 1 与 0 时
+    // 造型线整体缺席（带只剩渐变本身）。
+    let narrow = builtin_shading(window(), uniform(22.0), 4.0, 18.0);
+    let profile = narrow.profile.expect("框宽 4 应有造型线");
+    assert_eq!(profile.groove, None);
+    assert_eq!(profile.lip, LayoutRect::new(3.0, 3.0, 477.0, 317.0));
+    assert!(builtin_shading(window(), uniform(19.0), 1.0, 18.0)
+        .profile
+        .is_none());
+    assert!(builtin_shading(window(), uniform(18.0), 0.0, 18.0)
+        .profile
+        .is_none());
+}
+
+#[test]
+fn mat_shading_hugs_the_mat_and_image_edges() {
+    // 框影落在卡纸上、贴框体内沿向内淡出；斜切面是画面外扩
+    // 2px 的一圈；卡纸投在画面上的影贴画面边界向内淡出，且
+    // 必须比框影更淡（卡纸薄、框体厚）。
+    let shading = builtin_shading(window(), uniform(32.0), 14.0, 18.0);
+    let mat = shading.mat.expect("卡纸宽 18 应有卡纸着色");
+    let cast = mat.cast_shadow.expect("有框带才有框影");
+    assert_eq!(cast.rect, LayoutRect::new(14.0, 14.0, 466.0, 306.0));
+    assert_eq!(cast.depth, 7.0);
+    assert!(cast.max_alpha > 0);
+    assert_eq!(mat.bevel, LayoutRect::new(30.0, 30.0, 450.0, 290.0));
+    assert_eq!(mat.bevel_width, 2.0);
+    assert_eq!(
+        mat.image_shadow.rect,
+        LayoutRect::new(32.0, 32.0, 448.0, 288.0)
+    );
+    assert_eq!(mat.image_shadow.depth, 5.0);
+    assert!(mat.image_shadow.max_alpha > 0 && mat.image_shadow.max_alpha < cast.max_alpha);
+}
+
+#[test]
+fn mat_shading_clamps_to_a_narrow_mat_and_vanishes_with_it() {
+    // 卡纸只有 3px：框影深度钳到卡纸宽内（不许溢到画面上冒充
+    // 卡纸的影），斜切面仍是 2px 且整圈落在卡纸层内。
+    let shading = builtin_shading(window(), uniform(17.0), 14.0, 3.0);
+    let mat = shading.mat.expect("卡纸宽 3 仍有卡纸着色");
+    assert_eq!(mat.cast_shadow.map(|band| band.depth), Some(3.0));
+    assert_eq!(mat.bevel_width, 2.0);
+    assert_eq!(mat.bevel, LayoutRect::new(15.0, 15.0, 465.0, 305.0));
+    // 卡纸宽 0：无卡纸着色（三层退化口径不变，画面层即卡纸层）。
+    let none = builtin_shading(window(), uniform(14.0), 14.0, 0.0);
+    assert!(none.mat.is_none());
+    assert_eq!(none.layers.mat, none.layers.image);
+}
+
+#[test]
+fn frameless_band_casts_no_shadow_on_the_mat() {
+    // 框宽 0：卡纸直接贴窗口边，没有框体可投影——框影缺席；
+    // 斜切面与画面影是卡纸自己的，照旧。
+    let shading = builtin_shading(window(), uniform(18.0), 0.0, 18.0);
+    let mat = shading.mat.expect("卡纸宽 18 应有卡纸着色");
+    assert!(mat.cast_shadow.is_none());
+    assert_eq!(mat.bevel, LayoutRect::new(16.0, 16.0, 464.0, 304.0));
 }

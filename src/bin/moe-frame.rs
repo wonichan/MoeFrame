@@ -53,8 +53,8 @@ use moe_frame::{
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
     frame_art::FrameArtAnalysis,
     frame_layout::{
-        builtin_layers, effective_appearance, nine_slice_layout, shadow_layers,
-        EffectiveAppearance, LayoutRect, SHADOW_STEP_PX,
+        builtin_shading, effective_appearance, nine_slice_layout, BuiltinShading, EdgeShade,
+        EffectiveAppearance, FadeBand, FrameEdge, LayoutRect, ProfileLines,
     },
     gesture::GestureThresholds,
     loading::LoadRequest,
