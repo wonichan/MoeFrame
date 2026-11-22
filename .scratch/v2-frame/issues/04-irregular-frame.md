@@ -7,7 +7,7 @@
 
 **Blocked by:** 03（本专题）
 
-**Status:** needs-info
+**Status:** done
 
 ## Acceptance criteria
 
@@ -44,3 +44,6 @@
 - 状态 needs-info，真机待核：异形相框图上屏观感（透明处真
   透出桌面）、透明处拖动与矩形缩放带的手感、空状态提示在
   浅色桌面上的可读性（描影效果）。
+- 2026-11-22 真机验收通过：用户已在 Windows 机执行
+  `real-machine-check-v2-frame.md` 对应条目，判定通过；本票由
+  needs-info 回填 done。

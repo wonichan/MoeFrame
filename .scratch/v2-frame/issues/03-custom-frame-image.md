@@ -8,13 +8,13 @@
 
 **Blocked by:** 01（本专题）
 
-**Status:** needs-info
+**Status:** done
 
 ## Acceptance criteria
 
 - [x] 合规 PNG（中心透明矩形洞）可加载，四边内距检测正确
       （库测试覆盖：标准洞、偏置洞、中心不透明判无效）
-- [ ] 窗口比例变化时角部图案不变形（九宫格语义，真机复核）
+- [x] 窗口比例变化时角部图案不变形（九宫格语义，真机复核）
 - [x] 框厚随窗口宽度等比缩放
 - [x] 相框图路径持久化；文件被删/无效时回退胡桃木内置框，
       设置窗显示原因，程序不白屏不崩溃
@@ -72,3 +72,6 @@
   回退口径按 spec 改为内置默认画框（胡桃木 + 默认宽），不再用
   用户当前内置参数，裁决收拢为 frame_layout 的 effective_appearance
   一处。记录见 `.agents/notes/implemented/bug-fix/2026-11-22-v2-frame-review-fixes.md`。
+- 2026-11-22 真机验收通过：用户已在 Windows 机执行
+  `real-machine-check-v2-frame.md` 对应条目，判定通过；本票由
+  needs-info 回填 done。

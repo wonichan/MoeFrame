@@ -10,7 +10,7 @@
 **Blocked by:** None (can start immediately)（V2 已于 2026-11-22
 启动，专题级阻塞解除）
 
-**Status:** needs-info
+**Status:** done
 
 ## Acceptance criteria
 
@@ -20,7 +20,7 @@
       含四边不等与内距全 0 退化为现状两例）
 - [x] 解码口径 = 画面区域尺寸；内距为 0 时与现状等值
 - [x] 恢复默认尺寸按外框总高度口径工作
-- [ ] 透明创建落地后用既有测量脚本复测稳态工作集与冷启动并记录；
+- [x] 透明创建落地后用既有测量脚本复测稳态工作集与冷启动并记录；
       明显恶化（对照 ≤80MB 预算与 ~0.3s 冷启动基线）要回议 spec，
       不得静默交付
 
@@ -53,3 +53,6 @@
 - 共识全文见 ../spec.md 决策 1、2、7、8、14。
 - 现状事实：窗口不透明创建、阴影关闭；几何机只管内尺寸、宽 =
   高 × 图比例；physical_target 取整个 viewport。
+- 2026-11-22 真机验收通过：用户已在 Windows 机执行
+  `real-machine-check-v2-frame.md` 对应条目，判定通过；本票由
+  needs-info 回填 done。

@@ -7,7 +7,7 @@ FR-31x 外观条款组；README 补三种外观模式与自定义相框图契约
 
 **Blocked by:** 02、03、04（本专题）
 
-**Status:** needs-info
+**Status:** done
 
 ## Acceptance criteria
 
@@ -15,9 +15,9 @@ FR-31x 外观条款组；README 补三种外观模式与自定义相框图契约
       （措辞与 grilling 记录一致）
 - [x] README 说明三种外观模式、自定义相框图契约（PNG + 中心
       透明矩形洞）与失效回退行为
-- [ ] 本专题真机清单逐项有结果，01–04 各票状态按结果回填
-      （needs-info / resolved）——清单已建好（见 Comments），
-      待用户在 Windows 机跑完后按结果回填，本条暂不勾
+- [x] 本专题真机清单逐项有结果，01–04 各票状态按结果回填
+      （done）——清单已建立并已由用户在 Windows 机执行完毕，
+      01–04 各票状态已按结果回填 done
 - [x] GLOSSARY 与实现口径无冲突（外观 / 画框 / 框体 / 卡纸 /
       内距 / 相框图 / 异形相框）
 
@@ -62,3 +62,7 @@ FR-31x 外观条款组；README 补三种外观模式与自定义相框图契约
   `.agents/notes/implemented/feature/2026-11-22-v2-frame-docs-and-requirements.md`。
   proposed 笔记（2026-11-22-picture-frame-appearance）状态未动：
   其验收含真机复核项，尚未全部满足。
+- 2026-11-22 真机验收收口（发布 v0.1.1 前）：用户已在 Windows 机
+  执行 `real-machine-check-v2-frame.md` 全部 27 项，全部通过。
+  01–04 各票状态按结果由 needs-info 回填 done，本票随之 done。
+  清单首页的状态说明同步改为「已核对完毕」，不再写 needs-info。

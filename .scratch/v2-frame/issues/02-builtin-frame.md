@@ -6,7 +6,7 @@
 
 **Blocked by:** 01（本专题）
 
-**Status:** needs-info
+**Status:** done
 
 ## Acceptance criteria
 
@@ -67,3 +67,6 @@
 ## Context
 
 - 共识见 ../spec.md 决策 3、4、5、6。
+- 2026-11-22 真机验收通过：用户已在 Windows 机执行
+  `real-machine-check-v2-frame.md` 对应条目，判定通过；本票由
+  needs-info 回填 done。
