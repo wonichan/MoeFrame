@@ -393,3 +393,124 @@ fn frameless_band_casts_no_shadow_on_the_mat() {
     assert!(mat.cast_shadow.is_none());
     assert_eq!(mat.bevel, LayoutRect::new(16.0, 16.0, 464.0, 304.0));
 }
+
+#[test]
+fn corners_carry_the_three_boundary_radii_and_centers() {
+    // 圆角（圆角工单 01）：三个角边界各有独立定值——窗口外沿
+    // 20、框体内沿 10、卡纸内沿 12（逻辑 px，原型选定 C）。
+    // 圆心 = 边界矩形四角各向内收半径：顺序左上、右上、右下、
+    // 左下。默认内距（框 14 + 卡纸 18）下定值不被夹紧。
+    let shading = builtin_shading(window(), uniform(32.0), 14.0, 18.0);
+    let corners = shading.corners;
+    assert_eq!(corners.outer.radius, 20.0);
+    assert_eq!(
+        corners.outer.centers,
+        [(20.0, 20.0), (460.0, 20.0), (460.0, 300.0), (20.0, 300.0)]
+    );
+    let frame_inner = corners.frame_inner.expect("框宽 14 应有框体内沿边界");
+    assert_eq!(frame_inner.radius, 10.0);
+    assert_eq!(
+        frame_inner.centers,
+        [(24.0, 24.0), (456.0, 24.0), (456.0, 296.0), (24.0, 296.0)]
+    );
+    assert_eq!(corners.image.radius, 12.0);
+    assert_eq!(
+        corners.image.centers,
+        [(44.0, 44.0), (436.0, 44.0), (436.0, 276.0), (44.0, 276.0)]
+    );
+}
+
+#[test]
+fn corners_degenerate_with_zero_mat_and_zero_frame() {
+    // 卡纸宽 = 0：画面边缘即框体内沿呈现，半径取卡纸内沿定值
+    // 12（框带 14 夹得住）；框体内沿边界仍在（半径 10），只是
+    // 与画面边缘同矩形——宿主跳过卡纸层、直接按画面边缘落笔。
+    let shading = builtin_shading(window(), uniform(14.0), 14.0, 0.0);
+    assert_eq!(shading.corners.image.radius, 12.0);
+    assert_eq!(
+        shading.corners.image.centers,
+        [(26.0, 26.0), (454.0, 26.0), (454.0, 294.0), (26.0, 294.0)]
+    );
+    assert_eq!(
+        shading.corners.frame_inner.map(|b| b.radius),
+        Some(10.0),
+        "框宽 14 时框体内沿边界应在场"
+    );
+    // 框宽 = 0：框体内沿边界不存在，外沿半径落到卡纸带上被
+    // 卡纸宽 18 夹紧（定值 20 → 18）；画面边缘半径仍是 12。
+    let shading = builtin_shading(window(), uniform(18.0), 0.0, 18.0);
+    assert!(shading.corners.frame_inner.is_none());
+    assert_eq!(shading.corners.outer.radius, 18.0);
+    assert_eq!(
+        shading.corners.outer.centers,
+        [(18.0, 18.0), (462.0, 18.0), (462.0, 302.0), (18.0, 302.0)]
+    );
+    assert_eq!(shading.corners.image.radius, 12.0);
+}
+
+#[test]
+fn corners_clamp_to_thin_bands_and_tiny_windows() {
+    // 带厚小于定值（框 4 + 卡纸 2）：外沿被整幅内距 6 夹紧、
+    // 框体内沿被框带 4 夹紧、画面边缘被卡纸带 2 夹紧；半径都
+    // 不超过各自边界矩形的半宽 / 半高（弧不自交的前提）。
+    let shading = builtin_shading(window(), uniform(6.0), 4.0, 2.0);
+    let corners = shading.corners;
+    assert_eq!(corners.outer.radius, 6.0);
+    assert_eq!(corners.frame_inner.map(|b| b.radius), Some(4.0));
+    assert_eq!(corners.image.radius, 2.0);
+    assert_eq!(
+        corners.image.centers,
+        [(8.0, 8.0), (472.0, 8.0), (472.0, 312.0), (8.0, 312.0)]
+    );
+    // 极小窗口（高 36 < 内距 64）：外沿半径被窗口半高 18 夹紧；
+    // 画面矩形已退化，画面边缘半径归 0 而不是负数或溢出。
+    let tiny = builtin_shading(
+        LayoutRect::new(0.0, 0.0, 480.0, 36.0),
+        uniform(32.0),
+        14.0,
+        18.0,
+    );
+    assert_eq!(tiny.corners.outer.radius, 18.0);
+    assert_eq!(tiny.corners.image.radius, 0.0);
+}
+
+#[test]
+fn corner_companions_carry_their_arc_radii() {
+    // 角部弧段配套（圆角工单 01）：带状要素在角部沿弧延续所需
+    // 的半径全部由布局接缝给出，宿主不推导——造型线半径按其
+    // 落笔矩形在框带中的分位在外沿 20 与框体内沿 10 之间插值
+    // （凹槽在内沿外 3px、内唇在内沿外 1px）；框影贴卡纸外沿
+    // （半径 = 框体内沿 10），画面影贴画面边缘（12），斜切面
+    // 外沿 = 画面边缘半径 + 切面宽（12 + 2）。
+    let shading = builtin_shading(window(), uniform(32.0), 14.0, 18.0);
+    let profile = shading.profile.expect("框宽 14 应有造型线");
+    assert_eq!(profile.outer_radius, 20.0);
+    let groove_radius = profile.groove_radius.expect("框宽 14 应有凹槽半径");
+    assert!(
+        (groove_radius - 12.142_857).abs() < 0.001,
+        "凹槽半径应在外沿与框体内沿之间按分位插值：{groove_radius}"
+    );
+    assert!(
+        (profile.lip_radius - 10.714_286).abs() < 0.001,
+        "内唇半径应在外沿与框体内沿之间按分位插值：{}",
+        profile.lip_radius
+    );
+    let mat = shading.mat.expect("卡纸宽 18 应有卡纸着色");
+    assert_eq!(mat.cast_shadow.map(|band| band.radius), Some(10.0));
+    assert_eq!(mat.image_shadow.radius, 12.0);
+    assert_eq!(mat.bevel_radius, 14.0);
+    // 框宽 4（无凹槽）：凹槽半径随凹槽一同缺席；框体内沿半径
+    // 被框带夹紧为 4，内唇半径在外沿 20 与框体内沿 4 之间按
+    // 分位（内沿外 1px / 框宽 4）插值 = 8。
+    let narrow = builtin_shading(window(), uniform(22.0), 4.0, 18.0);
+    let profile = narrow.profile.expect("框宽 4 应有造型线");
+    assert_eq!(profile.groove_radius, None);
+    assert_eq!(profile.lip_radius, 8.0);
+    // 窄卡纸（3px）：画面边缘半径被卡纸带夹紧为 3，斜切面外沿
+    // 半径随之为 3 + 2；框影仍贴卡纸外沿（框体内沿半径 10）。
+    let narrow_mat = builtin_shading(window(), uniform(17.0), 14.0, 3.0);
+    let mat = narrow_mat.mat.expect("卡纸宽 3 应有卡纸着色");
+    assert_eq!(mat.image_shadow.radius, 3.0);
+    assert_eq!(mat.bevel_radius, 5.0);
+    assert_eq!(mat.cast_shadow.map(|band| band.radius), Some(10.0));
+}
