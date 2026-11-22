@@ -35,6 +35,9 @@ mod settings_ui;
 #[path = "moe-frame/texture.rs"]
 mod texture;
 #[cfg(windows)]
+#[path = "moe-frame/transition.rs"]
+mod transition;
+#[cfg(windows)]
 #[path = "moe-frame/tray.rs"]
 mod tray;
 #[cfg(test)]
@@ -45,7 +48,7 @@ mod ui_regressions;
 use eframe::egui;
 #[cfg(windows)]
 use moe_frame::{
-    app_core::{Effect, FrameCore, Intent, View},
+    app_core::{ConcreteAnimation, Effect, FrameCore, Intent, View},
     autostart::{autostart_command, AutostartStore, AutostartSync, RUN_KEY_PATH, RUN_VALUE_NAME},
     config::{AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode, MAX_LAYER_WIDTH},
     config_sync::ConfigSync,
@@ -58,6 +61,7 @@ use moe_frame::{
     },
     gesture::GestureThresholds,
     loading::LoadRequest,
+    playlist::Direction,
     resize_cursor, resize_direction,
     settings_session::{
         EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
@@ -297,6 +301,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 first_image_marked: false,
                 texture: None,
                 incoming: None,
+                transition: None,
                 press_window_pos: None,
                 tray: None,
                 tray_tried: false,

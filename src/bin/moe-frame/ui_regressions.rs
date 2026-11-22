@@ -135,6 +135,7 @@ fn test_app(test_id: &str) -> (super::FrameApp, std::path::PathBuf) {
         first_image_marked: true,
         texture: None,
         incoming: None,
+        transition: None,
         press_window_pos: None,
         tray: None,
         tray_tried: true,

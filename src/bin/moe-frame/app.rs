@@ -15,6 +15,10 @@ pub(crate) struct FrameApp {
     pub(crate) texture: Option<egui::TextureHandle>,
     /// 加载完成、等待核心完成显示提交的目标纹理。
     pub(crate) incoming: Option<egui::TextureHandle>,
+    /// 在飞的宿主转场（切换动画专题工单 02）：核心发出
+    /// `StartTransition` 时置位，宿主按墙钟绘制新旧两图，到期
+    /// 回送完成时才把 `incoming` 转正；None 表示无转场。
+    pub(crate) transition: Option<transition::HostTransition>,
     /// 本次左键按下时窗口的外框位置：右键取消拖动时回滚到这里（工单 15）。
     pub(crate) press_window_pos: Option<egui::Pos2>,
     /// 托盘（工单 17）：首帧懒建（须在事件循环内建）；建失败为 None，相框照常。
@@ -94,13 +98,20 @@ impl FrameApp {
                     self.pipeline.invalidate();
                     // 新一轮扫描开始：作废在飞加载，画面回到核心仍在显示的源图。
                     self.incoming = None;
+                    // 在飞转场随之取消（核心在 ScanCompleted 同步清
+                    // 掉其转场状态）：新图已作废，旧图继续显示。
+                    self.transition = None;
                     let _ = self.command_tx.send(Command::Scan { folder });
                 }
-                Effect::StartTransition { .. } => {
-                    let effects = self.core.handle(Intent::TransitionCompleted {
-                        now_ms: now_ms(ctx),
-                    });
-                    self.dispatch(ctx, effects);
+                Effect::StartTransition {
+                    animation,
+                    direction,
+                    duration_ms,
+                    ..
+                } => {
+                    // 不再秒回完成：宿主持转场状态按墙钟绘制，到期
+                    // 由 advance_transition 回送（工单 02 骨架）。
+                    self.begin_transition(ctx, animation, direction, duration_ms);
                 }
                 Effect::Load { candidates } => {
                     // 序号与在飞口径记账归显示数据管线：回送按序号裁决，
@@ -278,6 +289,7 @@ impl FrameApp {
                     if self.core.view() == View::Empty {
                         self.texture = None;
                         self.incoming = None;
+                        self.transition = None;
                         self.pipeline.drop_incoming();
                         self.pipeline.clear_current();
                     }
@@ -303,7 +315,9 @@ impl FrameApp {
                         now_ms: now_ms(ctx),
                     });
                     self.dispatch(ctx, effects);
-                    if self.incoming.is_some() {
+                    // 转场已起时不转正：incoming 留置与旧图跨帧共存，
+                    // 转正搬到 advance_transition 的完成时刻（工单 02）。
+                    if self.transition.is_none() && self.incoming.is_some() {
                         self.texture = self.incoming.take();
                         self.pipeline.promote_incoming();
                     }
@@ -322,7 +336,9 @@ impl FrameApp {
                     let decision = self.pipeline.refresh_reply(
                         image.as_ref().map(|image| image.path.as_path()),
                         showing.as_deref(),
-                        false,
+                        // 转场期间不换图：刷新回送按管线守卫丢弃，
+                        // 免得正在播出场动画的旧纹理被中途替换。
+                        self.transition.is_some(),
                     );
                     if decision == RefreshDecision::Swap {
                         if let Some(image) = image {
