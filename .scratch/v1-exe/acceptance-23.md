@@ -26,9 +26,9 @@
 | 轮播计时 | 通过（脚本 + 测试） | 3 s 间隔 110.5 s 出 35 张（≈3.16 s/张，含解码）；手动切换重置与暂停规则见 `tests/app_core.rs`（53 项）与 `tests/settings_session.rs`（20 项） |
 | 动画与连点 | **不适用**（决定取代） | 现行行为无滑动转场、切图瞬时完成，见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`；连续意图合并由 app_core 测试覆盖 |
 | 显示方式 | **不适用**（决定取代） | 无 Fit/Fill：图片始终完整显示、窗口宽度随图片比例。实测窗口宽 553（横图）/229（竖图），高度固定 320 |
-| 窗口与多屏 | **未验证**（需人工） | 位置/尺寸/DPI 的自动化测试有 `tests/window_geom.rs` 19 项，但拖动、四边四角缩放、副屏移除后找回、100%/混合 DPI 均未实机操作 |
-| 托盘与自启 | **未验证**（需人工） | `tests/autostart.rs` 5 项覆盖写入/回滚逻辑；托盘左键切换、右键菜单、唤回、退出、自启真实生效未实机操作 |
-| 设置窗 | **未验证**（需人工） | `tests/settings_session.rs` 20 项覆盖草稿/提交/丢弃/同值不重计；菜单与设置窗同一状态、隐藏相框时的打开行为未实机操作 |
+| 窗口与多屏 | 通过（人工待办 1–4） | `tests/window_geom.rs` 19 项 + 用户实机：拖动移动、四边四角缩放、120×120 下限、关闭重开恢复、恢复默认位置与大小、副屏移除后找回均通过。位置不恢复曾不过，根因是几何停稳 0.6 秒才写盘而闲时睡到下一次轮播，修复 `d971227`。混合 DPI 双屏仍属未覆盖环境 |
+| 托盘与自启 | 通过（人工待办 5–7） | `tests/autostart.rs` 5 项 + 用户实机：托盘左键三分支、右键菜单、立即生效、隐藏时轮播继续、退出进程结束、自启注销重启生效与取消后不再自启均通过。菜单「关闭相框」曾不生效（菜单弹出时必失焦被判成只唤回），修复 `a30bf4f` |
+| 设置窗 | 通过（人工待办 8） | `tests/settings_session.rs` 20 项 + 用户实机：独立窗口、草稿保存与关闭丢弃、与菜单同一状态、隐藏相框时打开设置均通过 |
 | 异常图片 | 通过（脚本） | 图库 B 混入 3 类坏样本：伪装扩展名 `a6.png`（`extension/header mismatch: extension=Png; header=Jpeg`）、超大 `a7.jpeg`（`Memory limit exceeded`）、截断 `a9.jpeg`（`Format error decoding Jpeg`），全部跳过并写日志，进程存活且继续轮播；删除当前图后重启同理 |
 | NFR-1 | 通过（见票 22） | 稳态 72.86–76.68 MB（预算 ≤80 MB），1 小时轮播无持续增长，确认后峰值 130.82 MB（≤192 MB），见 [票 22](issues/22-release-resource-budgets.md) 与 [发布测量记录](../../docs/release-measurements.md) |
 | NFR-2 | 通过（见票 22） | 静止 0.01–0.11%（单核口径）；本次 3 s 间隔跑 4K 图时均值 13.88%，属解码瞬间，符合"只允许短时升高" |
@@ -36,7 +36,7 @@
 | NFR-4 | 通过（见票 22） | 普通图冷启动到首图 275–303 ms；本次采样 `launch`→`first-image` 200–260 ms |
 | NFR-5 | 通过（测试 + 观察） | 只保留当前图与下一张；工作集不随图数增长；Limits 阈值已按票 09 确认 |
 | 自动化 | 通过 | `cargo test --all-targets`：237 项通过、0 失败（lib 0 / 宿主 7 / decode-validation 5 / app_core 53 / autostart 5 / config 16 / config_sync 7 / decode_equivalence 6 / decode_validation 17 / diagnostics 6 / display 6 / display_data 12 / library 5 / loading 8 / playlist 31 / rescan_flow 1 / settings_session 20 / window_geom 19 / window_validation 13） |
-| 交付 | 部分 | 源码、release exe、README 已就绪；验收记录即为本文件，未验证环境见下 |
+| 交付 | 通过 | 源码 `origin/main`、release `MoeFrame.exe`（8,414,208 字节）、`README.md`、本验收记录；未验证环境见文末，不宣称已通过 |
 
 ## 需求文档第 10 节
 
@@ -48,8 +48,8 @@
 | 定时按间隔触发，手动切换后重新计满 | 通过 | 实测间隔 + app_core 测试 |
 | 左右滑动动画方向正确、无白屏 | 不适用 | 已取消滑动转场（见 image-driven-frame 决定） |
 | Fit 竖/横图完整不变形；Fill 铺满无黑边 | 不适用 | 改为图片完整显示 + 窗口随比例 |
-| 拖动、缩放、重启后位置大小恢复；拔副屏重启不丢窗口 | 未验证 | 需人工 |
-| 关闭进托盘继续轮播、可唤回与退出、自启实测有效 | 未验证 | 需人工 |
+| 拖动、缩放、重启后位置大小恢复；拔副屏重启不丢窗口 | 通过 | 用户实机（人工待办 1–4）；位置恢复首轮不过，修复 `d971227` 后复测通过 |
+| 关闭进托盘继续轮播、可唤回与退出、自启实测有效 | 通过 | 用户实机（人工待办 5–7）；菜单「关闭相框」首轮不过，修复 `a30bf4f` 后复测通过 |
 | 损坏图、删除正在显示的图自动跳过不崩溃 | 通过 | 图库 B + 删除当前图重启 |
 | NFR-1～NFR-5 实测达标 | 通过 | 见上表 |
 | `cargo test` 覆盖 playlist 核心且通过 | 通过 | 31 项 |

@@ -4,7 +4,7 @@
 
 **Blocked by:** [18: 设置窗：即时设置与独立生命周期](18-settings-window.md)。
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -28,3 +28,4 @@
 - 2026-11-21 实现完成，状态置 needs-info：全量 176 项测试全绿，Windows 目标 check/clippy 通过，只剩验收标准 8 的实机记录——并入仓库根目录 `real-machine-check-10-21.md` 的工单 21 一节，与工单 10–15、17–20 合并确认后转 resolved。实施笔记：`.agents/notes/implemented/feature/2026-11-21-autostart.md`。
 - 结构决定：注册表实际状态为唯一真相、config 的 autostart 为镜像；决策在库 autostart 模块（AutostartSync + AutostartStore 接缝），winreg 实现在宿主；失败回滚靠「状态从未动过」而非撤销。
 - 双轴审查（基线 39c5896）：Standards 一处硬违规已修（build_tray 文档注释被新类型劈开——与工单 18/20 同型，第三次犯同一错误，已在本票与笔记中点名），判断项采纳（apply 改名、run_key 抽取）；Spec 无缺失无蔓延，部分项处置见各标准勾注（Run 键缺失的读语义已修，余下为如实记录项）。
+- 2026-11-22 关闭：用户本人实机验收全部通过（回执 `m01862`；13 条人工待办见 [`acceptance-23.md`](../acceptance-23.md)）。Run 键写入、注销/重启后生效、取消后不再自启由人工待办第 7 条覆盖。

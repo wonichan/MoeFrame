@@ -4,7 +4,7 @@
 
 **Blocked by:** [10: 首次启动，选文件夹看到第一张图](10-first-image.md)。
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -28,3 +28,4 @@
 
 - 2026-11-20（实现完成，转 needs-info 等实机检查）：顺序浏览与定时轮播落地——`playlist` 播放序列（循环/轮转候选/单图不自转）、行为核心单一截止时刻计时（成功计满、手动失败不重置、自动失败隔间隔重试、暂停清截止、改间隔重计同值不动）、在飞导航保留最后一个排队、工作线程单份预加载缓存（路径+目标+模式键控）。全量测试通过（本票新增 19 项），Windows 目标 check/clippy/fmt 通过。双轴审查（基线 `691d84a`）发现已处理，详见 `.agents/notes/implemented/feature/2026-11-20-sequential-slideshow.md`。明示立场：本票无条件顺序模式，配置 `playback.mode`（默认 random）只保存，随机与历史由工单 12 接入。本票差真实窗口操作检查（菜单/方向键/空格/滚轮触发与预加载命中观感），实机记录后转 resolved。
 - 2026-11-22 对齐（提交 `7861e5f`，决定见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`）：滚轮切图已取消（图片区滚轮不再导航）；菜单、方向键、空格与定时轮播不变。实机清单工单 11 节的滚轮表述已改写。
+- 2026-11-22 关闭：用户本人实机验收全部通过（回执 `m01862`；13 条人工待办见 [`acceptance-23.md`](../acceptance-23.md)）。定时轮播、暂停、六档与自定义间隔（3 / 99999999 / 越界）由人工待办第 11 条覆盖，另有 1 小时轮播 soak（票 22）。
