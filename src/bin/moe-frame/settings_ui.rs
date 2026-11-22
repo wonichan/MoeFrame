@@ -92,6 +92,25 @@ impl FrameApp {
                     // 不重启进程（V2 相框外观专题工单 01）。
                     self.appearance = mode;
                     self.sync.save_appearance_mode(mode);
+                    if mode == AppearanceMode::Custom {
+                        // 每次切到自定义都重新分析（工单 03）：用户
+                        // 修好图或换了文件内容，切回即恢复。
+                        self.reload_frame_art();
+                    }
+                }
+                SessionAction::PickFrameArt => {
+                    // 选相框图（工单 03）：只接受 PNG；选定即保存
+                    // 路径并重新分析，取消则什么都不变。分析失败
+                    // 置回退态（原因在设置窗显示），不弹窗。
+                    let picked = rfd::FileDialog::new()
+                        .set_title("选择相框图")
+                        .add_filter("PNG 图片", &["png"])
+                        .pick_file();
+                    if let Some(path) = picked {
+                        self.frame_art_path = Some(path.clone());
+                        self.sync.save_frame_art_path(Some(&path));
+                        self.reload_frame_art();
+                    }
                 }
                 SessionAction::ApplyFramePreset(preset) => {
                     // 内置画框参数同为宿主状态：改当前值并经
@@ -167,6 +186,28 @@ impl FrameApp {
         let mode_now = self.core.playback_mode();
         let appearance_now = self.appearance;
         let frame_now = self.frame;
+        // 相框图状态（工单 03）：路径与分析结论在渲染前取快照，
+        // 设置窗「外观」组的自定义区块照单显示。
+        let frame_art_path_now = self
+            .frame_art_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
+        let frame_art_status_now = match &self.frame_art {
+            FrameArtHost::NotSelected => None,
+            FrameArtHost::Loaded { analysis, .. } => {
+                let insets = analysis.insets();
+                Some(format!(
+                    "检测成功：洞 {}×{}，内距 左{} 上{} 右{} 下{}",
+                    analysis.hole.width,
+                    analysis.hole.height,
+                    insets.left,
+                    insets.top,
+                    insets.right,
+                    insets.bottom
+                ))
+            }
+            FrameArtHost::Fallback { reason } => Some(format!("不可用，已回退内置画框：{reason}")),
+        };
         let interval_now = self.core.interval_secs();
         let autostart_now = self.autostart.enabled();
         let current_showing = match self.core.view() {
@@ -280,6 +321,19 @@ impl FrameApp {
                     });
                 }
                 // —— 内置画框参数块结束 ——
+                // ---- 自定义相框图（工单 03）：选图与分析状态 ----
+                if appearance_now == AppearanceMode::Custom {
+                    ui.horizontal(|ui| {
+                        if ui.button("选择相框图…").clicked() {
+                            picks_ref.frame_art_pick = true;
+                        }
+                        ui.label(frame_art_path_now.as_deref().unwrap_or("未选择"));
+                    });
+                    if let Some(status) = &frame_art_status_now {
+                        ui.label(status.as_str());
+                    }
+                }
+                // ---- 自定义相框图区块结束 ----
                 ui.separator();
                 ui.label("切换间隔");
                 for (label, secs) in INTERVAL_PRESETS {

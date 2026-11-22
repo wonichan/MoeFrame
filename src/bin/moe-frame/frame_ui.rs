@@ -73,12 +73,15 @@ impl eframe::App for FrameApp {
         self.handle_keys(&ctx, now);
         let mut menu_intent: Option<Intent> = None;
         let mut menu_settings = false;
-        // 窗口永远透明创建（V2 相框外观专题工单 01）：极简/自定义
-        // 靠这层铺满视口的不透明填充保持 V1 视觉（有图时纹理同样
-        // 铺满），透明只在自定义异形时透出（工单 04）；内置画框
-        // 模式面板底透明，三层与阴影由 frame_paint 照布局接缝
-        // 绘制（工单 02）。
-        let panel_fill = if self.appearance == AppearanceMode::Builtin {
+        // 窗口永远透明创建（V2 相框外观专题工单 01）：极简模式靠
+        // 这层铺满视口的不透明填充保持 V1 视觉；内置画框模式面板
+        // 底透明，三层与阴影由 frame_paint 照布局接缝绘制（工单
+        // 02）；自定义相框图生效时（工单 03）不铺底——相框图的
+        // 透明像素直接透出桌面，宿主只画画面区域的插画与九宫格
+        // 八区，异形的完整行为在工单 04。
+        self.ensure_frame_art_texture(&ctx);
+        let custom_active = self.custom_art_active();
+        let panel_fill = if self.appearance == AppearanceMode::Builtin || custom_active {
             egui::Color32::TRANSPARENT
         } else {
             egui::Color32::BLACK
@@ -88,21 +91,67 @@ impl eframe::App for FrameApp {
             .show(ui, |ui| {
                 let rect = ui.max_rect();
                 let painter = ui.painter();
-                if self.appearance == AppearanceMode::Builtin {
+                // 内置模式、以及自定义模式未生效（未选图或分析回退）
+                // 时，都按内置画框绘制：回退即内置的本义（工单 03 的
+                // 回退在工单 02 落地后用真实三层与内距，见
+                // effective_insets 的回退臂）。
+                if self.appearance == AppearanceMode::Builtin
+                    || (self.appearance == AppearanceMode::Custom && !custom_active)
+                {
                     self.paint_builtin_frame(painter, rect);
                     return;
                 }
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                // 画面区域 = 外框减去生效内距：插画只画在这里，
+                // 画框（内置或相框图）占其余部分；内距全 0 时即整窗。
+                let insets = self.effective_insets(rect.width());
+                let image_rect = egui::Rect::from_min_max(
+                    rect.min + egui::vec2(insets.left, insets.top),
+                    rect.max - egui::vec2(insets.right, insets.bottom),
+                );
                 if let Some(texture) = &self.texture {
-                    painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
+                    painter.image(texture.id(), image_rect, uv, egui::Color32::WHITE);
                 } else {
                     painter.text(
-                        rect.center(),
+                        image_rect.center(),
                         egui::Align2::CENTER_CENTER,
                         "右键打开设置，选择图库文件夹",
                         egui::FontId::proportional(15.0),
                         egui::Color32::from_rgb(200, 200, 200),
                     );
+                }
+                // 自定义相框图九宫格（工单 03）：八区盖在插画之上，
+                // 洞区不绘制；相框图的透明像素不被覆画。
+                if custom_active {
+                    if let FrameArtHost::Loaded {
+                        analysis,
+                        texture: Some(art_texture),
+                        ..
+                    } = &self.frame_art
+                    {
+                        let layout = moe_frame::frame_art::nine_slice_layout(
+                            analysis,
+                            [rect.width(), rect.height()],
+                        );
+                        let art_size = [analysis.art_size[0] as f32, analysis.art_size[1] as f32];
+                        for region in layout.regions {
+                            let dst = egui::Rect::from_min_size(
+                                rect.min + egui::vec2(region.dst[0], region.dst[1]),
+                                egui::vec2(region.dst[2], region.dst[3]),
+                            );
+                            let src_uv = egui::Rect::from_min_size(
+                                egui::pos2(
+                                    region.src[0] / art_size[0],
+                                    region.src[1] / art_size[1],
+                                ),
+                                egui::vec2(
+                                    region.src[2] / art_size[0],
+                                    region.src[3] / art_size[1],
+                                ),
+                            );
+                            painter.image(art_texture.id(), dst, src_uv, egui::Color32::WHITE);
+                        }
+                    }
                 }
             });
         let playing = self.core.is_playing();

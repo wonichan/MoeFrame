@@ -214,6 +214,10 @@ pub struct DisplayConfig {
     pub appearance: AppearanceMode,
     /// 内置画框参数（V2 相框外观专题工单 02）。
     pub frame: BuiltinFrame,
+    /// 自定义相框图的路径（V2 相框外观专题工单 03）：只存路径、
+    /// 不复制文件（与图库文件夹同一口径），内容每次启动与切换
+    /// 时重新分析。
+    pub frame_art: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -258,6 +262,7 @@ impl Default for Config {
                 show_filename: false,
                 appearance: AppearanceMode::Builtin,
                 frame: BuiltinFrame::default(),
+                frame_art: None,
             },
             general: GeneralConfig {
                 autostart: false,
@@ -389,6 +394,24 @@ impl ConfigStore {
             document["display"]["frame_width"] = value(f64::from(frame.frame_width));
             document["display"]["mat_width"] = value(f64::from(frame.mat_width));
             config.display.frame = frame;
+        })
+    }
+
+    /// 保存自定义相框图的路径（V2 相框外观专题工单 03）：只改
+    /// display.frame_art，None 时删键；其余字段原样保留。
+    pub fn set_frame_art_path(&mut self, path: Option<&str>) -> io::Result<()> {
+        let path = path.map(str::to_owned);
+        self.update(|document, config| match &path {
+            Some(path) => {
+                document["display"]["frame_art"] = value(path.clone());
+                config.display.frame_art = Some(path.clone());
+            }
+            None => {
+                if let Some(table) = document["display"].as_table_mut() {
+                    table.remove("frame_art");
+                }
+                config.display.frame_art = None;
+            }
         })
     }
 
@@ -555,6 +578,19 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
     let frame_width =
         repair_layer_width(display_table, "frame_width", DEFAULT_FRAME_WIDTH, repaired);
     let mat_width = repair_layer_width(display_table, "mat_width", DEFAULT_MAT_WIDTH, repaired);
+    // 相框图路径（工单 03）：缺失即未选（不写键）；不是字符串时
+    // 删键按未选处理，不牵连同表其他字段。
+    let frame_art = match display_table.get("frame_art") {
+        Some(item) => match item.as_str() {
+            Some(text) => Some(text.to_owned()),
+            None => {
+                display_table.remove("frame_art");
+                *repaired = true;
+                None
+            }
+        },
+        None => None,
+    };
 
     let general_table = ensure_table(root, "general", repaired);
     let autostart = repair_bool(general_table, "autostart", false, repaired);
@@ -596,6 +632,7 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
                 frame_width,
                 mat_width,
             },
+            frame_art,
         },
         general: GeneralConfig {
             autostart,

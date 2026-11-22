@@ -52,6 +52,7 @@ pub struct Picks {
     pub autostart: Option<bool>,
     pub rescan: bool,
     pub folder_pick: bool,
+    pub frame_art_pick: bool,
     pub open_image: bool,
     pub open_folder: bool,
     pub copy_path: bool,
@@ -65,7 +66,7 @@ pub struct Picks {
 /// 本帧要由宿主执行的动作，按返回顺序执行。顺序即定案的应用顺序：
 /// 回车结算 → 模式 → 外观 → 内置画框参数（预设 → 框宽 → 卡纸宽）→
 /// 间隔预设 → 恢复默认 → 自启 → 当前图三项 →
-/// 关闭/重扫/选文件夹（后三者否决待结算）→ 帧尾待结算结算。
+/// 关闭/重扫/选文件夹/选相框图（后四者否决待结算）→ 帧尾待结算结算。
 #[derive(Clone, Debug, PartialEq)]
 pub enum SessionAction {
     CommitFolder(String),
@@ -80,6 +81,7 @@ pub enum SessionAction {
     CopyCurrentPath,
     Rescan,
     PickFolder,
+    PickFrameArt,
     CloseWindow,
     ApplyFramePreset(FramePreset),
     ApplyFrameWidth(f32),
@@ -329,6 +331,14 @@ impl SettingsSession {
             // PickFolder 走核心的 FolderPickRequested 既有路径）。
             self.pending = None;
             actions.push(SessionAction::PickFolder);
+            self.blurred = None;
+            return actions;
+        }
+        if picks.frame_art_pick {
+            // 与选文件夹同规：待结算被否决，草稿文字保留（宿主执行
+            // PickFrameArt 弹文件选择框，选定后保存路径并重新分析）。
+            self.pending = None;
+            actions.push(SessionAction::PickFrameArt);
             self.blurred = None;
             return actions;
         }

@@ -19,7 +19,11 @@ impl FrameApp {
                     pointer_down: input.pointer.any_down(),
                     frame_visible: self.core.frame_visible(),
                     now_secs: input.time,
-                    insets: self.appearance.insets(self.frame),
+                    // 生效内距（工单 03：自定义相框图按当前内宽缩放，
+                    // 回退时按内置）；内宽取不到时按系数 1 处理。
+                    insets: self.effective_insets(
+                        viewport.inner_rect.map(|rect| rect.width()).unwrap_or(0.0),
+                    ),
                 },
                 viewport.focused,
             )
@@ -95,7 +99,7 @@ impl FrameApp {
         let commands = self.geometry.restore_default(
             monitor,
             self.core.frame_visible(),
-            self.appearance.insets(self.frame),
+            self.effective_insets(ctx.viewport_rect().width()),
         );
         self.execute_geometry_commands(ctx, commands);
     }

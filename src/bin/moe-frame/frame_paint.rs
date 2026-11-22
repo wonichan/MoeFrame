@@ -57,7 +57,7 @@ impl FrameApp {
         let frame = self.frame;
         let layers = builtin_layers(
             to_layout_rect(rect),
-            self.appearance.insets(frame),
+            AppearanceMode::Builtin.insets(frame),
             frame.frame_width,
         );
         let (base, light, dark) = preset_colors(frame.preset);
