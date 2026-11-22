@@ -65,8 +65,10 @@ Windows 10/11 x64 的无边框相框：选一个图片文件夹，它按你的�
 3 到 99999999 之间的整数秒；
 填同一个值不会被记成新改动。
 
-三个配置键目前保留但尚未生效：悬停暂停（`playback.pause_on_hover`）、
-动画类型（`playback.animation`）、显示文件名（`display.show_filename`）。
+切换动画在设置窗「切换动画」里选：无 / 交叉淡化（240ms）。配置键
+`playback.animation` 支持 `none`、`fade`、`slide`；旧值 `slide` 按交叉淡化处理。
+悬停暂停（`playback.pause_on_hover`）和显示文件名（`display.show_filename`）
+仍保留但尚未生效。
 
 ## 配置与日志
 

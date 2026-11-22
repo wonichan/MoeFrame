@@ -12,9 +12,9 @@ pub(crate) const INTERVAL_PRESETS: [(&str, i64); 6] = [
     ("30 分钟", 1800),
 ];
 /// 设置窗尺寸（工单 18；V2 相框外观工单 01 加「外观」组后高 700→750，
-/// 工单 02 加内置画框参数块后 750→830）：
+/// 工单 02 加内置画框参数块后 750→830，P1 动画组后 830→880）：
 /// 建窗与屏幕居中计算共用。
-pub(crate) const SETTINGS_SIZE: [f32; 2] = [420.0, 830.0];
+pub(crate) const SETTINGS_SIZE: [f32; 2] = [420.0, 880.0];
 /// 设置窗的视口标识（工单 18）：全程只有一块。
 pub(crate) fn settings_viewport_id() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("moe-frame-settings")
@@ -55,6 +55,11 @@ impl FrameApp {
             interval_secs: self.core.interval_secs(),
             mode: self.core.playback_mode(),
             appearance: self.appearance,
+            animation: if self.animation == Animation::None {
+                Animation::None
+            } else {
+                Animation::Fade
+            },
             frame: self.frame,
         }
     }
@@ -97,6 +102,10 @@ impl FrameApp {
                         // 修好图或换了文件内容，切回即恢复。
                         self.reload_frame_art();
                     }
+                }
+                SessionAction::ApplyAnimation(animation) => {
+                    self.animation = animation;
+                    self.sync.save_animation(animation);
                 }
                 SessionAction::PickFrameArt => {
                     // 选相框图（工单 03）：只接受 PNG；选定即保存
@@ -185,6 +194,11 @@ impl FrameApp {
         }
         let mode_now = self.core.playback_mode();
         let appearance_now = self.appearance;
+        let animation_now = if self.animation == Animation::None {
+            Animation::None
+        } else {
+            Animation::Fade
+        };
         let frame_now = self.frame;
         // 相框图状态（工单 03）：路径与分析结论在渲染前取快照，
         // 设置窗「外观」组的自定义区块照单显示。
@@ -261,6 +275,19 @@ impl FrameApp {
                     }
                     if ui.radio(mode_now == PlaybackMode::Random, "随机").clicked() {
                         picks_ref.mode = Some(PlaybackMode::Random);
+                    }
+                });
+                ui.separator();
+                ui.label("切换动画");
+                ui.horizontal(|ui| {
+                    if ui.radio(animation_now == Animation::None, "无").clicked() {
+                        picks_ref.animation = Some(Animation::None);
+                    }
+                    if ui
+                        .radio(animation_now != Animation::None, "交叉淡化")
+                        .clicked()
+                    {
+                        picks_ref.animation = Some(Animation::Fade);
                     }
                 });
                 ui.separator();

@@ -270,8 +270,8 @@ impl FrameApp {
         // 浅色字。
         let image_rect = to_egui_rect(layers.image);
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-        if let Some(texture) = &self.texture {
-            painter.image(texture.id(), image_rect, uv, egui::Color32::WHITE);
+        if self.texture.is_some() {
+            self.paint_crossfade(painter, image_rect, uv);
         } else {
             let color = if frame.mat_width > 0.0 {
                 egui::Color32::from_rgb(105, 95, 80)

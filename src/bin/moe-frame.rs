@@ -6,6 +6,8 @@
 #[cfg(not(windows))]
 compile_error!("MoeFrame supports Windows 10/11 only");
 
+use raw_window_handle::HasWindowHandle;
+
 #[cfg(windows)]
 #[path = "moe-frame/worker.rs"]
 mod worker;
@@ -47,7 +49,7 @@ use eframe::egui;
 use moe_frame::{
     app_core::{Effect, FrameCore, Intent, View},
     autostart::{autostart_command, AutostartStore, AutostartSync, RUN_KEY_PATH, RUN_VALUE_NAME},
-    config::{AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode, MAX_LAYER_WIDTH},
+    config::{Animation, AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode, MAX_LAYER_WIDTH},
     config_sync::ConfigSync,
     decode_validation::DisplayMode,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
@@ -269,6 +271,14 @@ fn run() -> Result<(), Box<dyn Error>> {
             cc.egui_ctx.set_zoom_factor(1.0);
             startup_marker("app-created", "phase=eframe-init-done");
             resize_debug_record("startup", "diagnostic=resize-f317");
+            let hwnd = cc
+                .winit_window()
+                .and_then(|window| window.window_handle().ok())
+                .and_then(|handle| match handle.as_raw() {
+                    raw_window_handle::RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
+                    _ => None,
+                })
+                .unwrap_or(0);
             let (command_tx, reply_rx) = worker::spawn(log_path);
             let (tray_event_tx, tray_event_rx) = channel();
             let tray_ctx = cc.egui_ctx.clone();
@@ -297,7 +307,12 @@ fn run() -> Result<(), Box<dyn Error>> {
                 first_image_marked: false,
                 texture: None,
                 incoming: None,
+                pending_aspect: None,
+                crossfade: None,
+                animation: host_init.animation,
+                hwnd,
                 press_window_pos: None,
+                native_gesture_active: false,
                 tray: None,
                 tray_tried: false,
                 tray_state: None,

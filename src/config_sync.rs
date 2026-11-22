@@ -22,7 +22,7 @@
 use crate::{
     app_core::{CoreArgs, ResumeData},
     autostart::{AutostartStore, AutostartSync},
-    config::{AppearanceMode, BuiltinFrame, ConfigStore, PlaybackMode, WindowConfig},
+    config::{Animation, AppearanceMode, BuiltinFrame, ConfigStore, PlaybackMode, WindowConfig},
 };
 use std::{
     io,
@@ -50,6 +50,8 @@ pub struct HostInit {
     /// 自定义相框图的路径（V2 相框外观专题工单 03）：宿主持有，
     /// 启动时据此分析一次；设置窗选新图经 save_frame_art_path 写回。
     pub frame_art: Option<PathBuf>,
+    /// 切换动画配置（P1 键）：宿主只用它决定交叉淡化与几何动画时长。
+    pub animation: Animation,
 }
 
 /// 启动包：run() 拿到后只分发，不再逐字段翻译配置。
@@ -102,6 +104,7 @@ impl ConfigSync {
             appearance: config.display.appearance,
             frame: config.display.frame,
             frame_art: config.display.frame_art.as_ref().map(PathBuf::from),
+            animation: config.playback.animation,
             window,
         };
         (
@@ -130,6 +133,12 @@ impl ConfigSync {
     pub fn save_playback_mode(&mut self, mode: PlaybackMode) {
         let result = self.store.set_playback_mode(mode);
         self.note_write_result("playback_mode", result);
+    }
+
+    /// 切换动画写回（P1）：设置窗选择即落盘。
+    pub fn save_animation(&mut self, animation: Animation) {
+        let result = self.store.set_animation(animation);
+        self.note_write_result("animation", result);
     }
 
     /// 续播状态落盘：路径以字符串保存，无法表示为 UTF-8 的当前图

@@ -1,8 +1,9 @@
 //! 配置契约（父规格第 7 节 / 需求第 6 节）：`%APPDATA%\MoeFrame\config.toml` 的读写与修复。
 //!
 //! 原则：字段级修复——坏字段回退默认并写回，合法手改值与未知键在任何保存中保留；
-//! 整个文件不可解析时恢复为合法默认配置，不崩溃。三个 P1 键（`pause_on_hover`、
-//! `animation`、`show_filename`）只保存与修复，不驱动行为。
+//! 整个文件不可解析时恢复为合法默认配置，不崩溃。`pause_on_hover`、
+//! `show_filename` 只保存与修复，不驱动行为；`animation` 已由宿主用来
+//! 决定切图交叉淡化与窗口几何动画（设置窗按“无 / 交叉淡化”两档展示）。
 
 use crate::{playlist::HISTORY_LIMIT, window_geom::Insets};
 use std::{fs, io, path::Path};
@@ -89,7 +90,8 @@ impl PlaybackMode {
     }
 }
 
-/// P1 切换动画（`animation` 配置键）：只保存，不驱动行为。
+/// P1 切换动画（`animation` 配置键）：`slide`/`fade` 都走交叉淡化，
+/// `none` 立即完成；设置窗按“无 / 交叉淡化”两档展示与写回。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Animation {
     Slide,
@@ -420,6 +422,14 @@ impl ConfigStore {
         self.update(|document, config| {
             document["playback"]["mode"] = value(mode.as_str());
             config.playback.mode = mode;
+        })
+    }
+
+    /// 保存切换动画（P1）：只改 playback.animation，其余字段原样保留。
+    pub fn set_animation(&mut self, animation: Animation) -> io::Result<()> {
+        self.update(|document, config| {
+            document["playback"]["animation"] = value(animation.as_str());
+            config.playback.animation = animation;
         })
     }
 

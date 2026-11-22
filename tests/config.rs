@@ -232,6 +232,20 @@ fn saving_the_playback_mode_changes_only_that_field() {
 }
 
 #[test]
+fn saving_the_animation_changes_only_that_field() {
+    let path = temp_config("animation-save");
+    let mut store = ConfigStore::load(&path);
+    assert_eq!(store.config().playback.animation, Animation::Slide);
+    store.set_animation(Animation::None).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("animation = \"none\""), "{text}");
+    assert!(text.contains("interval_secs = 30"), "{text}");
+    let reloaded = ConfigStore::load(&path);
+    assert_eq!(reloaded.config().playback.animation, Animation::None);
+    assert_eq!(reloaded.config().playback.interval_secs, 30);
+}
+
+#[test]
 fn resume_state_round_trips_across_two_loads() {
     let path = temp_config("resume-round-trip");
     let seen = vec!["D:\\图库\\a.png".to_string(), "D:\\图库\\b.png".to_string()];

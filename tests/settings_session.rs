@@ -4,7 +4,7 @@
 //! 原 tests/settings_draft.rs 的结算用例已改走本 interface 表达。
 
 use moe_frame::{
-    config::{AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode},
+    config::{Animation, AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode},
     settings_session::{
         EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
     },
@@ -16,6 +16,7 @@ fn effective() -> EffectiveValues {
         interval_secs: 30,
         mode: PlaybackMode::Random,
         appearance: AppearanceMode::Builtin,
+        animation: Animation::Fade,
         frame: BuiltinFrame::default(),
     }
 }
@@ -325,6 +326,22 @@ fn an_appearance_pick_applies_and_the_same_value_is_guarded() {
     assert_eq!(
         frame(&mut session, picks),
         vec![SessionAction::ApplyAppearance(AppearanceMode::Minimal)]
+    );
+}
+
+#[test]
+fn an_animation_pick_applies_and_the_same_value_is_guarded() {
+    let mut session = opened();
+    // 点当前生效值（交叉淡化）：同值守卫，不产生动作。
+    let mut picks = no_picks();
+    picks.animation = Some(Animation::Fade);
+    assert_eq!(frame(&mut session, picks), vec![]);
+    // 点无动画：产生一次应用动作。
+    let mut picks = no_picks();
+    picks.animation = Some(Animation::None);
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![SessionAction::ApplyAnimation(Animation::None)]
     );
 }
 

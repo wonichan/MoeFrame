@@ -112,8 +112,8 @@ impl eframe::App for FrameApp {
                     rect.min + egui::vec2(insets.left, insets.top),
                     rect.max - egui::vec2(insets.right, insets.bottom),
                 );
-                if let Some(texture) = &self.texture {
-                    painter.image(texture.id(), image_rect, uv, egui::Color32::WHITE);
+                if self.texture.is_some() {
+                    self.paint_crossfade(painter, image_rect, uv);
                 } else if let moe_frame::frame_layout::HintPaint::Floating { outline } = plan.hint {
                     // 空状态提示浮在画面区域中央：自定义生效时这里
                     // 是相框图的洞，背景是透出的桌面——先衬一层深色

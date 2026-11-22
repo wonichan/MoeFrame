@@ -2,6 +2,37 @@
 
 use super::*;
 
+/// 一次交叉淡化：宿主 UI 时钟驱动，核心只收回执。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ImageTransition {
+    started_secs: f64,
+    duration_secs: f64,
+}
+
+impl ImageTransition {
+    pub(crate) fn new(started_secs: f64, duration_secs: f64) -> Self {
+        Self {
+            started_secs,
+            duration_secs,
+        }
+    }
+
+    /// 三次缓出进度 0..=1；`none` 不会创建本结构。
+    pub(crate) fn progress(&self, now_secs: f64) -> f32 {
+        let elapsed = (now_secs - self.started_secs).max(0.0);
+        let linear = if self.duration_secs <= 0.0 {
+            1.0
+        } else {
+            (elapsed / self.duration_secs).min(1.0)
+        };
+        let inverse = 1.0 - linear as f32;
+        1.0 - inverse * inverse * inverse
+    }
+
+    pub(crate) fn finish_at_secs(&self) -> f64 {
+        self.started_secs + self.duration_secs
+    }
+}
 pub(crate) struct FrameApp {
     pub(crate) core: FrameCore,
     pub(crate) sync: ConfigSync,
@@ -15,8 +46,19 @@ pub(crate) struct FrameApp {
     pub(crate) texture: Option<egui::TextureHandle>,
     /// 加载完成、等待核心完成显示提交的目标纹理。
     pub(crate) incoming: Option<egui::TextureHandle>,
+    /// 新图源比例：等核心决定是否起转场后，再交给几何机。
+    pub(crate) pending_aspect: Option<f32>,
+    /// 交叉淡化在飞：起止时刻与进度；None 表示没有转场。
+    pub(crate) crossfade: Option<ImageTransition>,
+    /// 切换动画配置：slide/fade 走交叉淡化，none 立即完成。
+    pub(crate) animation: Animation,
+    /// Win32 窗口句柄：只用于取当前屏工作区（egui 不提供工作区/原点）。
+    pub(crate) hwnd: isize,
     /// 本次左键按下时窗口的外框位置：右键取消拖动时回滚到这里（工单 15）。
     pub(crate) press_window_pos: Option<egui::Pos2>,
+    /// 原生拖动/缩放已开始：Windows 的模态移动循环里 egui 收不到指针状态，
+    /// 用它把循环结束后的最终位置/尺寸当作一次用户操作交给几何机。
+    pub(crate) native_gesture_active: bool,
     /// 托盘（工单 17）：首帧懒建（须在事件循环内建）；建失败为 None，相框照常。
     pub(crate) tray: Option<TrayHandles>,
     pub(crate) tray_tried: bool,
@@ -72,6 +114,103 @@ pub(crate) struct FrameApp {
     pub(crate) debug_last_inner: Option<[f32; 2]>,
 }
 impl FrameApp {
+    fn transition_duration_secs(&self) -> f64 {
+        match self.animation {
+            Animation::None => 0.0,
+            Animation::Slide | Animation::Fade => 0.24,
+        }
+    }
+
+    /// 核心决定起转场：同一帧开始窗口几何动画与画面交叉淡化。
+    pub(crate) fn begin_crossfade(&mut self, ctx: &egui::Context) {
+        let duration = self.transition_duration_secs();
+        let aspect = self.pending_aspect.take();
+        if duration <= 0.0 || self.incoming.is_none() {
+            if let Some(aspect) = aspect {
+                self.geometry.set_image_aspect(Some(aspect));
+            }
+            self.finish_crossfade(ctx);
+            return;
+        }
+        let now = ctx.input(|input| input.time);
+        if let Some(aspect) = aspect {
+            self.geometry
+                .begin_image_transition(Some(aspect), now, duration);
+        }
+        self.crossfade = Some(ImageTransition::new(now, duration));
+        ctx.request_repaint();
+    }
+
+    /// 转场到点/被用户打断：纹理转正，再向核心回执。
+    pub(crate) fn finish_crossfade(&mut self, ctx: &egui::Context) {
+        self.crossfade = None;
+        if self.incoming.is_some() {
+            self.texture = self.incoming.take();
+            self.pipeline.promote_incoming();
+        }
+        let effects = self.core.handle(Intent::TransitionCompleted {
+            now_ms: now_ms(ctx),
+        });
+        self.dispatch(ctx, effects);
+    }
+
+    /// 每帧推进交叉淡化；到点即提交本次切换。
+    pub(crate) fn advance_crossfade(&mut self, ctx: &egui::Context) {
+        let Some(crossfade) = self.crossfade else {
+            return;
+        };
+        let now = ctx.input(|input| input.time);
+        if now >= crossfade.finish_at_secs() {
+            self.finish_crossfade(ctx);
+        }
+    }
+
+    /// 当前交叉淡化进度 0..=1；None 表示画面不画第二层纹理。
+    pub(crate) fn crossfade_progress(&self, now_secs: f64) -> Option<f32> {
+        self.crossfade.map(|crossfade| crossfade.progress(now_secs))
+    }
+    /// 按纹理自身比例 fit 到画面区域：转场中旧图不拉伸。
+    fn fitted_texture_rect(area: egui::Rect, texture: &egui::TextureHandle) -> egui::Rect {
+        let [width, height] = texture.size();
+        if width == 0 || height == 0 {
+            return area;
+        }
+        let scale = (area.width() / width as f32).min(area.height() / height as f32);
+        egui::Rect::from_center_size(
+            area.center(),
+            egui::vec2(width as f32 * scale, height as f32 * scale),
+        )
+    }
+
+    /// 画面绘制：无转场画当前纹理；转场中旧图垫底、新图按进度叠上去。
+    pub(crate) fn paint_crossfade(
+        &self,
+        painter: &egui::Painter,
+        area: egui::Rect,
+        uv: egui::Rect,
+    ) {
+        let now = painter.ctx().input(|input| input.time);
+        let Some(progress) = self.crossfade_progress(now) else {
+            if let Some(texture) = &self.texture {
+                painter.image(texture.id(), area, uv, egui::Color32::WHITE);
+            }
+            return;
+        };
+        if let Some(current) = &self.texture {
+            let rect = Self::fitted_texture_rect(area, current);
+            painter.image(current.id(), rect, uv, egui::Color32::WHITE);
+        }
+        if let Some(incoming) = &self.incoming {
+            let rect = Self::fitted_texture_rect(area, incoming);
+            let alpha = (progress.clamp(0.0, 1.0) * 255.0).round() as u8;
+            painter.image(
+                incoming.id(),
+                rect,
+                uv,
+                egui::Color32::from_white_alpha(alpha),
+            );
+        }
+    }
     pub(crate) fn dispatch(&mut self, ctx: &egui::Context, effects: Vec<Effect>) {
         for effect in effects {
             match effect {
@@ -94,14 +233,12 @@ impl FrameApp {
                     self.pipeline.invalidate();
                     // 新一轮扫描开始：作废在飞加载，画面回到核心仍在显示的源图。
                     self.incoming = None;
+                    self.pending_aspect = None;
+                    self.crossfade = None;
+                    self.geometry.cancel_image_transition();
                     let _ = self.command_tx.send(Command::Scan { folder });
                 }
-                Effect::StartTransition { .. } => {
-                    let effects = self.core.handle(Intent::TransitionCompleted {
-                        now_ms: now_ms(ctx),
-                    });
-                    self.dispatch(ctx, effects);
-                }
+                Effect::StartTransition { .. } => self.begin_crossfade(ctx),
                 Effect::Load { candidates } => {
                     // 序号与在飞口径记账归显示数据管线：回送按序号裁决，
                     // 转正时当前槽记为这次加载的口径。
@@ -275,6 +412,9 @@ impl FrameApp {
                     if self.core.view() == View::Empty {
                         self.texture = None;
                         self.incoming = None;
+                        self.pending_aspect = None;
+                        self.crossfade = None;
+                        self.geometry.cancel_image_transition();
                         self.pipeline.drop_incoming();
                         self.pipeline.clear_current();
                     }
@@ -290,9 +430,8 @@ impl FrameApp {
                     }
                     let shown = image.as_ref().map(|image| image.path.clone());
                     if let Some(image) = image {
-                        self.geometry.set_image_aspect(Some(
-                            image.source_pixels[0] as f32 / image.source_pixels[1] as f32,
-                        ));
+                        self.pending_aspect =
+                            Some(image.source_pixels[0] as f32 / image.source_pixels[1] as f32);
                         self.upload(ctx, image);
                     }
                     let effects = self.core.handle(Intent::LoadCompleted {
@@ -300,7 +439,12 @@ impl FrameApp {
                         now_ms: now_ms(ctx),
                     });
                     self.dispatch(ctx, effects);
-                    if self.incoming.is_some() {
+                    // 首图（或无需转场的直接提交）才在这里转正；起转场时纹理留给
+                    // 交叉淡化绘制，完成回执时再换。
+                    if self.crossfade.is_none() && self.incoming.is_some() {
+                        if let Some(aspect) = self.pending_aspect.take() {
+                            self.geometry.set_image_aspect(Some(aspect));
+                        }
                         self.texture = self.incoming.take();
                         self.pipeline.promote_incoming();
                     }
@@ -319,7 +463,7 @@ impl FrameApp {
                     let decision = self.pipeline.refresh_reply(
                         image.as_ref().map(|image| image.path.as_path()),
                         showing.as_deref(),
-                        false,
+                        self.crossfade.is_some(),
                     );
                     if decision == RefreshDecision::Swap {
                         if let Some(image) = image {
@@ -334,5 +478,25 @@ impl FrameApp {
             }
         }
         self.refresh_display_data(ctx);
+    }
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::ImageTransition;
+
+    #[test]
+    fn crossfade_progress_is_eased_and_clamped() {
+        let transition = ImageTransition::new(10.0, 0.24);
+        assert_eq!(transition.progress(10.0), 0.0);
+        assert!((transition.progress(10.12) - 0.875).abs() < 1e-6);
+        assert_eq!(transition.progress(11.0), 1.0);
+    }
+
+    #[test]
+    fn zero_duration_finishes_immediately() {
+        let transition = ImageTransition::new(10.0, 0.0);
+        assert_eq!(transition.progress(10.0), 1.0);
+        assert_eq!(transition.finish_at_secs(), 10.0);
     }
 }

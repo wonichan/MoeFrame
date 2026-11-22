@@ -57,3 +57,7 @@ FR-504 把悬停暂停、动画类型、显示文件名列进 P0 设置窗。这
 ## Answer
 
 按上面的 Decision 关闭。为什么三个 P1 控件不出现、间隔不沿用 5 到 3600，记在 [ADR-0003](../../../docs/adr/0003-settings-window-boundary.md)。
+
+## Comments (2026-11-22 后续修订)
+
+- 2026-11-22 后续修订：设置窗已提供「切换动画」两档（无 / 交叉淡化），`animation` 由只存不用改为驱动切图交叉淡化；`pause_on_hover`、`show_filename` 仍不升格。ADR-0003 已加 Amendment，现行规格见 [切图动画与相框几何稳定规格](../../switch-animation-and-geometry/spec.md)。
