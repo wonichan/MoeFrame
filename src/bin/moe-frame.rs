@@ -108,6 +108,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         .with_min_inner_size([MIN_WINDOW_SIDE, MIN_WINDOW_SIDE])
         .with_maximized(false)
         .with_fullscreen(false)
+        .with_taskbar(false)
         .with_window_level(egui::WindowLevel::Normal);
     if let Some(position) = saved_position {
         viewport = viewport.with_position(position);
@@ -315,13 +316,20 @@ fn build_tray(frame_visible: bool, playing: bool) -> Option<TrayHandles> {
 fn tray_click_intent(
     button: tray_icon::MouseButton,
     button_state: tray_icon::MouseButtonState,
+    focused: bool,
 ) -> Option<Intent> {
     match (button, button_state) {
         (tray_icon::MouseButton::Left, tray_icon::MouseButtonState::Up) => {
-            Some(Intent::ToggleVisibilityRequested)
+            Some(Intent::ToggleVisibilityRequested { focused })
         }
         _ => None,
     }
+}
+
+/// 相框视口当前是否有焦点（tray-only 工单 01）：托盘召回三分支的采样
+/// 口径。egui 未报告（None）按无焦点处理——只召回、不误藏。
+fn frame_focused(ctx: &egui::Context) -> bool {
+    ctx.input(|input| input.viewport().focused.unwrap_or(false))
 }
 
 /// 用系统默认看图器打开原图（工单 15）：设置窗「当前图」按钮与双击共用这一处；
@@ -533,6 +541,9 @@ impl FrameApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
+                Effect::RaiseFrame => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
                 Effect::Exit => {
                     // 退出收尾归 config_sync：几何状态机交出（最近
                     // 观察值、落盘基准），shutdown 一次结清（工单 20
@@ -662,6 +673,7 @@ impl FrameApp {
         let mut builder = egui::ViewportBuilder::default()
             .with_title("萌框设置")
             .with_inner_size(SETTINGS_SIZE)
+            .with_taskbar(false)
             .with_resizable(false);
         if !self.settings_positioned {
             self.settings_positioned = true;
@@ -878,7 +890,11 @@ impl FrameApp {
                     self.sync.save_window_geometry(geom);
                 }
                 GeomCommand::ShowFrame => {
-                    let effects = self.core.handle(Intent::ToggleVisibilityRequested);
+                    // 几何机只在相框隐藏时发本命令：核心按 !visible
+                    // 分支显示，焦点标志不影响结果，照常采样递交。
+                    let effects = self.core.handle(Intent::ToggleVisibilityRequested {
+                        focused: frame_focused(&ctx),
+                    });
                     self.dispatch(ctx, effects);
                 }
             }
@@ -1013,7 +1029,7 @@ impl eframe::App for FrameApp {
         let tick_effects = self.core.handle(Intent::Tick { now_ms: now });
         self.dispatch(&ctx, tick_effects);
         // 托盘（工单 17）：首帧在事件循环内建托盘；之后每帧收托盘事件——
-        // 左键单击切换显示，菜单项走与相框菜单完全相同的核心意图，隐藏时同样有效。
+        // 左键单击按焦点三分支召回（tray-only 工单 01），菜单项走与相框菜单相同的核心意图，隐藏时同样有效。
         if !self.tray_tried {
             self.tray_tried = true;
             self.tray = build_tray(self.core.frame_visible(), self.core.is_playing());
@@ -1027,7 +1043,7 @@ impl eframe::App for FrameApp {
                 ..
             } = event
             {
-                if let Some(intent) = tray_click_intent(button, button_state) {
+                if let Some(intent) = tray_click_intent(button, button_state, frame_focused(&ctx)) {
                     tray_intents.push(intent);
                 }
             }
@@ -1036,7 +1052,9 @@ impl eframe::App for FrameApp {
             while let Ok(event) = self.menu_event_rx.try_recv() {
                 let id = event.id();
                 if id == tray.show_hide.id() {
-                    tray_intents.push(Intent::ToggleVisibilityRequested);
+                    tray_intents.push(Intent::ToggleVisibilityRequested {
+                        focused: frame_focused(&ctx),
+                    });
                 } else if id == tray.play_pause.id() {
                     tray_intents.push(Intent::PlayPauseToggled { now_ms: now });
                 } else if id == tray.prev.id() {
@@ -1360,18 +1378,21 @@ mod ui_regressions {
         assert!(matches!(
             tray_click_intent(
                 tray_icon::MouseButton::Left,
-                tray_icon::MouseButtonState::Up
+                tray_icon::MouseButtonState::Up,
+                true
             ),
-            Some(super::Intent::ToggleVisibilityRequested)
+            Some(super::Intent::ToggleVisibilityRequested { focused: true })
         ));
         assert!(tray_click_intent(
             tray_icon::MouseButton::Left,
-            tray_icon::MouseButtonState::Down
+            tray_icon::MouseButtonState::Down,
+            false
         )
         .is_none());
         assert!(tray_click_intent(
             tray_icon::MouseButton::Right,
-            tray_icon::MouseButtonState::Up
+            tray_icon::MouseButtonState::Up,
+            false
         )
         .is_none());
     }

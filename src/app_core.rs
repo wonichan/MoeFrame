@@ -84,8 +84,11 @@ pub enum Intent {
     ExitRequested,
     /// 关闭相框（标题栏关闭、Alt+F4）：只隐藏，不退出（工单 17）。
     CloseRequested,
-    /// 托盘左键单击或托盘菜单「显示/隐藏」：切换相框可见性（工单 17）。
-    ToggleVisibilityRequested,
+    /// 托盘左键单击或托盘菜单「显示/关闭相框」：按焦点三分支召回
+    /// （tray-only 工单 01）：隐藏 → 显示；显示且有焦点 → 隐藏；显示
+    /// 但无焦点 → 只唤回聚焦。focused 是宿主在点击帧采样的视口焦点，
+    /// 未知按无焦点处理（只唤回不误藏）。
+    ToggleVisibilityRequested { focused: bool },
 }
 
 /// 核心要求宿主执行的效果。
@@ -130,6 +133,9 @@ pub enum Effect {
     HideFrame,
     /// 显示相框窗口（工单 17）。
     ShowFrame,
+    /// 相框已可见但无焦点：宿主把它召回到最前并聚焦，不改可见性
+    /// （tray-only 工单 01）。
+    RaiseFrame,
     Exit,
 }
 
@@ -601,12 +607,15 @@ impl FrameCore {
                     Vec::new()
                 }
             }
-            Intent::ToggleVisibilityRequested => {
-                self.frame_visible = !self.frame_visible;
-                if self.frame_visible {
+            Intent::ToggleVisibilityRequested { focused } => {
+                if !self.frame_visible {
+                    self.frame_visible = true;
                     vec![Effect::ShowFrame]
-                } else {
+                } else if focused {
+                    self.frame_visible = false;
                     vec![Effect::HideFrame]
+                } else {
+                    vec![Effect::RaiseFrame]
                 }
             }
         }

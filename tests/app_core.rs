@@ -1357,18 +1357,29 @@ fn closing_the_frame_hides_it_instead_of_exiting() {
 }
 
 #[test]
-fn toggling_visibility_alternates_between_show_and_hide() {
+fn toggling_visibility_follows_the_three_branch_recall_contract() {
     let (mut core, _) = showing_core(&["a.png", "b.png"], 30);
+    // 显示且有焦点 → 隐藏。
     assert_eq!(
-        core.handle(Intent::ToggleVisibilityRequested),
+        core.handle(Intent::ToggleVisibilityRequested { focused: true }),
         vec![Effect::HideFrame]
     );
+    assert!(!core.frame_visible());
+    // 隐藏 → 显示（焦点标志不影响本分支）。
     assert_eq!(
-        core.handle(Intent::ToggleVisibilityRequested),
+        core.handle(Intent::ToggleVisibilityRequested { focused: false }),
         vec![Effect::ShowFrame]
     );
+    assert!(core.frame_visible());
+    // 显示但无焦点 → 只唤回聚焦，不隐藏、可见性不变。
     assert_eq!(
-        core.handle(Intent::ToggleVisibilityRequested),
+        core.handle(Intent::ToggleVisibilityRequested { focused: false }),
+        vec![Effect::RaiseFrame]
+    );
+    assert!(core.frame_visible());
+    // 唤回后有焦点，再点才隐藏。
+    assert_eq!(
+        core.handle(Intent::ToggleVisibilityRequested { focused: true }),
         vec![Effect::HideFrame]
     );
     assert!(!core.frame_visible());
@@ -1404,7 +1415,7 @@ fn the_slideshow_and_navigation_continue_while_hidden() {
     );
     // 唤回后看到的是实际当前图。
     assert_eq!(
-        core.handle(Intent::ToggleVisibilityRequested),
+        core.handle(Intent::ToggleVisibilityRequested { focused: false }),
         vec![Effect::ShowFrame]
     );
     assert_eq!(core.view(), View::Showing(img("b.png")));
