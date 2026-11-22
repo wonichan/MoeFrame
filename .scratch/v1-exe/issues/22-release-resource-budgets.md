@@ -8,7 +8,7 @@
 
 ## Acceptance criteria
 
-- [ ] 对包含全部必需功能的程序生成实际 Windows x86_64 release 构建，启用 strip 与 LTO；交付构建不依赖开发环境或 WebView，不用 debug 二进制替代。
+- [x] 对包含全部必需功能的程序生成实际 Windows x86_64 release 构建，启用 strip 与 LTO；交付构建不依赖开发环境或 WebView，不用 debug 二进制替代。（2026-11-22 核对：见下方「交付构建核对」）
 - [x] 默认 480×320 窗口、普通图片解码缩放及下一张预加载完成后，稳定工作集 ≤80MB；全程序连续轮播 1 小时无持续增长。（2026-11-22 用户单独验证：1 小时轮播无持续增长，通过）
 - [ ] 瞬时峰值在 [09](09-decode-memory-validation.md)中用户已确认的边界内，图片拒绝阈值与确认值一致；分别记录峰值和稳定工作集，不以 Limits 充当整个进程内存硬上限。
 - [ ] 普通 1080p、2K、4K 图片仍正常显示；超限大图可跳过并记录路径、原因。加载和缩放不阻塞相框操作，不能靠大幅拒绝普通图片满足指标。
@@ -75,3 +75,19 @@
 判定：启动、工作集、CPU 三项对 ≤80MB 预算全部通过，余量 7.7MB。图库从 1 张换成 13 张大图只多 1.28MB，再次确认稳定工作集与图片尺寸无关。
 
 注意采样口径：此处的"稳态工作集"是首图出现后 5–30s 的均值；`[startup] first-image` 标记写的 46–52MB 是首图那一刻的值。两者不可混用——首图之后才发生下一张预加载与纹理驻留。
+
+### 交付构建核对（2026-11-22，`4355224` + 本地 `--release`）
+
+逐条核对验收条款：
+
+| 条款 | 证据 | 结论 |
+|---|---|---|
+| 真实 Windows x86_64 release 构建 | PE 头 `machine=0x8664`；`subsystem=2`（GUI，非控制台）；构建命令 `cargo build --release --bin MoeFrame --locked` | ✅ |
+| 不是 debug 二进制 | 产物在 `target/release/`，`[profile.release]` 生效；无 `.debug$S`/`.debug$T` 节 | ✅ |
+| strip 启用且生效 | `[profile.release] strip = true`；PE 节表仅 `.text/.rdata/.data/.pdata/.rsrc/.reloc`，没有调试节 | ✅ |
+| LTO 启用 | `[profile.release] lto = true`、`codegen-units = 1`；产物 7.86MB | ✅ |
+| 包含全部必需功能 | 产物是 `bin/MoeFrame`（产品二进制，不是 `window_validation`/`decode_validation` 验证程序）；本次验收跑通了扫描 → 首图 → 轮播 → 托盘 → 设置 | ✅ |
+| 不依赖 WebView | `Cargo.lock` 无 `webview2-com`/`wry`/`tauri`/`webkit`；eframe 用 `glow`（OpenGL）后端 | ✅ |
+| 不依赖开发环境 | 用独立临时 `%APPDATA%` 即可运行，不需要 Rust 工具链或 SDK | ✅ |
+
+遗留观察（不阻塞本条款，未改）：exe 的导入表仍含 `VCRUNTIME140.dll` 与 `api-ms-win-crt-*`，即需要 Visual C++ 可再发行组件（本机 System32 已有）。若要真正"单个 exe 拷走就能跑"，需改用静态 CRT（`+crt-static`）。当前判定为可接受：目标机器是常规 Windows 11 桌面。
