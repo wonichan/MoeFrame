@@ -4,7 +4,7 @@
 //! 原 tests/settings_draft.rs 的结算用例已改走本 interface 表达。
 
 use moe_frame::{
-    config::PlaybackMode,
+    config::{AppearanceMode, PlaybackMode},
     settings_session::{
         EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
     },
@@ -15,6 +15,7 @@ fn effective() -> EffectiveValues {
         folder_text: r"D:\图库".to_owned(),
         interval_secs: 30,
         mode: PlaybackMode::Random,
+        appearance: AppearanceMode::Builtin,
     }
 }
 
@@ -304,6 +305,41 @@ fn current_image_picks_emit_actions_in_order() {
             SessionAction::OpenCurrentImage,
             SessionAction::OpenCurrentFolder,
             SessionAction::CopyCurrentPath,
+        ]
+    );
+}
+
+// ---------- 外观模式点选（V2 相框外观专题工单 01） ----------
+
+#[test]
+fn an_appearance_pick_applies_and_the_same_value_is_guarded() {
+    let mut session = opened();
+    // 点当前生效值（内置画框）：同值守卫，不产生动作。
+    let mut picks = no_picks();
+    picks.appearance = Some(AppearanceMode::Builtin);
+    assert_eq!(frame(&mut session, picks), vec![]);
+    // 点极简：产生一次应用动作；本帧内再点同值已被内部推进守卫。
+    let mut picks = no_picks();
+    picks.appearance = Some(AppearanceMode::Minimal);
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![SessionAction::ApplyAppearance(AppearanceMode::Minimal)]
+    );
+}
+
+#[test]
+fn appearance_pick_orders_after_mode_and_before_interval_preset() {
+    let mut session = opened();
+    let mut picks = no_picks();
+    picks.mode = Some(PlaybackMode::Sequential);
+    picks.appearance = Some(AppearanceMode::Custom);
+    picks.interval = Some(60);
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![
+            SessionAction::ApplyMode(PlaybackMode::Sequential),
+            SessionAction::ApplyAppearance(AppearanceMode::Custom),
+            SessionAction::ApplyIntervalPreset(60),
         ]
     );
 }

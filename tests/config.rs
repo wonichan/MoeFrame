@@ -2,7 +2,7 @@
 
 mod common;
 
-use moe_frame::config::{Animation, ConfigStore, PlaybackMode};
+use moe_frame::config::{Animation, AppearanceMode, ConfigStore, PlaybackMode};
 use std::{fs, path::PathBuf};
 
 fn temp_config(tag: &str) -> PathBuf {
@@ -348,6 +348,63 @@ fn corrupt_window_fields_are_repaired_without_touching_other_sections() {
     assert_eq!(window.width, 480);
     assert_eq!(window.height, 320);
     assert_eq!(store.config().image_folder.as_deref(), Some("D:\\图库"));
+}
+
+// ---------- 外观模式（V2 相框外观专题工单 01） ----------
+
+#[test]
+fn appearance_defaults_to_builtin_and_is_written_back() {
+    let path = temp_config("appearance-default");
+    let store = ConfigStore::load(&path);
+    assert_eq!(store.config().display.appearance, AppearanceMode::Builtin);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("appearance = \"builtin\""), "{text}");
+}
+
+#[test]
+fn appearance_parses_all_three_modes() {
+    for (raw, expected) in [
+        ("minimal", AppearanceMode::Minimal),
+        ("builtin", AppearanceMode::Builtin),
+        ("custom", AppearanceMode::Custom),
+    ] {
+        let path = temp_config(&format!("appearance-{raw}"));
+        fs::write(
+            &path,
+            format!("[display]\nshow_filename = false\nappearance = \"{raw}\"\n"),
+        )
+        .unwrap();
+        let store = ConfigStore::load(&path);
+        assert_eq!(store.config().display.appearance, expected, "{raw}");
+    }
+}
+
+#[test]
+fn an_invalid_appearance_repairs_to_builtin() {
+    let path = temp_config("appearance-invalid");
+    fs::write(
+        &path,
+        "[display]\nshow_filename = true\nappearance = \"neon\"\n",
+    )
+    .unwrap();
+    let store = ConfigStore::load(&path);
+    assert_eq!(store.config().display.appearance, AppearanceMode::Builtin);
+    // 修复写回磁盘，同表其他字段不动。
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("appearance = \"builtin\""), "{text}");
+    assert!(text.contains("show_filename = true"), "{text}");
+}
+
+#[test]
+fn set_appearance_mode_round_trips_and_preserves_other_keys() {
+    let path = temp_config("appearance-set");
+    let mut store = ConfigStore::load(&path);
+    store.set_appearance_mode(AppearanceMode::Custom).unwrap();
+    let reparsed = ConfigStore::load(&path);
+    assert_eq!(reparsed.config().display.appearance, AppearanceMode::Custom);
+    assert_eq!(reparsed.config().playback.interval_secs, 30);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("appearance = \"custom\""), "{text}");
 }
 
 #[test]

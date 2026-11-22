@@ -1,5 +1,10 @@
 //! 窗口几何生命周期状态机（工单 20 落地、深挖工单 05 收拢）：启动离屏钳制、首次放置、按当前图像比例从窗口高度推导宽度、几何落盘防抖与恢复默认都在这里；宿主每帧只喂观察值、执行返回的抽象命令。
 //!
+//! V2 相框外观专题工单 01 起，观察输入带四边内距：本状态机管的
+//! 尺寸是外框尺寸（即窗口内尺寸），画面区域 = 外框 − 四边内距；
+//! 高度口径是外框总高度，宽度仍由当前图比例推导。内距全 0 时
+//! 行为与 V1 逐项一致。
+//!
 //! 本状态机只产出要保存的几何值；落盘与退出收尾归 config_sync。启动初值来自配置；图像比例由宿主在新图到达时更新。
 //!
 //! 已知限制：离屏判定把主屏当作原点 (0,0) 的矩形。egui 只提供相框所在屏尺寸，不提供屏幕原点与屏幕枚举，因此整窗放在副屏重启后会被移回主屏右下角，作为防丢行为保留。
@@ -10,6 +15,38 @@ use crate::config_sync::GeometryRecord;
 pub const MIN_WINDOW_SIDE: f32 = 120.0;
 /// 默认窗口尺寸（逻辑）：无图时使用此尺寸，有图时高度作为缩放基准。
 pub const DEFAULT_FRAME_SIZE: [f32; 2] = [480.0, 320.0];
+
+/// 四边内距（逻辑像素）：画框在每一边占的厚度，左/右/上/下各自
+/// 独立（V2 相框外观专题工单 01）。外框尺寸 = 画面尺寸 + 四边
+/// 内距；真实值由外观模式决定（内置按滑杆、自定义按相框图分析），
+/// 本状态机只消费。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Insets {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
+impl Insets {
+    /// 四边全 0：无画框时的内距，几何行为与 V1 逐项一致。
+    pub const ZERO: Self = Self {
+        left: 0.0,
+        top: 0.0,
+        right: 0.0,
+        bottom: 0.0,
+    };
+
+    /// 左右合计：外框宽与画面宽之差。
+    pub fn horizontal(&self) -> f32 {
+        self.left + self.right
+    }
+
+    /// 上下合计：外框高与画面高之差。
+    pub fn vertical(&self) -> f32 {
+        self.top + self.bottom
+    }
+}
 
 /// 几何落盘防抖（工单 20）：观察值停稳满此时长才产出保存命令。
 const SAVE_SETTLE_SECS: f64 = 0.6;
@@ -31,6 +68,9 @@ pub struct GeomObservation {
     pub frame_visible: bool,
     /// UI 时钟（秒）：防抖计时用。
     pub now_secs: f64,
+    /// 当前外观的四边内距（逻辑像素）：外框尺寸推导的输入，
+    /// 变化本身也会触发一次比例校正。
+    pub insets: Insets,
 }
 
 /// 状态机返回的抽象命令：宿主翻译成 ViewportCommand 执行，保存类
@@ -52,6 +92,7 @@ pub struct GeometryMachine {
     image_aspect: Option<f32>,
     aspect_applied: bool,
     last_inner: [f32; 2],
+    last_insets: Insets,
     saved_geom: GeometryRecord,
     observed_geom: Option<GeometryRecord>,
     candidate: Option<(GeometryRecord, f64)>,
@@ -71,6 +112,7 @@ impl GeometryMachine {
             image_aspect,
             aspect_applied: image_aspect.is_none(),
             last_inner: [saved_geom.2 as f32, saved_geom.3 as f32],
+            last_insets: Insets::ZERO,
             saved_geom,
             observed_geom: None,
             candidate: None,
@@ -106,10 +148,14 @@ impl GeometryMachine {
             return commands;
         };
         let mut effective_inner = cur;
+        // 内距变化（如切换外观）即使外框尺寸没动也要重新推导宽度：
+        // 外框总高不变，画面高随内距变，宽随画面高走。
+        let insets_changed = obs.insets != self.last_insets;
+        self.last_insets = obs.insets;
         if !obs.pointer_down {
             if let Some(aspect) = self.image_aspect {
-                if !self.aspect_applied || cur != self.last_inner {
-                    let corrected = aspect_size_from_height(cur, aspect);
+                if !self.aspect_applied || cur != self.last_inner || insets_changed {
+                    let corrected = outer_size_from_height(cur, aspect, obs.insets);
                     if (corrected[0] - cur[0]).abs() > 0.5 || (corrected[1] - cur[1]).abs() > 0.5 {
                         commands.push(GeomCommand::SetInnerSize(corrected));
                     }
@@ -158,17 +204,19 @@ impl GeometryMachine {
     }
 
     /// 新图的比例延迟至非拖动帧应用，避免抢占系统窗口缩放。
-    /// 恢复默认位置与大小：高度回到 320 逻辑像素，并按当前图像比例推导宽度；
-    /// 位置放在当前屏右下角内缩处，隐藏时多一条 ShowFrame。显示器取不到时
-    /// 不发位置命令，保存记录沿用旧 x/y。
+    /// 恢复默认位置与大小：外框高度回到 320 逻辑像素，并按当前图像
+    /// 比例与四边内距推导外框宽度；位置放在当前屏右下角内缩处，
+    /// 隐藏时多一条 ShowFrame。显示器取不到时不发位置命令，保存
+    /// 记录沿用旧 x/y。
     pub fn restore_default(
         &mut self,
         monitor: Option<[f32; 2]>,
         frame_visible: bool,
+        insets: Insets,
     ) -> Vec<GeomCommand> {
         let size = self
             .image_aspect
-            .map(|aspect| aspect_size_from_height(DEFAULT_FRAME_SIZE, aspect))
+            .map(|aspect| outer_size_from_height(DEFAULT_FRAME_SIZE, aspect, insets))
             .unwrap_or(DEFAULT_FRAME_SIZE);
         self.last_inner = size;
         self.aspect_applied = true;
@@ -207,22 +255,31 @@ fn bottom_right_position(size: [f32; 2], monitor: [f32; 2]) -> [f32; 2] {
     ]
 }
 
-/// 按当前高度推导图像比例尺寸，并保持最小边约束。
-fn aspect_size_from_height(current: [f32; 2], aspect: f32) -> [f32; 2] {
+/// 按外框高度推导外框尺寸：画面高 = 外框高 − 上下内距，画面宽按
+/// 图像比例推导，外框宽 = 画面宽 + 左右内距；画面保持最小边约束。
+/// 内距全 0 时与 V1 的推导逐项一致。
+fn outer_size_from_height(current: [f32; 2], aspect: f32, insets: Insets) -> [f32; 2] {
     let Some(aspect) = valid_aspect(Some(aspect)) else {
         return current;
     };
-    let height = if current[1].is_finite() && current[1] > 0.0 {
-        current[1].max(MIN_WINDOW_SIDE)
+    let outer_height = if current[1].is_finite() && current[1] > 0.0 {
+        current[1]
     } else {
         DEFAULT_FRAME_SIZE[1]
     };
-    let width = height * aspect;
-    if width < MIN_WINDOW_SIDE {
-        [MIN_WINDOW_SIDE, MIN_WINDOW_SIDE / aspect]
-    } else {
-        [width, height]
+    let mut image_height = outer_height - insets.vertical();
+    if image_height < MIN_WINDOW_SIDE {
+        image_height = MIN_WINDOW_SIDE;
     }
+    let mut image_width = image_height * aspect;
+    if image_width < MIN_WINDOW_SIDE {
+        image_width = MIN_WINDOW_SIDE;
+        image_height = MIN_WINDOW_SIDE / aspect;
+    }
+    [
+        image_width + insets.horizontal(),
+        image_height + insets.vertical(),
+    ]
 }
 
 fn valid_aspect(aspect: Option<f32>) -> Option<f32> {

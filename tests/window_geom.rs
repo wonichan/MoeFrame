@@ -2,7 +2,7 @@
 //! 全部改打状态机 interface（观察进、命令出），纯算术不再是公开面。
 use moe_frame::{
     config_sync::GeometryRecord,
-    window_geom::{GeomCommand, GeomObservation, GeometryMachine},
+    window_geom::{GeomCommand, GeomObservation, GeometryMachine, Insets},
 };
 
 const MONITOR: [f32; 2] = [1920.0, 1080.0];
@@ -14,6 +14,12 @@ fn machine(saved: GeometryRecord, aspect: Option<f32>, has_position: bool) -> Ge
 
 /// 一帧观察：位置与尺寸自洽（外尺寸 = 内尺寸，本相框无边框装饰）。
 fn obs(pos: [f32; 2], inner: [f32; 2], now: f64) -> GeomObservation {
+    obs_with_insets(pos, inner, now, Insets::ZERO)
+}
+
+/// 带四边内距的一帧观察（V2 相框外观专题工单 01）：inner 是外框
+/// 尺寸（窗口内尺寸），画面区域 = 外框 − 四边内距。
+fn obs_with_insets(pos: [f32; 2], inner: [f32; 2], now: f64, insets: Insets) -> GeomObservation {
     GeomObservation {
         outer_pos: Some(pos),
         outer_size: Some(inner),
@@ -22,6 +28,7 @@ fn obs(pos: [f32; 2], inner: [f32; 2], now: f64) -> GeomObservation {
         pointer_down: false,
         frame_visible: true,
         now_secs: now,
+        insets,
     }
 }
 
@@ -242,7 +249,7 @@ fn changing_images_updates_the_window_aspect() {
 #[test]
 fn restore_default_sizes_places_and_saves() {
     let mut m = machine((Some(300), Some(200), 800, 600), None, true);
-    let commands = m.restore_default(Some(MONITOR), true);
+    let commands = m.restore_default(Some(MONITOR), true, Insets::ZERO);
     assert_eq!(
         commands,
         vec![
@@ -257,7 +264,7 @@ fn restore_default_sizes_places_and_saves() {
 #[test]
 fn restore_default_uses_the_current_image_ratio_and_height() {
     let mut m = machine((Some(300), Some(200), 800, 600), Some(2.0), true);
-    let commands = m.restore_default(Some(MONITOR), true);
+    let commands = m.restore_default(Some(MONITOR), true, Insets::ZERO);
     assert_eq!(
         commands,
         vec![
@@ -271,16 +278,106 @@ fn restore_default_uses_the_current_image_ratio_and_height() {
 #[test]
 fn restore_default_shows_a_hidden_frame() {
     let mut m = machine(SAVED, None, true);
-    let commands = m.restore_default(Some(MONITOR), false);
+    let commands = m.restore_default(Some(MONITOR), false, Insets::ZERO);
     assert!(commands.contains(&GeomCommand::ShowFrame));
 }
 
 #[test]
 fn restore_default_without_a_monitor_keeps_the_saved_position() {
     let mut m = machine((Some(300), Some(200), 800, 600), None, true);
-    let commands = m.restore_default(None, true);
+    let commands = m.restore_default(None, true, Insets::ZERO);
     assert!(!commands
         .iter()
         .any(|c| matches!(c, GeomCommand::SetOuterPosition(_))));
     assert!(commands.contains(&GeomCommand::SaveGeometry((Some(300), Some(200), 480, 320))));
+}
+
+// ---------- 四边内距（V2 相框外观专题工单 01） ----------
+
+/// 四边不等的内距：左 10 / 上 20 / 右 30 / 下 40（横合计 40、纵合计 60）。
+const UNEQUAL_INSETS: Insets = Insets {
+    left: 10.0,
+    top: 20.0,
+    right: 30.0,
+    bottom: 40.0,
+};
+
+#[test]
+fn unequal_insets_derive_the_outer_size_from_the_outer_height() {
+    // 比例 2.0：外框高 380 → 画面高 380−60=320 → 画面宽 640 →
+    // 外框宽 640+40=680（基准帧自洽，无命令）。
+    let saved: GeometryRecord = (Some(100), Some(100), 680, 380);
+    let mut m = machine(saved, Some(2.0), true);
+    assert!(sizes(&m.observe(&obs_with_insets(
+        [100.0, 100.0],
+        [680.0, 380.0],
+        0.0,
+        UNEQUAL_INSETS
+    )))
+    .is_empty());
+    // 外框高拉到 440：画面高 380 → 画面宽 760 → 外框 [800, 440]。
+    let commands = m.observe(&obs_with_insets(
+        [100.0, 100.0],
+        [680.0, 440.0],
+        0.1,
+        UNEQUAL_INSETS,
+    ));
+    assert_size(sizes(&commands)[0], [800.0, 440.0]);
+}
+
+#[test]
+fn zero_insets_match_the_pre_insets_derivation() {
+    // 内距全 0 时与 V1 推导逐项一致：比例 1.5、高驱动缩放。
+    let saved: GeometryRecord = (Some(100), Some(100), 480, 320);
+    let mut m = machine(saved, Some(1.5), true);
+    m.observe(&obs_with_insets(
+        [100.0, 100.0],
+        [480.0, 320.0],
+        0.0,
+        Insets::ZERO,
+    ));
+    let commands = m.observe(&obs_with_insets(
+        [100.0, 100.0],
+        [480.0, 400.0],
+        0.1,
+        Insets::ZERO,
+    ));
+    assert_size(sizes(&commands)[0], [600.0, 400.0]);
+}
+
+#[test]
+fn changing_insets_rederives_the_width_at_the_same_outer_height() {
+    // 外框高度不变、内距从全 0 变为四边不等：画面高 320−60=260 →
+    // 画面宽 520 → 外框宽 520+40=560，高度仍是外框总高 320。
+    let saved: GeometryRecord = (Some(100), Some(100), 640, 320);
+    let mut m = machine(saved, Some(2.0), true);
+    m.observe(&obs_with_insets(
+        [100.0, 100.0],
+        [640.0, 320.0],
+        0.0,
+        Insets::ZERO,
+    ));
+    let commands = m.observe(&obs_with_insets(
+        [100.0, 100.0],
+        [640.0, 320.0],
+        0.1,
+        UNEQUAL_INSETS,
+    ));
+    assert_size(sizes(&commands)[0], [560.0, 320.0]);
+}
+
+#[test]
+fn restore_default_sizes_by_outer_height_with_insets() {
+    // 恢复默认按外框总高 320：画面高 320−60=260 → 画面宽 520 →
+    // 外框 [560, 320]，落盘与放置都按外框尺寸。
+    let mut m = machine((Some(300), Some(200), 800, 600), Some(2.0), true);
+    let commands = m.restore_default(Some(MONITOR), true, UNEQUAL_INSETS);
+    assert_eq!(
+        commands,
+        vec![
+            GeomCommand::SetInnerSize([560.0, 320.0]),
+            GeomCommand::SetOuterPosition([1336.0, 736.0]),
+            GeomCommand::SaveGeometry((Some(1336), Some(736), 560, 320)),
+        ]
+    );
 }

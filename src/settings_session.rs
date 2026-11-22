@@ -10,7 +10,7 @@
 //! 基线与快照不一致的字段草稿作废重播种。原 settings_draft 的两条
 //! 结算函数已吸收为本模块的内部实现，不再是公开面。
 
-use crate::config::{parse_interval_draft, PlaybackMode};
+use crate::config::{parse_interval_draft, AppearanceMode, PlaybackMode};
 
 /// 带草稿的输入字段。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +26,7 @@ pub struct EffectiveValues {
     pub folder_text: String,
     pub interval_secs: i64,
     pub mode: PlaybackMode,
+    pub appearance: AppearanceMode,
 }
 
 /// 打开请求的裁决。
@@ -41,6 +42,7 @@ pub enum OpenDecision {
 #[derive(Clone, Debug, Default)]
 pub struct Picks {
     pub mode: Option<PlaybackMode>,
+    pub appearance: Option<AppearanceMode>,
     pub interval: Option<i64>,
     pub restore_default: bool,
     pub autostart: Option<bool>,
@@ -53,13 +55,14 @@ pub struct Picks {
 }
 
 /// 本帧要由宿主执行的动作，按返回顺序执行。顺序即定案的应用顺序：
-/// 回车结算 → 模式 → 间隔预设 → 恢复默认 → 自启 → 当前图三项 →
+/// 回车结算 → 模式 → 外观 → 间隔预设 → 恢复默认 → 自启 → 当前图三项 →
 /// 关闭/重扫/选文件夹（后三者否决待结算）→ 帧尾待结算结算。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionAction {
     CommitFolder(String),
     CommitInterval(i64),
     ApplyMode(PlaybackMode),
+    ApplyAppearance(AppearanceMode),
     ApplyIntervalPreset(i64),
     RestoreDefaultGeometry,
     ApplyAutostart(bool),
@@ -96,6 +99,8 @@ pub struct SettingsSession {
     viewport_focused: bool,
     /// 帧首快照的播放模式：模式点选的同值守卫用（点选应用后随之推进）。
     mode_now: Option<PlaybackMode>,
+    /// 帧首快照的外观模式：外观点选的同值守卫用（与 mode_now 同规）。
+    appearance_now: Option<AppearanceMode>,
 }
 
 impl SettingsSession {
@@ -129,6 +134,7 @@ impl SettingsSession {
         self.seconds_focused = false;
         self.viewport_focused = false;
         self.mode_now = Some(effective.mode);
+        self.appearance_now = Some(effective.appearance);
         OpenDecision::Opened
     }
 
@@ -137,6 +143,7 @@ impl SettingsSession {
     /// 其待结算一并取消。
     pub fn begin_frame(&mut self, effective: &EffectiveValues) {
         self.mode_now = Some(effective.mode);
+        self.appearance_now = Some(effective.appearance);
         if self.path.base != effective.folder_text {
             self.path.base = effective.folder_text.clone();
             self.path.text = effective.folder_text.clone();
@@ -230,6 +237,13 @@ impl SettingsSession {
             if self.mode_now != Some(mode) {
                 self.mode_now = Some(mode);
                 actions.push(SessionAction::ApplyMode(mode));
+            }
+        }
+        if let Some(appearance) = picks.appearance {
+            // 外观点选与播放模式同规：同值守卫，点选后内部推进。
+            if self.appearance_now != Some(appearance) {
+                self.appearance_now = Some(appearance);
+                actions.push(SessionAction::ApplyAppearance(appearance));
             }
         }
         if let Some(secs) = picks.interval {

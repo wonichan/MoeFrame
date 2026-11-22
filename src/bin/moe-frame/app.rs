@@ -48,6 +48,10 @@ pub(crate) struct FrameApp {
     /// 经接缝注入，切换失败时状态不动（回滚）。
     pub(crate) autostart: AutostartSync,
     pub(crate) autostart_store: RegAutostartStore,
+    /// 当前外观模式（V2 相框外观专题工单 01）：宿主持有，几何观察
+    /// 与解码口径的四边内距都由它给出；设置窗切换时更新本字段并
+    /// 经 config_sync 写回。本工单三模式内距均为全 0（占位）。
+    pub(crate) appearance: AppearanceMode,
     /// 设置窗会话（工单 19 的时序，architecture-deepening 工单 02 起归
     /// 库 settings_session）：草稿、基线、待结算与焦点记忆都在其中，
     /// 宿主只采样事件、渲染、执行它返回的动作。

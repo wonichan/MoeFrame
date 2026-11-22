@@ -7,7 +7,7 @@ mod common;
 use common::temp_root;
 use moe_frame::{
     autostart::AutostartStore,
-    config::{ConfigStore, PlaybackMode},
+    config::{AppearanceMode, ConfigStore, PlaybackMode},
     config_sync::ConfigSync,
 };
 use std::{
@@ -60,6 +60,9 @@ fn seed_config(config_path: &Path) {
         .expect("seed");
     store.set_autostart(true).expect("seed");
     store
+        .set_appearance_mode(AppearanceMode::Custom)
+        .expect("seed");
+    store
         .save_resume_state(
             Some(r"D:\图库\b.png"),
             &[r"D:\图库\a.png".to_owned(), r"D:\图库\b.png".to_owned()],
@@ -89,6 +92,7 @@ fn startup_translates_config_into_a_package() {
     // 宿主初值包。
     assert_eq!(package.host.saved_geom, (Some(10), Some(20), 640, 480));
     assert_eq!(package.host.saved_position, Some([10.0, 20.0]));
+    assert_eq!(package.host.appearance, AppearanceMode::Custom);
     // 自启对账：实际与镜像一致，无回写。
     assert!(package.autostart.enabled());
 }
@@ -142,6 +146,7 @@ fn mirror_writes_land_in_the_config_file() {
     sync.save_interval(99);
     sync.save_playback_mode(PlaybackMode::Sequential);
     sync.save_window_geometry((Some(1), Some(2), 800, 600));
+    sync.save_appearance_mode(AppearanceMode::Minimal);
     sync.save_autostart_mirror(true);
     sync.save_resume_state(
         Path::new(r"E:\新图库\x.png"),
@@ -162,6 +167,7 @@ fn mirror_writes_land_in_the_config_file() {
         (Some(1), Some(2), 800, 600)
     );
     assert!(config.general.autostart);
+    assert_eq!(config.display.appearance, AppearanceMode::Minimal);
     assert_eq!(
         config.general.current_image.as_deref(),
         Some(r"E:\新图库\x.png")

@@ -52,7 +52,7 @@ pub struct Observation {
     pub showing: Option<PathBuf>,
     /// 当前生效的显示方式（宿主状态）。
     pub fit_mode: DisplayMode,
-    /// 当前窗口的物理目标尺寸。
+    /// 当前的物理目标尺寸（画面区域，不含画框；V2 外观工单 01 起）。
     pub target: [u32; 2],
     /// 滑动转场进行中（转场期间不刷新）。
     pub slide_active: bool,

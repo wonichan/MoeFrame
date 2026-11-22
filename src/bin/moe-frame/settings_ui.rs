@@ -11,8 +11,9 @@ pub(crate) const INTERVAL_PRESETS: [(&str, i64); 6] = [
     ("10 分钟", 600),
     ("30 分钟", 1800),
 ];
-/// 设置窗尺寸（工单 18）：建窗与屏幕居中计算共用。
-pub(crate) const SETTINGS_SIZE: [f32; 2] = [420.0, 700.0];
+/// 设置窗尺寸（工单 18；V2 相框外观工单 01 加「外观」组后高 700→750）：
+/// 建窗与屏幕居中计算共用。
+pub(crate) const SETTINGS_SIZE: [f32; 2] = [420.0, 750.0];
 /// 设置窗的视口标识（工单 18）：全程只有一块。
 pub(crate) fn settings_viewport_id() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("moe-frame-settings")
@@ -52,6 +53,7 @@ impl FrameApp {
             folder_text: self.effective_folder_text(),
             interval_secs: self.core.interval_secs(),
             mode: self.core.playback_mode(),
+            appearance: self.appearance,
         }
     }
     pub(crate) fn effective_folder_text(&self) -> String {
@@ -81,6 +83,13 @@ impl FrameApp {
                 SessionAction::ApplyMode(mode) => {
                     let effects = self.core.handle(Intent::PlaybackModeSelected(mode));
                     self.dispatch(ctx, effects);
+                }
+                SessionAction::ApplyAppearance(mode) => {
+                    // 外观是宿主状态：改当前值并经 config_sync 写回，
+                    // 几何与解码口径下一帧起按新模式的内距工作，
+                    // 不重启进程（V2 相框外观专题工单 01）。
+                    self.appearance = mode;
+                    self.sync.save_appearance_mode(mode);
                 }
                 SessionAction::RestoreDefaultGeometry => {
                     self.restore_default_geometry(ctx);
@@ -139,6 +148,7 @@ impl FrameApp {
             }
         }
         let mode_now = self.core.playback_mode();
+        let appearance_now = self.appearance;
         let interval_now = self.core.interval_secs();
         let autostart_now = self.autostart.enabled();
         let current_showing = match self.core.view() {
@@ -192,6 +202,28 @@ impl FrameApp {
                     }
                     if ui.radio(mode_now == PlaybackMode::Random, "随机").clicked() {
                         picks_ref.mode = Some(PlaybackMode::Random);
+                    }
+                });
+                ui.separator();
+                ui.label("外观");
+                ui.horizontal(|ui| {
+                    if ui
+                        .radio(appearance_now == AppearanceMode::Minimal, "极简")
+                        .clicked()
+                    {
+                        picks_ref.appearance = Some(AppearanceMode::Minimal);
+                    }
+                    if ui
+                        .radio(appearance_now == AppearanceMode::Builtin, "内置画框")
+                        .clicked()
+                    {
+                        picks_ref.appearance = Some(AppearanceMode::Builtin);
+                    }
+                    if ui
+                        .radio(appearance_now == AppearanceMode::Custom, "自定义相框图")
+                        .clicked()
+                    {
+                        picks_ref.appearance = Some(AppearanceMode::Custom);
                     }
                 });
                 ui.separator();

@@ -4,7 +4,7 @@
 //! 整个文件不可解析时恢复为合法默认配置，不崩溃。三个 P1 键（`pause_on_hover`、
 //! `animation`、`show_filename`）只保存与修复，不驱动行为。
 
-use crate::playlist::HISTORY_LIMIT;
+use crate::{playlist::HISTORY_LIMIT, window_geom::Insets};
 use std::{fs, io, path::Path};
 use toml_edit::{value, DocumentMut, Item, Table};
 
@@ -57,6 +57,7 @@ animation = \"slide\"
 
 [display]
 show_filename = false
+appearance = \"builtin\"
 
 [general]
 autostart = false
@@ -113,10 +114,38 @@ pub struct PlaybackConfig {
     pub animation: Animation,
 }
 
+/// 外观模式（`appearance` 配置键，V2 相框外观专题工单 01）：极简 /
+/// 内置画框 / 自定义相框图三选一，默认内置画框。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppearanceMode {
+    Minimal,
+    Builtin,
+    Custom,
+}
+
+impl AppearanceMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AppearanceMode::Minimal => "minimal",
+            AppearanceMode::Builtin => "builtin",
+            AppearanceMode::Custom => "custom",
+        }
+    }
+
+    /// 本模式当前的四边内距：工单 01 只做地基，三种模式都先按
+    /// 全 0 占位——内置画框的真实内距（框宽 + 卡纸宽）由工单 02
+    /// 供给，自定义相框图的内距（分析结果缩放后）由工单 03 供给。
+    pub fn insets(self) -> Insets {
+        Insets::ZERO
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisplayConfig {
     /// P1：只保存，不驱动行为。
     pub show_filename: bool,
+    /// 外观模式（V2 相框外观专题工单 01）。
+    pub appearance: AppearanceMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,6 +188,7 @@ impl Default for Config {
             },
             display: DisplayConfig {
                 show_filename: false,
+                appearance: AppearanceMode::Builtin,
             },
             general: GeneralConfig {
                 autostart: false,
@@ -270,6 +300,15 @@ impl ConfigStore {
             config.window.y = y;
             config.window.width = width;
             config.window.height = height;
+        })
+    }
+
+    /// 保存外观模式（V2 相框外观专题工单 01）：只改 display.appearance，
+    /// 其余字段原样保留。
+    pub fn set_appearance_mode(&mut self, mode: AppearanceMode) -> io::Result<()> {
+        self.update(|document, config| {
+            document["display"]["appearance"] = value(mode.as_str());
+            config.display.appearance = mode;
         })
     }
 
@@ -412,6 +451,16 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
         *repaired = true;
     }
     let show_filename = repair_bool(display_table, "show_filename", false, repaired);
+    let appearance = match display_table.get("appearance").and_then(Item::as_str) {
+        Some("minimal") => AppearanceMode::Minimal,
+        Some("builtin") => AppearanceMode::Builtin,
+        Some("custom") => AppearanceMode::Custom,
+        _ => {
+            display_table["appearance"] = value(AppearanceMode::Builtin.as_str());
+            *repaired = true;
+            AppearanceMode::Builtin
+        }
+    };
 
     let general_table = ensure_table(root, "general", repaired);
     let autostart = repair_bool(general_table, "autostart", false, repaired);
@@ -445,7 +494,10 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
             pause_on_hover,
             animation,
         },
-        display: DisplayConfig { show_filename },
+        display: DisplayConfig {
+            show_filename,
+            appearance,
+        },
         general: GeneralConfig {
             autostart,
             current_image,

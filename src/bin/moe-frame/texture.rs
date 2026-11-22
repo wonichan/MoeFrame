@@ -3,12 +3,17 @@
 use super::*;
 
 impl FrameApp {
+    /// 解码口径 = 画面区域的物理尺寸（V2 相框外观专题工单 01）：
+    /// 窗口物理尺寸减去四边内距的物理量，不含画框；内距全 0 时
+    /// 与 V1 的整窗尺寸逐项等值。显示数据管线的接口不变，变的
+    /// 只是宿主喂入的目标值。
     pub(crate) fn physical_target(&self, ctx: &egui::Context) -> [u32; 2] {
         let rect = ctx.viewport_rect();
         let ppp = ctx.pixels_per_point();
+        let insets = self.appearance.insets();
         [
-            ((rect.width() * ppp).round() as u32).max(1),
-            ((rect.height() * ppp).round() as u32).max(1),
+            (((rect.width() - insets.horizontal()) * ppp).round() as u32).max(1),
+            (((rect.height() - insets.vertical()) * ppp).round() as u32).max(1),
         ]
     }
 }

@@ -19,6 +19,7 @@ impl FrameApp {
                     pointer_down: input.pointer.any_down(),
                     frame_visible: self.core.frame_visible(),
                     now_secs: input.time,
+                    insets: self.appearance.insets(),
                 },
                 viewport.focused,
             )
@@ -91,9 +92,11 @@ impl FrameApp {
         let monitor = ctx
             .input(|input| input.viewport().monitor_size)
             .map(|size| [size.x, size.y]);
-        let commands = self
-            .geometry
-            .restore_default(monitor, self.core.frame_visible());
+        let commands = self.geometry.restore_default(
+            monitor,
+            self.core.frame_visible(),
+            self.appearance.insets(),
+        );
         self.execute_geometry_commands(ctx, commands);
     }
 }

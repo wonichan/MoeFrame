@@ -9,7 +9,7 @@
 //! 三种镜像模式在本 module 内显式成文，写回口径一致：
 //! - 核心状态镜像：核心是准，Save 系列效果是把核心状态写穿到配置
 //!   （文件夹、间隔、播放模式、续播状态）；
-//! - 宿主状态镜像：宿主状态为准，写回只记录窗口当前几何；
+//! - 宿主状态镜像：宿主状态为准，写回只记录窗口当前几何与外观模式；
 //! - 注册表反向对齐：系统注册表是准，配置里的 autostart 只是镜像，
 //!   启动时对账，不一致就把镜像改写为实际值（决策仍归 autostart
 //!   module 的 AutostartSync，本 module 只做装配与镜像落盘）。
@@ -22,7 +22,7 @@
 use crate::{
     app_core::{CoreArgs, ResumeData},
     autostart::{AutostartStore, AutostartSync},
-    config::{ConfigStore, PlaybackMode, WindowConfig},
+    config::{AppearanceMode, ConfigStore, PlaybackMode, WindowConfig},
 };
 use std::{
     io,
@@ -41,6 +41,9 @@ pub struct HostInit {
     pub saved_geom: GeometryRecord,
     /// 存档位置（两坐标齐全时）；None 表示首次启动走默认放置。
     pub saved_position: Option<[f32; 2]>,
+    /// 外观模式（V2 相框外观专题工单 01）：宿主持有当前值，
+    /// 设置窗切换经 save_appearance_mode 写回。
+    pub appearance: AppearanceMode,
 }
 
 /// 启动包：run() 拿到后只分发，不再逐字段翻译配置。
@@ -90,6 +93,7 @@ impl ConfigSync {
                 (Some(x), Some(y)) => Some([x as f32, y as f32]),
                 _ => None,
             },
+            appearance: config.display.appearance,
             window,
         };
         (
@@ -144,6 +148,12 @@ impl ConfigSync {
             .store
             .set_window_geometry(geom.0, geom.1, geom.2, geom.3);
         self.note_write_result("window_geometry", result);
+    }
+
+    /// 外观模式写回（V2 相框外观专题工单 01）：宿主切换即落盘。
+    pub fn save_appearance_mode(&mut self, mode: AppearanceMode) {
+        let result = self.store.set_appearance_mode(mode);
+        self.note_write_result("appearance", result);
     }
 
     // ---- 注册表反向对齐的镜像落盘 ----

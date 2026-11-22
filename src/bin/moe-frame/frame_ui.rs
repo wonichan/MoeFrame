@@ -73,6 +73,9 @@ impl eframe::App for FrameApp {
         self.handle_keys(&ctx, now);
         let mut menu_intent: Option<Intent> = None;
         let mut menu_settings = false;
+        // 窗口永远透明创建（V2 相框外观专题工单 01）：极简/内置模式
+        // 靠这层铺满视口的不透明填充保持 V1 视觉（有图时纹理同样
+        // 铺满），透明只在自定义异形时透出（工单 04）。
         let panel = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ui, |ui| {

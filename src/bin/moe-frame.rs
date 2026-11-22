@@ -44,7 +44,7 @@ use eframe::egui;
 use moe_frame::{
     app_core::{Effect, FrameCore, Intent, View},
     autostart::{autostart_command, AutostartStore, AutostartSync, RUN_KEY_PATH, RUN_VALUE_NAME},
-    config::PlaybackMode,
+    config::{AppearanceMode, PlaybackMode},
     config_sync::ConfigSync,
     decode_validation::DisplayMode,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
@@ -209,6 +209,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("MoeFrame")
         .with_decorations(false)
+        // 永远透明创建（V2 相框外观专题工单 01）：极简/内置模式由
+        // 绘制层自绘不透明背景，视觉与 V1 一致；透明只为自定义
+        // 相框图的异形外轮廓（二期工单 04）预留，切换模式不重启。
+        .with_transparent(true)
         .with_resizable(true)
         .with_inner_size([window.width as f32, window.height as f32])
         .with_min_inner_size([MIN_WINDOW_SIDE, MIN_WINDOW_SIDE])
@@ -285,6 +289,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 ),
                 autostart: autostart_sync,
                 autostart_store: RegAutostartStore,
+                appearance: host_init.appearance,
                 session: SettingsSession::new(),
                 debug_last_inner: None,
             }))
