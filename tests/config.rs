@@ -25,7 +25,7 @@ fn missing_file_yields_defaults_and_writes_back_a_legal_config() {
     assert_eq!(config.playback.mode, PlaybackMode::Random);
     assert_eq!(config.playback.interval_secs, 30);
     assert!(config.playback.pause_on_hover);
-    assert_eq!(config.playback.animation, Animation::Slide);
+    assert_eq!(config.playback.animation, Animation::Curl);
     assert!(!config.display.show_filename);
     assert!(!config.general.autostart);
     assert_eq!(config.general.current_image, None);
@@ -37,9 +37,10 @@ fn missing_file_yields_defaults_and_writes_back_a_legal_config() {
         reparsed.config().image_folder.as_deref(),
         Some("D:\\Pictures\\Anime")
     );
-    // The three P1 keys are written with defaults even though nothing drives them yet.
+    // The P1 keys are written with defaults; animation defaults to curl
+    // (切换动画专题工单 01 起它驱动核心转场，不再是只保存的占位）。
     assert!(text.contains("pause_on_hover = true"), "{text}");
-    assert!(text.contains("animation = \"slide\""), "{text}");
+    assert!(text.contains("animation = \"curl\""), "{text}");
     assert!(text.contains("show_filename = false"), "{text}");
 }
 
@@ -105,11 +106,77 @@ current_image = "E:\\图 库\\a.png"
     assert_eq!(config.playback.mode, PlaybackMode::Random);
     assert_eq!(config.playback.interval_secs, 3, "integer clamps to range");
     assert!(config.playback.pause_on_hover);
-    assert_eq!(config.playback.animation, Animation::Slide);
+    assert_eq!(config.playback.animation, Animation::Curl);
     // Repairs are written back to disk.
     let text = fs::read_to_string(&path).unwrap();
     assert!(text.contains("interval_secs = 3"), "{text}");
     assert!(text.contains("mode = \"random\""), "{text}");
+}
+
+// ---------- 切换动画专题工单 01：animation 档位、迁移与保存 ----------
+
+fn store_with_animation(tag: &str, stored: &str) -> (PathBuf, ConfigStore) {
+    let path = temp_config(tag);
+    fs::write(
+        &path,
+        format!(
+            "[playback]\nmode = \"sequential\"\ninterval_secs = 30\nanimation = \"{stored}\"\n"
+        ),
+    )
+    .unwrap();
+    let store = ConfigStore::load(&path);
+    (path, store)
+}
+
+#[test]
+fn every_animation_value_round_trips_unchanged() {
+    for (stored, expected) in [
+        ("none", Animation::None),
+        ("curl", Animation::Curl),
+        ("blinds", Animation::Blinds),
+        ("ink", Animation::Ink),
+        ("card", Animation::Card),
+        ("pixel", Animation::Pixel),
+        ("random", Animation::Random),
+    ] {
+        let (path, store) = store_with_animation(&format!("anim-{stored}"), stored);
+        assert_eq!(store.config().playback.animation, expected, "{stored}");
+        // 合法值不触发修复写回：盘上的值原样保留。
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(&format!("animation = \"{stored}\"")),
+            "{stored}: {text}"
+        );
+    }
+}
+
+#[test]
+fn legacy_and_unknown_animation_values_migrate_to_curl() {
+    // none 是新旧共有的值，保留为无动画；其余旧值与未知值统一落默认卷页。
+    let (_path, store) = store_with_animation("anim-keep-none", "none");
+    assert_eq!(store.config().playback.animation, Animation::None);
+    for stored in ["slide", "fade", "spin"] {
+        let (path, store) = store_with_animation(&format!("anim-migrate-{stored}"), stored);
+        assert_eq!(
+            store.config().playback.animation,
+            Animation::Curl,
+            "{stored}"
+        );
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("animation = \"curl\""), "{stored}: {text}");
+    }
+}
+
+#[test]
+fn set_animation_writes_only_the_animation_key() {
+    let (path, mut store) = store_with_animation("anim-set", "curl");
+    store.set_animation(Animation::Ink).unwrap();
+    assert_eq!(store.config().playback.animation, Animation::Ink);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("animation = \"ink\""), "{text}");
+    assert!(text.contains("mode = \"sequential\""), "{text}");
+    let reloaded = ConfigStore::load(&path);
+    assert_eq!(reloaded.config().playback.animation, Animation::Ink);
 }
 
 #[test]

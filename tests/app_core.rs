@@ -2,10 +2,12 @@
 //! 时间通过意图携带的 now_ms 可控推进，不用真实等待。
 
 // 随机性已归播放序列持有（工单 03 深挖）：核心测试不再注入确定性随机源。
-use moe_frame::app_core::{CoreArgs, Effect, FrameCore, Intent, ResumeData, View};
-use moe_frame::config::PlaybackMode;
+use moe_frame::app_core::{
+    ConcreteAnimation, CoreArgs, Effect, FrameCore, Intent, ResumeData, View,
+};
+use moe_frame::config::{Animation, PlaybackMode};
 use moe_frame::gesture::GestureThresholds;
-use moe_frame::playlist::Direction;
+use moe_frame::playlist::{Direction, RandomSource};
 use std::path::PathBuf;
 
 fn path(text: &str) -> PathBuf {
@@ -45,6 +47,7 @@ fn showing_core_mode(
             saved_folder: Some(path("D:\\图库")),
             interval_secs,
             mode,
+            animation: Animation::Curl,
             resume: None,
         },
         test_thresholds(),
@@ -68,6 +71,7 @@ fn first_run_without_a_saved_folder_prompts_once_and_cancel_stays_empty() {
             saved_folder: None,
             interval_secs: 30,
             mode: PlaybackMode::Sequential,
+            animation: Animation::Curl,
             resume: None,
         },
         test_thresholds(),
@@ -84,6 +88,7 @@ fn picking_a_folder_saves_scans_loads_and_shows_the_first_image() {
             saved_folder: None,
             interval_secs: 30,
             mode: PlaybackMode::Sequential,
+            animation: Animation::Curl,
             resume: None,
         },
         test_thresholds(),
@@ -123,6 +128,7 @@ fn a_saved_folder_skips_the_prompt_on_the_next_launch() {
             saved_folder: Some(path("D:\\图库")),
             interval_secs: 30,
             mode: PlaybackMode::Sequential,
+            animation: Animation::Curl,
             resume: None,
         },
         test_thresholds(),
@@ -140,6 +146,7 @@ fn an_empty_scan_enters_the_empty_state_without_loading() {
             saved_folder: Some(path("D:\\空文件夹")),
             interval_secs: 30,
             mode: PlaybackMode::Sequential,
+            animation: Animation::Curl,
             resume: None,
         },
         test_thresholds(),
@@ -160,6 +167,7 @@ fn when_every_candidate_fails_the_frame_stays_operable_and_empty() {
             saved_folder: Some(path("D:\\坏图库")),
             interval_secs: 30,
             mode: PlaybackMode::Sequential,
+            animation: Animation::Curl,
             resume: None,
         },
         test_thresholds(),
@@ -195,6 +203,7 @@ fn exit_is_an_explicit_effect() {
             saved_folder: None,
             interval_secs: 30,
             mode: PlaybackMode::Sequential,
+            animation: Animation::Curl,
             resume: None,
         },
         test_thresholds(),
@@ -224,6 +233,8 @@ fn auto_advance_fires_exactly_at_the_deadline() {
             from: img("a.png"),
             to: img("b.png"),
             direction: Direction::Next,
+            animation: ConcreteAnimation::Curl,
+            duration_ms: 550,
         }]
     );
     assert_eq!(
@@ -305,6 +316,8 @@ fn pause_stops_auto_advance_but_not_manual_navigation_and_resume_recounts() {
             from: img("a.png"),
             to: img("b.png"),
             direction: Direction::Next,
+            animation: ConcreteAnimation::Curl,
+            duration_ms: 550,
         }]
     );
     assert_eq!(
@@ -464,6 +477,8 @@ fn a_navigation_pressed_during_a_load_runs_after_it_settles() {
             from: img("a.png"),
             to: img("b.png"),
             direction: Direction::Next,
+            animation: ConcreteAnimation::Curl,
+            duration_ms: 550,
         }]
     );
     assert_eq!(
@@ -616,6 +631,7 @@ fn resumed_core(mode: PlaybackMode, resume: ResumeData) -> FrameCore {
             saved_folder: Some(path("D:\\图库")),
             interval_secs: 30,
             mode,
+            animation: Animation::Curl,
             resume: Some(resume),
         },
         test_thresholds(),
@@ -786,6 +802,7 @@ fn playback_state_survives_across_two_launches() {
             saved_folder: Some(path("D:\\图库")),
             interval_secs: 30,
             mode: PlaybackMode::Random,
+            animation: Animation::Curl,
             resume: None,
         },
         test_thresholds(),
@@ -863,6 +880,8 @@ fn transitions_report_direction_and_commit_only_on_completion() {
             from: img("a.png"),
             to: img("b.png"),
             direction: Direction::Next,
+            animation: ConcreteAnimation::Curl,
+            duration_ms: 550,
         }]
     );
     assert_eq!(core.view(), View::Showing(img("a.png")));
@@ -904,6 +923,8 @@ fn transitions_report_direction_and_commit_only_on_completion() {
             from: img("c.png"),
             to: img("b.png"),
             direction: Direction::Prev,
+            animation: ConcreteAnimation::Curl,
+            duration_ms: 550,
         }]
     );
 }
@@ -1008,6 +1029,230 @@ fn a_failed_navigation_after_a_transition_keeps_the_new_image() {
             now_ms: 200,
         }),
         vec![]
+    );
+    assert_eq!(core.view(), View::Showing(img("b.png")));
+}
+
+// ---------- 切换动画专题工单 01：档位、时长与随机抽法 ----------
+
+/// 指定动画档位驱动到「已显示第一张图」（随机档走默认系统随机源，
+/// 只用于不关心抽法结果的场景）。
+fn showing_core_animation(names: &[&str], animation: Animation) -> (FrameCore, Vec<Effect>) {
+    let mut core = FrameCore::new(
+        CoreArgs {
+            saved_folder: Some(path("D:\\图库")),
+            interval_secs: 30,
+            mode: PlaybackMode::Sequential,
+            animation,
+            resume: None,
+        },
+        test_thresholds(),
+    );
+    core.handle(Intent::Started);
+    let list: Vec<PathBuf> = names.iter().map(|name| img(name)).collect();
+    core.handle(Intent::ScanCompleted(list));
+    let effects = core.handle(Intent::LoadCompleted {
+        shown: Some(img(names[0])),
+        now_ms: 0,
+    });
+    (core, effects)
+}
+
+/// 脚本随机源：按预设下标依次供核心抽动画，并把每次的 bound 记下来，
+/// 使「等概率池 + 禁连续重复」能写成确定性断言。
+struct ScriptedRandom {
+    values: std::collections::VecDeque<usize>,
+    bounds: std::rc::Rc<std::cell::RefCell<Vec<usize>>>,
+}
+
+impl RandomSource for ScriptedRandom {
+    fn next_below(&mut self, bound: usize) -> usize {
+        self.bounds.borrow_mut().push(bound);
+        let value = self.values.pop_front().expect("scripted values exhausted");
+        assert!(
+            value < bound,
+            "scripted {value} must be below bound {bound}"
+        );
+        value
+    }
+}
+
+fn showing_core_random(
+    names: &[&str],
+    script: &[usize],
+) -> (FrameCore, std::rc::Rc<std::cell::RefCell<Vec<usize>>>) {
+    let bounds = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut core = FrameCore::with_animation_random(
+        CoreArgs {
+            saved_folder: Some(path("D:\\图库")),
+            interval_secs: 30,
+            mode: PlaybackMode::Sequential,
+            animation: Animation::Random,
+            resume: None,
+        },
+        test_thresholds(),
+        Box::new(ScriptedRandom {
+            values: script.iter().copied().collect(),
+            bounds: bounds.clone(),
+        }),
+    );
+    core.handle(Intent::Started);
+    let list: Vec<PathBuf> = names.iter().map(|name| img(name)).collect();
+    core.handle(Intent::ScanCompleted(list));
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img(names[0])),
+        now_ms: 0,
+    });
+    (core, bounds)
+}
+
+/// 导航到下一张并取回转场开始效果里的 (动画， 时长）。
+fn next_transition(core: &mut FrameCore, shown: &str, now_ms: u64) -> (ConcreteAnimation, u64) {
+    core.handle(Intent::NextRequested);
+    let effects = core.handle(Intent::LoadCompleted {
+        shown: Some(img(shown)),
+        now_ms,
+    });
+    match effects.as_slice() {
+        [Effect::StartTransition {
+            animation,
+            duration_ms,
+            ..
+        }] => (*animation, *duration_ms),
+        other => panic!("expected a single StartTransition, got {other:?}"),
+    }
+}
+
+#[test]
+fn each_animation_tier_reports_its_kind_and_duration() {
+    for (tier, kind, duration_ms) in [
+        (Animation::Curl, ConcreteAnimation::Curl, 550),
+        (Animation::Blinds, ConcreteAnimation::Blinds, 650),
+        (Animation::Ink, ConcreteAnimation::Ink, 750),
+        (Animation::Card, ConcreteAnimation::Card, 600),
+        (Animation::Pixel, ConcreteAnimation::Pixel, 550),
+    ] {
+        let (mut core, _) = showing_core_animation(&["a.png", "b.png"], tier);
+        assert_eq!(
+            next_transition(&mut core, "b.png", 1_000),
+            (kind, duration_ms),
+            "{tier:?}"
+        );
+    }
+}
+
+#[test]
+fn the_none_tier_commits_immediately_without_a_transition() {
+    let (mut core, _) = showing_core_animation(&["a.png", "b.png"], Animation::None);
+    core.handle(Intent::NextRequested);
+    // 无转场效果：加载成功即提交（预加载 + 落盘），画面立刻是新图。
+    assert_eq!(
+        core.handle(Intent::LoadCompleted {
+            shown: Some(img("b.png")),
+            now_ms: 1_000,
+        }),
+        vec![
+            Effect::Preload { path: img("a.png") },
+            Effect::SaveResumeState {
+                current: img("b.png"),
+                seen: vec![img("a.png"), img("b.png")],
+                history: vec![img("a.png"), img("b.png")],
+            },
+        ]
+    );
+    assert_eq!(core.view(), View::Showing(img("b.png")));
+}
+
+#[test]
+fn a_hidden_frame_commits_immediately_without_a_transition() {
+    let (mut core, _) = showing_core_animation(&["a.png", "b.png"], Animation::Curl);
+    assert_eq!(core.handle(Intent::CloseRequested), vec![Effect::HideFrame]);
+    core.handle(Intent::NextRequested);
+    let effects = core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 1_000,
+    });
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::StartTransition { .. })),
+        "hidden frame must not start a transition: {effects:?}"
+    );
+    assert_eq!(core.view(), View::Showing(img("b.png")));
+}
+
+#[test]
+fn the_random_tier_draws_concrete_animations_without_repeating() {
+    // 脚本恒抽下标 0：首抽在全池 5 种里取 Curl；之后池子排除上一次，
+    // bound 变 4，下标 0 依次落到 Blinds、再回到 Curl（非连续重复合法）。
+    let (mut core, bounds) = showing_core_random(&["a.png", "b.png", "c.png", "d.png"], &[0, 0, 0]);
+    let mut kinds = Vec::new();
+    for (shown, now) in [("b.png", 100), ("c.png", 200), ("d.png", 300)] {
+        kinds.push(next_transition(&mut core, shown, now).0);
+        settle_transition(&mut core, now);
+    }
+    assert_eq!(
+        kinds,
+        vec![
+            ConcreteAnimation::Curl,
+            ConcreteAnimation::Blinds,
+            ConcreteAnimation::Curl,
+        ]
+    );
+    assert_eq!(*bounds.borrow(), vec![5, 4, 4]);
+}
+
+#[test]
+fn selecting_an_animation_saves_it_and_applies_from_the_next_transition() {
+    let (mut core, _) = showing_core_animation(&["a.png", "b.png", "c.png"], Animation::Curl);
+    // 转场已按旧档位（卷页）开始后改档：当前条不变，新档位产出 SaveAnimation。
+    core.handle(Intent::NextRequested);
+    assert_eq!(
+        core.handle(Intent::LoadCompleted {
+            shown: Some(img("b.png")),
+            now_ms: 100,
+        }),
+        vec![Effect::StartTransition {
+            from: img("a.png"),
+            to: img("b.png"),
+            direction: Direction::Next,
+            animation: ConcreteAnimation::Curl,
+            duration_ms: 550,
+        }]
+    );
+    assert_eq!(
+        core.handle(Intent::AnimationSelected(Animation::Pixel)),
+        vec![Effect::SaveAnimation(Animation::Pixel)]
+    );
+    assert_eq!(core.animation(), Animation::Pixel);
+    // 同值再选不重写。
+    assert_eq!(
+        core.handle(Intent::AnimationSelected(Animation::Pixel)),
+        vec![]
+    );
+    settle_transition(&mut core, 200);
+    // 下一次转场用新档位。
+    assert_eq!(
+        next_transition(&mut core, "c.png", 300),
+        (ConcreteAnimation::Pixel, 550)
+    );
+}
+
+#[test]
+fn a_rescan_replacement_image_commits_without_a_transition() {
+    let (mut core, _) = showing_core_animation(&["a.png", "b.png", "c.png"], Animation::Ink);
+    core.handle(Intent::RescanRequested);
+    core.handle(Intent::ScanCompleted(vec![img("b.png"), img("c.png")]));
+    // 当前图被删后的替代图是「新首图」：直接提交，不起转场。
+    let effects = core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 500,
+    });
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::StartTransition { .. })),
+        "rescan replacement must not start a transition: {effects:?}"
     );
     assert_eq!(core.view(), View::Showing(img("b.png")));
 }
@@ -1425,11 +1670,11 @@ fn the_slideshow_and_navigation_continue_while_hidden() {
             candidates: vec![img("b.png"), img("c.png")],
         }]
     );
-    core.handle(Intent::LoadCompleted {
+    // 隐藏时不起转场（切换动画专题工单 01）：加载成功直接提交并落盘。
+    let effects = core.handle(Intent::LoadCompleted {
         shown: Some(img("b.png")),
         now_ms: 30_000,
     });
-    let effects = settle_transition(&mut core, 30_000);
     assert!(effects.contains(&Effect::SaveResumeState {
         current: img("b.png"),
         seen: vec![img("a.png"), img("b.png")],

@@ -8,7 +8,7 @@
 //!
 //! 三种镜像模式在本 module 内显式成文，写回口径一致：
 //! - 核心状态镜像：核心是准，Save 系列效果是把核心状态写穿到配置
-//!   （文件夹、间隔、播放模式、续播状态）；
+//!   （文件夹、间隔、播放模式、切换动画、续播状态）；
 //! - 宿主状态镜像：宿主状态为准，写回只记录窗口当前几何与外观模式；
 //! - 注册表反向对齐：系统注册表是准，配置里的 autostart 只是镜像，
 //!   启动时对账，不一致就把镜像改写为实际值（决策仍归 autostart
@@ -22,7 +22,7 @@
 use crate::{
     app_core::{CoreArgs, ResumeData},
     autostart::{AutostartStore, AutostartSync},
-    config::{AppearanceMode, BuiltinFrame, ConfigStore, PlaybackMode, WindowConfig},
+    config::{Animation, AppearanceMode, BuiltinFrame, ConfigStore, PlaybackMode, WindowConfig},
 };
 use std::{
     io,
@@ -90,6 +90,7 @@ impl ConfigSync {
             saved_folder: config.image_folder.as_ref().map(PathBuf::from),
             interval_secs: config.playback.interval_secs,
             mode: config.playback.mode,
+            animation: config.playback.animation,
             resume: resume_data(config),
         };
         let window = config.window.clone();
@@ -130,6 +131,12 @@ impl ConfigSync {
     pub fn save_playback_mode(&mut self, mode: PlaybackMode) {
         let result = self.store.set_playback_mode(mode);
         self.note_write_result("playback_mode", result);
+    }
+
+    /// 切换动画档位写回（切换动画专题工单 01）：核心改档即落盘。
+    pub fn save_animation(&mut self, animation: Animation) {
+        let result = self.store.set_animation(animation);
+        self.note_write_result("animation", result);
     }
 
     /// 续播状态落盘：路径以字符串保存，无法表示为 UTF-8 的当前图

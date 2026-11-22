@@ -1,8 +1,9 @@
 //! 配置契约（父规格第 7 节 / 需求第 6 节）：`%APPDATA%\MoeFrame\config.toml` 的读写与修复。
 //!
 //! 原则：字段级修复——坏字段回退默认并写回，合法手改值与未知键在任何保存中保留；
-//! 整个文件不可解析时恢复为合法默认配置，不崩溃。三个 P1 键（`pause_on_hover`、
-//! `animation`、`show_filename`）只保存与修复，不驱动行为。
+//! 整个文件不可解析时恢复为合法默认配置，不崩溃。两个 P1 键（`pause_on_hover`、
+//! `show_filename`）只保存与修复，不驱动行为；`animation` 已由切换动画专题
+//! 工单 01 转正，驱动核心转场。
 
 use crate::{playlist::HISTORY_LIMIT, window_geom::Insets};
 use std::{fs, io, path::Path};
@@ -61,7 +62,7 @@ height = 320
 mode = \"random\"
 interval_secs = 30
 pause_on_hover = true
-animation = \"slide\"
+animation = \"curl\"
 
 [display]
 show_filename = false
@@ -89,20 +90,30 @@ impl PlaybackMode {
     }
 }
 
-/// P1 切换动画（`animation` 配置键）：只保存，不驱动行为。
+/// 切换动画（`animation` 配置键，切换动画专题工单 01 转正）：7 档，
+/// 默认卷页。核心按档位驱动转场；`Random` 由核心在每次转场开始时抽成
+/// 具体动画，存盘只记档位本身。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Animation {
-    Slide,
-    Fade,
     None,
+    Curl,
+    Blinds,
+    Ink,
+    Card,
+    Pixel,
+    Random,
 }
 
 impl Animation {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
-            Animation::Slide => "slide",
-            Animation::Fade => "fade",
             Animation::None => "none",
+            Animation::Curl => "curl",
+            Animation::Blinds => "blinds",
+            Animation::Ink => "ink",
+            Animation::Card => "card",
+            Animation::Pixel => "pixel",
+            Animation::Random => "random",
         }
     }
 }
@@ -121,7 +132,7 @@ pub struct PlaybackConfig {
     pub interval_secs: i64,
     /// P1：只保存，不驱动行为。
     pub pause_on_hover: bool,
-    /// P1：只保存，不驱动行为。
+    /// 切换动画档位（切换动画专题工单 01）：核心状态镜像，核心为准。
     pub animation: Animation,
 }
 
@@ -256,7 +267,7 @@ impl Default for Config {
                 mode: PlaybackMode::Random,
                 interval_secs: DEFAULT_INTERVAL_SECS,
                 pause_on_hover: true,
-                animation: Animation::Slide,
+                animation: Animation::Curl,
             },
             display: DisplayConfig {
                 show_filename: false,
@@ -415,6 +426,15 @@ impl ConfigStore {
         })
     }
 
+    /// 保存切换动画档位（切换动画专题工单 01）：只改 playback.animation，
+    /// 其余字段原样保留。
+    pub fn set_animation(&mut self, animation: Animation) -> io::Result<()> {
+        self.update(|document, config| {
+            document["playback"]["animation"] = value(animation.as_str());
+            config.playback.animation = animation;
+        })
+    }
+
     /// 保存播放模式（工单 12）：只改 playback.mode，其余字段原样保留。
     pub fn set_playback_mode(&mut self, mode: PlaybackMode) -> io::Result<()> {
         self.update(|document, config| {
@@ -538,14 +558,20 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
         }
     };
     let pause_on_hover = repair_bool(playback_table, "pause_on_hover", true, repaired);
+    // 切换动画迁移（专题工单 01）：none 是新旧共有的值，保留；旧值
+    // slide/fade 从未驱动过真实行为，与未知值一并落默认卷页并写回。
     let animation = match playback_table.get("animation").and_then(Item::as_str) {
-        Some("slide") => Animation::Slide,
-        Some("fade") => Animation::Fade,
         Some("none") => Animation::None,
+        Some("curl") => Animation::Curl,
+        Some("blinds") => Animation::Blinds,
+        Some("ink") => Animation::Ink,
+        Some("card") => Animation::Card,
+        Some("pixel") => Animation::Pixel,
+        Some("random") => Animation::Random,
         _ => {
-            playback_table["animation"] = value(Animation::Slide.as_str());
+            playback_table["animation"] = value(Animation::Curl.as_str());
             *repaired = true;
-            Animation::Slide
+            Animation::Curl
         }
     };
 

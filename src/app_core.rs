@@ -9,13 +9,15 @@
 //! 跨启动恢复（工单 13）：启动时宿主把配置里保存的当前图、本轮进度与历史经
 //! `ResumeData` 送入，首次扫描后按模式与当前图是否仍在图库决定首图；每次成功
 //! 显示都经 `SaveResumeState` 效果请宿主落盘（预加载与失败不落盘）。
-//! 导航加载成功后核心发送完成事件供宿主提交显示；宿主立即回送完成，所有滑动动画关闭，转场等待态只维持到加载成功。转场期间的新导航意图仍只保留最后一个。
+//! 导航加载成功后核心发出 `StartTransition`（携带已抽定的具体动画与时长）
+//! 供宿主渲染转场，宿主回送完成时才提交显示（切换动画专题工单 01；本票
+//! 宿主仍立即回送，02/03 起按墙钟延迟回送）。转场期间的新导航意图仍只保留最后一个。
 //! 指针手势（工单 15）：按下/移动/松开/右键事件经手势机判定拖动/取消；单击不切图，双击仍打开原图，右键取消未完成动作并在拖动中产出位置回滚效果。
 
 use crate::{
-    config::PlaybackMode,
+    config::{Animation, PlaybackMode},
     gesture::{GestureMachine, GestureOutcome, GestureThresholds},
-    playlist::{Direction, Landing, Playlist, RescanPlan, SystemRandom},
+    playlist::{Direction, Landing, Playlist, RandomSource, RescanPlan, SystemRandom},
 };
 use std::path::PathBuf;
 
@@ -26,7 +28,57 @@ pub struct CoreArgs {
     pub saved_folder: Option<PathBuf>,
     pub interval_secs: i64,
     pub mode: PlaybackMode,
+    /// 切换动画档位（切换动画专题工单 01）：核心为准，设置窗改档经
+    /// `AnimationSelected` 意图进入、经 `SaveAnimation` 效果落盘。
+    pub animation: Animation,
     pub resume: Option<ResumeData>,
+}
+
+/// 具体动画（切换动画专题工单 01）：转场开始时已定死的动画种类。
+/// 档位 `Animation` 里的无/随机永远不会出现在这里——无是不起转场，
+/// 随机在起转场时经核心的随机源接缝抽成具体一种。时长在核心定死，
+/// 宿主只按时长渲染，不自选。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConcreteAnimation {
+    Curl,
+    Blinds,
+    Ink,
+    Card,
+    Pixel,
+}
+
+impl ConcreteAnimation {
+    /// 随机档的全池（等概率抽取的候选全集）。
+    const ALL: [ConcreteAnimation; 5] = [
+        ConcreteAnimation::Curl,
+        ConcreteAnimation::Blinds,
+        ConcreteAnimation::Ink,
+        ConcreteAnimation::Card,
+        ConcreteAnimation::Pixel,
+    ];
+
+    /// 每种动画定死的时长（spec 第 2 节冻结值）。
+    pub fn duration_ms(self) -> u64 {
+        match self {
+            ConcreteAnimation::Curl => 550,
+            ConcreteAnimation::Blinds => 650,
+            ConcreteAnimation::Ink => 750,
+            ConcreteAnimation::Card => 600,
+            ConcreteAnimation::Pixel => 550,
+        }
+    }
+
+    /// 固定档位到具体动画的映射；无/随机返回 None（随机另行抽取）。
+    fn fixed(tier: Animation) -> Option<Self> {
+        match tier {
+            Animation::Curl => Some(ConcreteAnimation::Curl),
+            Animation::Blinds => Some(ConcreteAnimation::Blinds),
+            Animation::Ink => Some(ConcreteAnimation::Ink),
+            Animation::Card => Some(ConcreteAnimation::Card),
+            Animation::Pixel => Some(ConcreteAnimation::Pixel),
+            Animation::None | Animation::Random => None,
+        }
+    }
 }
 
 /// 跨启动保存的续播状态（工单 13）：当前图、本轮进度与历史，只存路径。
@@ -54,7 +106,7 @@ pub enum Intent {
     ScanCompleted(Vec<PathBuf>),
     /// 宿主执行完加载的效果回送：成功显示的路径，或全部候选失败。
     LoadCompleted { shown: Option<PathBuf>, now_ms: u64 },
-    /// 宿主渲染完一段滑动转场的效果回送：核心此刻才提交这次显示（工单 14）。
+    /// 宿主渲染完一段转场的效果回送：核心此刻才提交这次显示（工单 14）。
     TransitionCompleted { now_ms: u64 },
     /// 左键在内容区按下（工单 15）：位置为窗口内逻辑坐标，附按下时的相框宽度。
     PointerDown {
@@ -78,6 +130,8 @@ pub enum Intent {
     IntervalSelected { secs: i64, now_ms: u64 },
     /// 在菜单里切换播放模式（顺序/随机二选一）。
     PlaybackModeSelected(PlaybackMode),
+    /// 在设置窗里选定新的切换动画档位（切换动画专题工单 01）。
+    AnimationSelected(Animation),
     /// 宿主的周期时钟推进，驱动自动轮播判定。
     Tick { now_ms: u64 },
     /// 菜单「退出」。
@@ -116,15 +170,20 @@ pub enum Effect {
     },
     /// 右键在拖动中按下：宿主把相框位置恢复到该次按下时的位置（工单 15）。
     RollbackFrameDrag,
-    /// 目标图已就绪：宿主开始渲染从当前图到目标图的滑动转场（工单 14）。
-    /// 方向来自导航方向：Next 时目标从右向左进入，Prev 相反。
+    /// 目标图已就绪：宿主开始渲染从当前图到目标图的转场（工单 14 /
+    /// 切换动画专题工单 01）。动画种类已由核心定死（随机档已抽成具体
+    /// 动画），时长为该动画的冻结值；方向来自导航方向（只有卷页/抽卡
+    /// 分方向，其余动画由宿主忽略方向，spec 第 4 节）。
     StartTransition {
         from: PathBuf,
         to: PathBuf,
         direction: Direction,
+        animation: ConcreteAnimation,
+        duration_ms: u64,
     },
     SaveInterval(i64),
     SavePlaybackMode(PlaybackMode),
+    SaveAnimation(Animation),
     /// 一次成功显示已提交：把当前图、本轮进度与历史落盘（工单 13）。
     SaveResumeState {
         current: PathBuf,
@@ -165,12 +224,16 @@ enum Pending {
     },
 }
 
-/// 一段已开始、等待宿主渲染完成的滑动转场（工单 14）：目标图已就绪但尚未
-/// 提交显示，记账、落盘与重计都等 `TransitionCompleted`。
+/// 一段已开始、等待宿主渲染完成的转场（工单 14）：目标图已就绪但尚未
+/// 提交显示，记账、落盘与重计都等 `TransitionCompleted`。动画种类在
+/// 开始时已定死，转场期间改档不影响本条（切换动画专题工单 01）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Transition {
     target: PathBuf,
     landing: Landing,
+    /// 本条转场的动画种类：完成时记为「上一次实际播放」，供随机档
+    /// 排除连续重复；被重扫取消的转场不记（没播完不算播放过）。
+    animation: ConcreteAnimation,
 }
 
 pub struct FrameCore {
@@ -179,6 +242,14 @@ pub struct FrameCore {
     /// 默认播放中（启动显示首图后即按间隔轮播）。
     playing: bool,
     interval_secs: i64,
+    /// 当前切换动画档位：只在起转场时读取，故转场中改档自下一次切换生效。
+    animation: Animation,
+    /// 动画随机抽法的随机源接缝：生产用系统随机，测试经
+    /// `with_animation_random` 注入确定性实现（仿播放序列的 RandomSource）。
+    animation_random: Box<dyn RandomSource>,
+    /// 上一次实际播放（转场完成）的动画：随机档据此禁止连续重复。
+    /// 只存内存、不落盘（spec 第 3 节）。
+    last_animation: Option<ConcreteAnimation>,
     /// 下一次自动切换的触发时刻；暂停或无图时为 None。
     deadline_ms: Option<u64>,
     pending: Option<Pending>,
@@ -208,11 +279,23 @@ enum ScanKind {
 
 impl FrameCore {
     pub fn new(args: CoreArgs, gesture_thresholds: GestureThresholds) -> Self {
+        Self::with_animation_random(args, gesture_thresholds, Box::new(SystemRandom::new()))
+    }
+
+    /// 带动画随机源的构造（测试接缝）：生产路径走 `new` 的系统随机。
+    pub fn with_animation_random(
+        args: CoreArgs,
+        gesture_thresholds: GestureThresholds,
+        animation_random: Box<dyn RandomSource>,
+    ) -> Self {
         Self {
             folder: args.saved_folder,
             playlist: Playlist::new(Vec::new(), args.mode, Box::new(SystemRandom::new())),
             playing: true,
             interval_secs: args.interval_secs,
+            animation: args.animation,
+            animation_random,
+            last_animation: None,
             deadline_ms: None,
             pending: None,
             transition: None,
@@ -251,6 +334,11 @@ impl FrameCore {
 
     pub fn playback_mode(&self) -> PlaybackMode {
         self.playlist.mode()
+    }
+
+    /// 当前切换动画档位（设置窗渲染当前值用，工单 04 接入）。
+    pub fn animation(&self) -> Animation {
+        self.animation
     }
 
     /// 下一次需要唤醒的时刻（自动切换或等待单击结算），供宿主安排重绘唤醒。
@@ -331,6 +419,26 @@ impl FrameCore {
             history: snapshot.history,
         });
         effects
+    }
+
+    /// 本次切换要播的具体动画（切换动画专题工单 01）：相框隐藏或档位
+    /// 为无时返回 None（调用方直接提交）；固定档位即其本身；随机档在
+    /// 全池里等概率抽取，但排除上一次实际播放的动画（禁连续重复）。
+    fn draw_animation(&mut self) -> Option<ConcreteAnimation> {
+        if !self.frame_visible {
+            return None;
+        }
+        match self.animation {
+            Animation::None => None,
+            Animation::Random => {
+                let pool: Vec<ConcreteAnimation> = ConcreteAnimation::ALL
+                    .into_iter()
+                    .filter(|kind| Some(*kind) != self.last_animation)
+                    .collect();
+                Some(pool[self.animation_random.next_below(pool.len())])
+            }
+            tier => ConcreteAnimation::fixed(tier),
+        }
     }
 
     /// 加载收尾后执行排队中的导航（若有）。
@@ -444,7 +552,7 @@ impl FrameCore {
                 let recount = std::mem::take(&mut self.recount_on_settle);
                 let mut effects = match shown {
                     Some(path) => {
-                        // 导航加载成功且已有当前图：先起滑动转场，完成时才提交显示
+                        // 导航加载成功且已有当前图：先起转场，完成时才提交显示
                         //（工单 14）；首图加载与无当前图的防御路径直接提交。
                         let start = match pending {
                             Pending::Navigate {
@@ -458,15 +566,24 @@ impl FrameCore {
                         };
                         match start {
                             Some((from, landing, direction)) => {
-                                self.transition = Some(Transition {
-                                    target: path.clone(),
-                                    landing,
-                                });
-                                vec![Effect::StartTransition {
-                                    from,
-                                    to: path,
-                                    direction,
-                                }]
+                                match self.draw_animation() {
+                                    Some(kind) => {
+                                        self.transition = Some(Transition {
+                                            target: path.clone(),
+                                            landing,
+                                            animation: kind,
+                                        });
+                                        vec![Effect::StartTransition {
+                                            from,
+                                            to: path,
+                                            direction,
+                                            animation: kind,
+                                            duration_ms: kind.duration_ms(),
+                                        }]
+                                    }
+                                    // 无动画或相框隐藏：不起转场，直接提交。
+                                    None => self.commit_display(&path, landing, now_ms),
+                                }
                             }
                             None => {
                                 // 首图加载的落位由播放序列按胜出者判定
@@ -541,6 +658,8 @@ impl FrameCore {
                 let Some(transition) = self.transition.take() else {
                     return Vec::new();
                 };
+                // 播完才记「上一次实际播放」，随机档据此排除连续重复。
+                self.last_animation = Some(transition.animation);
                 let mut effects =
                     self.commit_display(&transition.target, transition.landing, now_ms);
                 effects.extend(self.drain_queued_nav());
@@ -581,6 +700,15 @@ impl FrameCore {
                 // 切模式不额外重置计时：截止时刻原样保留（父规格 §3/工单 12）。
                 self.playlist.set_mode(mode);
                 vec![Effect::SavePlaybackMode(mode)]
+            }
+            Intent::AnimationSelected(animation) => {
+                if self.animation == animation {
+                    return Vec::new();
+                }
+                // 档位只在起转场时读取：在飞转场仍按旧档位播完，新档位
+                // 自下一次切换生效（spec 第 1 节），这里只改档位并落盘。
+                self.animation = animation;
+                vec![Effect::SaveAnimation(animation)]
             }
             Intent::Tick { now_ms } => {
                 let mut effects = Vec::new();

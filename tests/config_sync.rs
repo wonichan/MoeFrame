@@ -7,7 +7,7 @@ mod common;
 use common::temp_root;
 use moe_frame::{
     autostart::AutostartStore,
-    config::{AppearanceMode, BuiltinFrame, ConfigStore, FramePreset, PlaybackMode},
+    config::{Animation, AppearanceMode, BuiltinFrame, ConfigStore, FramePreset, PlaybackMode},
     config_sync::ConfigSync,
 };
 use std::{
@@ -55,6 +55,7 @@ fn seed_config(config_path: &Path) {
     store
         .set_playback_mode(PlaybackMode::Sequential)
         .expect("seed");
+    store.set_animation(Animation::Ink).expect("seed");
     store
         .set_window_geometry(Some(10), Some(20), 640, 480)
         .expect("seed");
@@ -85,6 +86,7 @@ fn startup_translates_config_into_a_package() {
     assert_eq!(package.core.saved_folder, Some(PathBuf::from(r"D:\图库")));
     assert_eq!(package.core.interval_secs, 45);
     assert_eq!(package.core.mode, PlaybackMode::Sequential);
+    assert_eq!(package.core.animation, Animation::Ink);
     let resume = package.core.resume.expect("resume assembled");
     assert_eq!(resume.current, Some(PathBuf::from(r"D:\图库\b.png")));
     assert_eq!(resume.seen.len(), 2);
@@ -186,6 +188,7 @@ fn mirror_writes_land_in_the_config_file() {
     sync.save_folder(Path::new(r"E:\新图库"));
     sync.save_interval(99);
     sync.save_playback_mode(PlaybackMode::Sequential);
+    sync.save_animation(Animation::Pixel);
     sync.save_window_geometry((Some(1), Some(2), 800, 600));
     sync.save_appearance_mode(AppearanceMode::Minimal);
     sync.save_autostart_mirror(true);
@@ -198,6 +201,7 @@ fn mirror_writes_land_in_the_config_file() {
     assert_eq!(config.image_folder.as_deref(), Some(r"E:\新图库"));
     assert_eq!(config.playback.interval_secs, 99);
     assert_eq!(config.playback.mode, PlaybackMode::Sequential);
+    assert_eq!(config.playback.animation, Animation::Pixel);
     assert_eq!(
         (
             config.window.x,

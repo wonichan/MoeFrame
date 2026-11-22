@@ -128,6 +128,9 @@ impl FrameApp {
                 Effect::SavePlaybackMode(mode) => {
                     self.sync.save_playback_mode(mode);
                 }
+                Effect::SaveAnimation(animation) => {
+                    self.sync.save_animation(animation);
+                }
                 Effect::ClearResumeState => {
                     // 图库已空：当前图、本轮进度与历史一并清掉（工单 16）。
                     self.sync.clear_resume_state();
