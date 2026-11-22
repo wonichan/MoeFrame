@@ -12,9 +12,10 @@ pub(crate) const INTERVAL_PRESETS: [(&str, i64); 6] = [
     ("30 分钟", 1800),
 ];
 /// 设置窗尺寸（工单 18；V2 相框外观工单 01 加「外观」组后高 700→750，
-/// 工单 02 加内置画框参数块后 750→830）：
+/// 工单 02 加内置画框参数块后 750→830，切换动画专题工单 04 在播放组
+/// 加「切换动画」两行单选后 830→910）：
 /// 建窗与屏幕居中计算共用。
-pub(crate) const SETTINGS_SIZE: [f32; 2] = [420.0, 830.0];
+pub(crate) const SETTINGS_SIZE: [f32; 2] = [420.0, 910.0];
 /// 设置窗的视口标识（工单 18）：全程只有一块。
 pub(crate) fn settings_viewport_id() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("moe-frame-settings")
@@ -54,6 +55,7 @@ impl FrameApp {
             folder_text: self.effective_folder_text(),
             interval_secs: self.core.interval_secs(),
             mode: self.core.playback_mode(),
+            animation: self.core.animation(),
             appearance: self.appearance,
             frame: self.frame,
         }
@@ -84,6 +86,13 @@ impl FrameApp {
                 }
                 SessionAction::ApplyMode(mode) => {
                     let effects = self.core.handle(Intent::PlaybackModeSelected(mode));
+                    self.dispatch(ctx, effects);
+                }
+                SessionAction::ApplyAnimation(animation) => {
+                    // 切换动画档位归核心持有（工单 01 路线 A）：核心
+                    // 改档并回 SaveAnimation 效果落盘；档位只在起转场
+                    // 时读取，动画中改档自下一次切换生效。
+                    let effects = self.core.handle(Intent::AnimationSelected(animation));
                     self.dispatch(ctx, effects);
                 }
                 SessionAction::ApplyAppearance(mode) => {
@@ -184,6 +193,7 @@ impl FrameApp {
             }
         }
         let mode_now = self.core.playback_mode();
+        let animation_now = self.core.animation();
         let appearance_now = self.appearance;
         let frame_now = self.frame;
         // 相框图状态（工单 03）：路径与分析结论在渲染前取快照，
@@ -263,6 +273,54 @@ impl FrameApp {
                         picks_ref.mode = Some(PlaybackMode::Random);
                     }
                 });
+                // —— 播放组：切换动画（切换动画专题工单 04）——
+                // 与播放模式、切换间隔同组排布：模式 → 动画 → 间隔，
+                // 间隔块由外观组之后挪到此处，播放三项自此相邻。
+                ui.label("切换动画");
+                ui.horizontal(|ui| {
+                    for (tier, label) in [
+                        (Animation::None, "无"),
+                        (Animation::Curl, "卷页"),
+                        (Animation::Blinds, "百叶帘"),
+                        (Animation::Ink, "墨晕"),
+                    ] {
+                        if ui.radio(animation_now == tier, label).clicked() {
+                            picks_ref.animation = Some(tier);
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    for (tier, label) in [
+                        (Animation::Card, "抽卡"),
+                        (Animation::Pixel, "像素故障"),
+                        (Animation::Random, "随机"),
+                    ] {
+                        if ui.radio(animation_now == tier, label).clicked() {
+                            picks_ref.animation = Some(tier);
+                        }
+                    }
+                });
+                ui.label("切换间隔");
+                for (label, secs) in INTERVAL_PRESETS {
+                    if ui.radio(interval_now == secs, label).clicked() {
+                        picks_ref.interval = Some(secs);
+                    }
+                }
+                ui.horizontal(|ui| {
+                    ui.label("自定义");
+                    let seconds_resp = ui.add(
+                        egui::TextEdit::singleline(session.seconds_text_mut()).desired_width(110.0),
+                    );
+                    ui.label("秒");
+                    let (entered, blurred) =
+                        track_draft_field(&seconds_resp, session.seconds_focus_mut(), enter);
+                    if entered {
+                        session.note_enter(Field::Seconds);
+                    }
+                    if blurred {
+                        session.note_blur(Field::Seconds);
+                    }
+                });
                 ui.separator();
                 ui.label("外观");
                 ui.horizontal(|ui| {
@@ -334,28 +392,6 @@ impl FrameApp {
                     }
                 }
                 // ---- 自定义相框图区块结束 ----
-                ui.separator();
-                ui.label("切换间隔");
-                for (label, secs) in INTERVAL_PRESETS {
-                    if ui.radio(interval_now == secs, label).clicked() {
-                        picks_ref.interval = Some(secs);
-                    }
-                }
-                ui.horizontal(|ui| {
-                    ui.label("自定义");
-                    let seconds_resp = ui.add(
-                        egui::TextEdit::singleline(session.seconds_text_mut()).desired_width(110.0),
-                    );
-                    ui.label("秒");
-                    let (entered, blurred) =
-                        track_draft_field(&seconds_resp, session.seconds_focus_mut(), enter);
-                    if entered {
-                        session.note_enter(Field::Seconds);
-                    }
-                    if blurred {
-                        session.note_blur(Field::Seconds);
-                    }
-                });
                 if current_showing.is_some() {
                     ui.separator();
                     ui.label("当前图");

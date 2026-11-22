@@ -53,7 +53,7 @@ use eframe::egui;
 use moe_frame::{
     app_core::{ConcreteAnimation, Effect, FrameCore, Intent, View},
     autostart::{autostart_command, AutostartStore, AutostartSync, RUN_KEY_PATH, RUN_VALUE_NAME},
-    config::{AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode, MAX_LAYER_WIDTH},
+    config::{Animation, AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode, MAX_LAYER_WIDTH},
     config_sync::ConfigSync,
     decode_validation::DisplayMode,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},

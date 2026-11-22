@@ -11,7 +11,7 @@
 //! 结算函数已吸收为本模块的内部实现，不再是公开面。
 
 use crate::config::{
-    parse_interval_draft, AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode,
+    parse_interval_draft, Animation, AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode,
 };
 
 /// 带草稿的输入字段。
@@ -28,6 +28,9 @@ pub struct EffectiveValues {
     pub folder_text: String,
     pub interval_secs: i64,
     pub mode: PlaybackMode,
+    /// 切换动画档位（切换动画专题工单 04）：点选同值守卫以它为准，
+    /// 生效值归核心持有，宿主快照自 `core.animation()` 取。
+    pub animation: Animation,
     pub appearance: AppearanceMode,
     /// 内置画框参数（工单 02）：预设与双滑杆的同值守卫以它为准。
     pub frame: BuiltinFrame,
@@ -46,6 +49,7 @@ pub enum OpenDecision {
 #[derive(Clone, Debug, Default)]
 pub struct Picks {
     pub mode: Option<PlaybackMode>,
+    pub animation: Option<Animation>,
     pub appearance: Option<AppearanceMode>,
     pub interval: Option<i64>,
     pub restore_default: bool,
@@ -64,7 +68,7 @@ pub struct Picks {
 }
 
 /// 本帧要由宿主执行的动作，按返回顺序执行。顺序即定案的应用顺序：
-/// 回车结算 → 模式 → 外观 → 内置画框参数（预设 → 框宽 → 卡纸宽）→
+/// 回车结算 → 模式 → 切换动画 → 外观 → 内置画框参数（预设 → 框宽 → 卡纸宽）→
 /// 间隔预设 → 恢复默认 → 自启 → 当前图三项 →
 /// 关闭/重扫/选文件夹/选相框图（后四者否决待结算）→ 帧尾待结算结算。
 #[derive(Clone, Debug, PartialEq)]
@@ -72,6 +76,7 @@ pub enum SessionAction {
     CommitFolder(String),
     CommitInterval(i64),
     ApplyMode(PlaybackMode),
+    ApplyAnimation(Animation),
     ApplyAppearance(AppearanceMode),
     ApplyIntervalPreset(i64),
     RestoreDefaultGeometry,
@@ -113,6 +118,8 @@ pub struct SettingsSession {
     viewport_focused: bool,
     /// 帧首快照的播放模式：模式点选的同值守卫用（点选应用后随之推进）。
     mode_now: Option<PlaybackMode>,
+    /// 帧首快照的切换动画档位：动画点选的同值守卫用（与 mode_now 同规）。
+    animation_now: Option<Animation>,
     /// 帧首快照的外观模式：外观点选的同值守卫用（与 mode_now 同规）。
     appearance_now: Option<AppearanceMode>,
     /// 帧首快照的内置画框参数：预设与滑杆点选的同值守卫用（同规）。
@@ -150,6 +157,7 @@ impl SettingsSession {
         self.seconds_focused = false;
         self.viewport_focused = false;
         self.mode_now = Some(effective.mode);
+        self.animation_now = Some(effective.animation);
         self.appearance_now = Some(effective.appearance);
         self.frame_now = Some(effective.frame);
         OpenDecision::Opened
@@ -160,6 +168,7 @@ impl SettingsSession {
     /// 其待结算一并取消。
     pub fn begin_frame(&mut self, effective: &EffectiveValues) {
         self.mode_now = Some(effective.mode);
+        self.animation_now = Some(effective.animation);
         self.appearance_now = Some(effective.appearance);
         self.frame_now = Some(effective.frame);
         if self.path.base != effective.folder_text {
@@ -255,6 +264,14 @@ impl SettingsSession {
             if self.mode_now != Some(mode) {
                 self.mode_now = Some(mode);
                 actions.push(SessionAction::ApplyMode(mode));
+            }
+        }
+        if let Some(animation) = picks.animation {
+            // 切换动画点选与播放模式同规：同值守卫，点选后内部推进。
+            // 档位只在核心起转场时读取，动画中改档天然下一次生效。
+            if self.animation_now != Some(animation) {
+                self.animation_now = Some(animation);
+                actions.push(SessionAction::ApplyAnimation(animation));
             }
         }
         if let Some(appearance) = picks.appearance {
