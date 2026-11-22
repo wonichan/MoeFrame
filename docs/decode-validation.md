@@ -1,6 +1,6 @@
 # 独立图片解码与内存验证
 
-> 工单 09 已结（2026-11-20）：稳定工作集 <100 MB 达标，字体路线取默认系统回退。本验证器当年使用的实验 Limits（12000 px / 96 MiB）已由用户确认为产品 Limits，峰值预算 ≤200 MB 为 22/23 票的发布验收门——见 `.agents/notes/implemented/process/2026-11-20-product-limits-peak-budget.md`。一小时轮播与峰值实测仍是正式加载图片前的 V1 项目级门，未在本工具内完成。
+> 工单 09 已结（2026-11-20）：稳定工作集 <100 MB 达标，字体路线取默认系统回退。本验证器当年使用的实验 Limits（12000 px / 96 MiB）已由用户确认为产品 Limits，峰值预算 ≤200 MB 为 22/23 票的发布验收门（2026-11-22 收紧为 **≤192 MB**，见 `.agents/notes/implemented/process/2026-11-22-peak-budget-192mb.md`）——见 `.agents/notes/implemented/process/2026-11-20-product-limits-peak-budget.md`。一小时轮播与峰值实测仍是正式加载图片前的 V1 项目级门，未在本工具内完成。
 
 对应[工单 09](../.scratch/v1-exe/issues/09-decode-memory-validation.md)。`decode-validation` 与窗口验证器独立，不是正式相框，不扫描目录、不落盘产品状态，也不实现托盘生命周期。这里的 Close 结束验证程序，不改变正式产品“关闭＝隐藏”的语义。
 

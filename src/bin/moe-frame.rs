@@ -283,6 +283,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 menu_ctx.request_repaint();
             }));
             let mut app = FrameApp {
+                window_level: egui::WindowLevel::Normal,
                 core: FrameCore::new(
                     core_args,
                     system_gesture_thresholds(cc.egui_ctx.pixels_per_point()),

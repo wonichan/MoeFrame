@@ -4,7 +4,7 @@
 
 **Blocked by:** [08: 无边框窗口最小验证](08-window-validation.md)、[09: 图片解码与内存最小验证](09-decode-memory-validation.md)。
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -23,6 +23,7 @@
 ## Comments
 
 - 2026-11-20（用户确认，验收第一项满足）：产品 Limits 定为最大宽/高 12000 px、解码输出上限 96 MiB（100663296 字节），即工单 09 同二进制实测所用输入转为产品值；峰值预算为标准测试集下生命周期峰值 ≤200 MB，作为工单 22/23 的发布验收预算门，非运行时硬杀线。备选的 192 MiB / 320 MB 方案未采用。详见 `.agents/notes/implemented/process/2026-11-20-product-limits-peak-budget.md`。两项前置票 08、09 均已 resolved，本票开工。
+- 2026-11-22：上条记录的峰值预算 ≤200 MB 已被取代——完整程序实测峰值 130.82 MB，用户改确认为 **≤192 MB**（稳态 80 MB + max_alloc 96 MiB + 8% 抖动）。产品 Limits 未变。详见 `.agents/notes/implemented/process/2026-11-22-peak-budget-192mb.md`。
 
 ## Context
 
@@ -33,3 +34,4 @@
 - 2026-11-20（实现完成，转 needs-info 等实机检查）：正式相框 `MoeFrame` 落地——行为核心 `app_core`（意图/效果接缝）、`config`（toml_edit 字段级修复、P1 三键只存不驱动）、`library`（递归只枚举路径、完整路径自然序）、`loading`（已确认 Limits、解码输出侧拒绝、跳过写 `moe_frame.log`）、单工作线程宿主（序号防旧图回闪、绘制等比适应窗口矩形）。全量 67 项测试通过（新增 26），Windows 目标 check/clippy/fmt 通过。双轴审查（基线 `7f12ea5`）发现已处理或记录驳回理由，详见 `.agents/notes/implemented/feature/2026-11-20-first-image-slice.md`。遗留：`fit`/`fill` 配置值与词汇表 Avoid 的冲突（需求文档 §6 合同，待专门决定）、加载管线与验证器双份实现、窗口几何写回（工单 20）。本票只差最后一条的真实窗口显示与操作检查，需在 Windows 实机完成后凭记录转 resolved。
 - 2026-11-22 对齐（提交 `7861e5f`，决定见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`）：验收标准中「适应模式完整显示、留白纯黑」的绘制口径已被取代——现行行为是相框宽度随源图比例、整图完整显示且无留白；本票其余标准（首启选文件夹、出第一张、配置字段级修复）不变。实机清单工单 10 节照旧执行，绘制口径按新增的「2026-11-22 新行为复测」节确认。
 - 2026-11-22 对齐（菜单与设置窗再分工，用户当日决定）：「选择文件夹…」已从相框右键菜单移入设置窗；空状态提示文字改为「右键打开设置，选择图库文件夹」。本票的首次启动自动弹文件夹选择器不经菜单、行为不变；「右键菜单能打开」一项仍成立（菜单现为五项）。详见实施笔记 .agents/notes/implemented/feature/2026-11-22-menu-settings-split.md。
+- 2026-11-22 关闭：用户本人实机验收全部通过（回执 `m01862`；13 条人工待办见 [`acceptance-23.md`](../acceptance-23.md)）。本票首图与「相框宽度随源图比例」按票 23 端到端实机跑通；执行人未单独复述该绘制口径，属顺带覆盖，记录里不宣称单独复测。

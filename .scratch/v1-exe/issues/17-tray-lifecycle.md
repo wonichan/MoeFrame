@@ -4,7 +4,7 @@
 
 **Blocked by:** [11: 顺序浏览与定时轮播](11-sequential-slideshow.md)。
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -29,3 +29,4 @@
 - 结构决定：关闭/退出分离落在核心意图层（CloseRequested 只隐藏、ExitRequested 才结束），托盘只是又一个意图输入源，与相框菜单共用行为；隐藏期间宿主以 250ms 心跳保活托盘事件轮询，解决暂停+隐藏时无唤醒的睡死风险。
 - 双轴审查（基线 61e5512）：无硬违规、无范围蔓延。Standards 判断项处置：tray-icon 改 Windows 目标门控、托盘文案改用词汇表「关闭相框」、图标改内置 PNG 合 §8.3 原文、托盘初始状态改从核心现读。Spec 唯一真实风险（暂停+隐藏无唤醒）已以心跳关闭并列入实机必查项。
 - 2026-11-22 对齐（托盘-only 化，用户当日 grill 定案）：托盘左键与菜单「显示/关闭相框」由纯切换改为按焦点三分支召回（隐藏→显示并聚焦；显示无焦点→只召回聚焦；显示有焦点→隐藏），核心 Intent::ToggleVisibilityRequested 携带宿主采样的视口焦点。**父规格用户故事 53「左键切换相框显示与隐藏」的表述以此为准（正文不改写）。** 另：相框与设置窗都不再出现任务栏图标（with_taskbar(false) 定死）。实机清单工单 17 一节已改三分支口径并新增托盘-only 复测节。详见 .agents/notes/implemented/feature/2026-11-22-tray-only.md 与 .scratch/tray-only/issues/01-tray-only.md。
+- 2026-11-22 关闭：用户本人实机验收全部通过（回执 `m01862`；13 条人工待办见 [`acceptance-23.md`](../acceptance-23.md)）。托盘左键、右键菜单、唤回、退出由人工待办第 5、6 条覆盖。首轮「关闭相框」不生效，已修复 `a30bf4f` 并复测通过。

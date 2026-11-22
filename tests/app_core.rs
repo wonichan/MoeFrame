@@ -1384,6 +1384,35 @@ fn toggling_visibility_follows_the_three_branch_recall_contract() {
     );
     assert!(!core.frame_visible());
 }
+#[test]
+fn the_tray_menu_item_sets_the_visibility_named_by_its_label() {
+    let (mut core, _) = showing_core(&["a.png", "b.png"], 30);
+    // 「关闭相框」：菜单弹出时相框必然失焦，但这条意图不看焦点。
+    assert_eq!(
+        core.handle(Intent::SetFrameVisibleRequested { visible: false }),
+        vec![Effect::HideFrame]
+    );
+    assert!(!core.frame_visible());
+    // 「显示相框」：隐藏时给终态可见就显示并聚焦。
+    assert_eq!(
+        core.handle(Intent::SetFrameVisibleRequested { visible: true }),
+        vec![Effect::ShowFrame]
+    );
+    assert!(core.frame_visible());
+    // 已可见再要"显示"只唤到最前；已隐藏再要"关闭"无动作。
+    assert_eq!(
+        core.handle(Intent::SetFrameVisibleRequested { visible: true }),
+        vec![Effect::RaiseFrame]
+    );
+    assert_eq!(
+        core.handle(Intent::SetFrameVisibleRequested { visible: false }),
+        vec![Effect::HideFrame]
+    );
+    assert_eq!(
+        core.handle(Intent::SetFrameVisibleRequested { visible: false }),
+        vec![]
+    );
+}
 
 #[test]
 fn the_slideshow_and_navigation_continue_while_hidden() {

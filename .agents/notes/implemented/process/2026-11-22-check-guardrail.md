@@ -38,3 +38,13 @@ Status: implemented
 - `cargo build --release --bin MoeFrame --locked` 通过，产出 `target/release/MoeFrame.exe`。
 - `rustup component list --installed` 含 `clippy` 与 `rust-analyzer`；`lsp_diagnostics` 对 `src/lib.rs` 返回 0 诊断。
 - `cargo` 调用不再出现 `拒绝访问 (os error 5)`（设置前后对照：同一命令设置前 15 次出现，设置后 0 次）。
+## 后续调整：纯文档推送不触发 ci
+
+2026-11-22 用户要求「纯文档的改动就不要跑 github action」。`.github/workflows/check.yml` 的
+`push` 与 `pull_request` 都加了 `paths-ignore`：`**/*.md`、`docs/**`、`.scratch/**`、
+`.agents/**`。同时改了源码/测试/Cargo/脚本的提交照旧跑。
+
+保留的边界：`.github/**` 与 `scripts/**` 不在忽略列表里，所以改 workflow 自身或检查脚本
+一定会触发一次运行——这正好能在推送时验证 workflow 语法。代价是纯文档提交的 CI 结论是
+"被跳过"而不是"通过"，若将来给 `main` 加必需状态检查，文档提交会卡在 pending，需要
+改成条件任务（job 内 `if:`）而不是 `paths-ignore`。

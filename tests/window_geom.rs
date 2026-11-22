@@ -381,3 +381,44 @@ fn restore_default_sizes_by_outer_height_with_insets() {
         ]
     );
 }
+
+// ---------- 落盘时机：移动后不必等下一次轮播 ----------
+
+fn saves(commands: &[GeomCommand]) -> Vec<GeometryRecord> {
+    commands
+        .iter()
+        .filter_map(|c| match c {
+            GeomCommand::SaveGeometry(record) => Some(*record),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn pending_geometry_saves_when_the_settle_window_ends() {
+    let mut m = machine(SAVED, None, true);
+    let commands = m.observe(&obs([300.0, 180.0], [480.0, 320.0], 1.0));
+    assert!(saves(&commands).is_empty(), "刚移动不该立刻落盘");
+    // 宿主据此安排一帧，不必睡到下一次轮播。
+    assert_eq!(m.settle_deadline_secs(), Some(1.6));
+    let commands = m.observe(&obs([300.0, 180.0], [480.0, 320.0], 1.61));
+    assert_eq!(saves(&commands), vec![(Some(300), Some(180), 480, 320)]);
+    assert_eq!(m.settle_deadline_secs(), None);
+}
+
+#[test]
+fn hiding_flushes_the_pending_geometry() {
+    let mut m = machine(SAVED, None, true);
+    assert!(saves(&m.observe(&obs([300.0, 180.0], [480.0, 320.0], 1.0))).is_empty());
+    // 隐藏帧不再更新观测量：等不到"停稳 0.6 秒"也必须落盘，
+    // 否则"移动完随手关到托盘"就丢位置。
+    let mut hidden = obs([300.0, 180.0], [480.0, 320.0], 1.05);
+    hidden.frame_visible = false;
+    assert_eq!(
+        saves(&m.observe(&hidden)),
+        vec![(Some(300), Some(180), 480, 320)]
+    );
+    assert_eq!(m.settle_deadline_secs(), None);
+    // 再出隐藏帧不会重复写盘。
+    assert!(saves(&m.observe(&hidden)).is_empty());
+}

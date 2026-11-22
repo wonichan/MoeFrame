@@ -4,7 +4,7 @@
 
 **Blocked by:** [18: 设置窗：即时设置与独立生命周期](18-settings-window.md)。
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -31,3 +31,4 @@
 - 结构决定：几何全走「观察—停稳—生效」（落盘防抖 0.6s + 退出冲刷、目标重载防抖 250ms、锁定停稳后修正）；纯函数进新模块 window_geom（aspect_locked_size / offscreen_position / bottom_right_position / MIN_WINDOW_SIDE）。
 - 双轴审查（基线 206bcbb）：Standards 两处硬违规已修（set_playback_mode 文档注释错位归位、Avoid 词「锁定比例」两处改净），判断项全采纳（模块落位、常量提名、右下角公式与防抖收敛）；Spec 无缺失无蔓延，四处部分项的处置与口径见各标准勾注，其中标准 7 的副屏误钳已按「明确行为警告」改写函数文档与本评论，不再以「不在此列」带过。
 - 2026-11-22 对齐（提交 `7861e5f`，决定见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`）：宽高比锁定已移除（设置窗控件、几何锁定修正、配置键 `window.lock_aspect` 均取消，旧键读取时清除）；「恢复默认位置与大小」改为高度取默认 320、宽度按当前图比例推导后落右下角，不再是固定 480×320；窗口改由源图比例驱动宽度（高度为用户设定）。离屏钳制、最小边 120、防抖落盘与退出冲刷不变，副屏已知限制照旧。实机清单工单 20 节的锁定两项已作废、DPI 项已改写。
+- 2026-11-22 关闭：用户本人实机验收全部通过（回执 `m01862`；13 条人工待办见 [`acceptance-23.md`](../acceptance-23.md)）。拖动、八方向缩放、位置尺寸恢复、副屏移除找回由人工待办第 1–4 条覆盖；位置不恢复的根因已修复 `d971227`。混合 DPI 双屏仍属未覆盖环境，不宣称已验。

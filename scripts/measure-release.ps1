@@ -190,6 +190,13 @@ $results.cpu = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name
 $results.cores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
 $results.memory_gb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
 $results.gallery = $Gallery
+Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+$screen = [System.Windows.Forms.Screen]::PrimaryScreen
+if (-not ("W.Dpi" -as [type])) {
+    Add-Type -Namespace W -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern uint GetDpiForSystem();' | Out-Null
+}
+$dpi = [W.Dpi]::GetDpiForSystem()
+$results.display = "$($screen.Bounds.Width)x$($screen.Bounds.Height) 主屏；系统 DPI ${dpi}（$([math]::Round($dpi / 96 * 100))%）"
 $results.started_at = (Get-Date).ToString("s")
 
 # ---- A：启动 + 静止（间隔取最大值，保证采样窗口内不切图）----
@@ -233,15 +240,15 @@ if ($WithTenThousand) {
     $big = Join-Path $OutDir "gallery-10000"
     if (-not (Test-Path $big)) {
         New-Item -ItemType Directory -Path $big | Out-Null
-        $seed = Get-ChildItem -Path $Gallery -Filter *.png -Recurse | Select-Object -First 1
-        if (-not $seed) { $seed = Get-ChildItem -Path $Gallery -File | Select-Object -First 1 }
+# 取最小的一张做种子：一万份拷贝的体积要可控，且本段只测路径枚举与启动。
+        $seed = Get-ChildItem -Path $Gallery -File -Recurse | Sort-Object Length | Select-Object -First 1
         if (-not $seed) { throw "no usable image to seed the 10k gallery" }
         for ($i = 0; $i -lt 10000; $i++) {
             $name = "copy-{0:D5}$($seed.Extension)" -f $i
-            New-Item -ItemType HardLink -Path (Join-Path $big $name) -Target $seed.FullName -ErrorAction SilentlyContinue | Out-Null
-            if (-not (Test-Path (Join-Path $big $name))) {
-                Copy-Item $seed.FullName (Join-Path $big $name)
-            }
+            $dest = Join-Path $big $name
+            # 硬链接省空间，但 exFAT/部分网络盘不支持；不支持时退回拷贝，不能因为链接失败中断测量。
+            try { New-Item -ItemType HardLink -Path $dest -Target $seed.FullName -ErrorAction Stop | Out-Null } catch { }
+            if (-not (Test-Path $dest)) { Copy-Item $seed.FullName $dest }
         }
     }
     $results.ten_thousand = Measure-IdleRun $big 99999999 "10k"
@@ -256,6 +263,7 @@ $md.Add("")
 $md.Add("- 时间：$($results.started_at)")
 $md.Add("- 构建：$($results.exe)（$($results.exe_mb) MB）")
 $md.Add("- 系统：$($results.os)；CPU：$($results.cpu)（$($results.cores) 逻辑核）；内存：$($results.memory_gb) GB")
+$md.Add("- 显示器：$($results.display)")
 $md.Add("- 图库：$($results.gallery)")
 $md.Add("")
 $md.Add("| 项 | 值 | 口径 |")
