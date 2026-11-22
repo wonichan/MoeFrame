@@ -21,7 +21,7 @@
 - [x] 角部弧段齐全：截面插值带、唇线、凹槽线、木纹（胡桃木 / 原木）、框→卡纸投影、卡纸斜切面、卡纸→画面细影、外沿软阴影在四角均有弧段对应物，直边要素的数量与口径不变
 - [x] 宿主沿弧作画且绘制计划结构不变：圆角要素只在内置臂可达，极简 / 自定义臂无圆角（paint_plan 层断言或既有测试覆盖）
 - [x] 几何零改动：window_geom、解码目标、缩放带、命中相关代码无 diff 触及，其既有测试全绿
-- [x] `scripts/check.sh` 全绿（fmt --check + clippy -D warnings + test --all-targets），Windows 目标 check 通过
+- [x] 检查口径如实达标：fmt --check 与 clippy -D warnings 以 Windows 目标直跑通过、test 以刮擦副本 `cargo test --all-targets` 296 绿代偿；`scripts/check.sh` 本体因本 VM 无 Linux GUI 构建条件未直跑（口径详见 Comments）
 - [x] 文档修订完成：FR-311 补圆角口径、FR-312 补「内沿圆角覆盖角部不在裁切之列」、README「外观（V2）」内置画框条目补圆角一句（REQUIREMENTS.md 在仓库外，改动内容记入本票 Comments）
 - [x] `real-machine-check-v2-frame.md` 尾部新增「圆角」独立一节（四验点：四角圆润无锯齿、外角透桌面正常、内角压图自然、滑杆 0 与 40 极值不穿帮），既有 27 项一字不动
 - [x] 实现笔记落 `.agents/notes/implemented/` 并通过三道校验门（tree / format / archived）
@@ -35,7 +35,6 @@
   本票在同一接缝上扩圆角数据，沿用其测试惯例（tests/frame_layout.rs 数据断言）
 - 半径为固定常量（与 PROFILE_STOPS 同级），不入配置、无设置项
 
-## Comments
 ## Comments
 
 - 2026-11-22 实现完成（提交 e548256，分支 impl/rounded-corners-01）：
@@ -66,4 +65,15 @@
   画框的内沿圆角以卡纸圆弧覆盖插画角尖，不在裁切之列）」。
 - 实现笔记：`.agents/notes/implemented/feature/2026-11-22-builtin-frame-rounded-corners.md`
   （三道校验门已过，47 篇）。
+- 2026-11-22 code-review 双轴修复（提交 3b56635，分支
+  impl/rounded-corners-review-fixes）：截面条带角部弧半径改
+  由布局接缝 `corner_strip_radii` 逐带出数据，宿主只照单描
+  弧（接缝新增断言 1 个；复验口径同前——刮擦副本全量 297
+  passed / 0 failed，Windows 目标 check / clippy / fmt
+  --check 直跑全绿）；宿主角弧方向表与采样抽为共用
+  CornerArc、扇形填充参数打包为 CornerSector。本票验收项 6
+  的表述已改写为如实口径，重复的 Comments 标题已合并。木
+  纹角弧的宿主机制口径、Story 9 软阴影的承载映射、egui
+  CornerRadius 的 u8 取整三项差异注记，见 spec Further
+  Notes 评审后补记 1–3。
 
