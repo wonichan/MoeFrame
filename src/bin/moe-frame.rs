@@ -17,6 +17,9 @@ mod app;
 #[path = "moe-frame/autostart_store.rs"]
 mod autostart_store;
 #[cfg(windows)]
+#[path = "moe-frame/frame_paint.rs"]
+mod frame_paint;
+#[cfg(windows)]
 #[path = "moe-frame/frame_ui.rs"]
 mod frame_ui;
 #[cfg(windows)]
@@ -44,10 +47,11 @@ use eframe::egui;
 use moe_frame::{
     app_core::{Effect, FrameCore, Intent, View},
     autostart::{autostart_command, AutostartStore, AutostartSync, RUN_KEY_PATH, RUN_VALUE_NAME},
-    config::{AppearanceMode, PlaybackMode},
+    config::{AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode, MAX_LAYER_WIDTH},
     config_sync::ConfigSync,
     decode_validation::DisplayMode,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
+    frame_layout::{builtin_layers, shadow_layers, LayoutRect, SHADOW_STEP_PX},
     gesture::GestureThresholds,
     loading::LoadRequest,
     resize_cursor, resize_direction,
@@ -290,6 +294,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 autostart: autostart_sync,
                 autostart_store: RegAutostartStore,
                 appearance: host_init.appearance,
+                frame: host_init.frame,
                 session: SettingsSession::new(),
                 debug_last_inner: None,
             }))

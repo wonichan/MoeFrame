@@ -2,7 +2,10 @@
 
 mod common;
 
-use moe_frame::config::{Animation, AppearanceMode, ConfigStore, PlaybackMode};
+use moe_frame::{
+    config::{Animation, AppearanceMode, BuiltinFrame, ConfigStore, FramePreset, PlaybackMode},
+    window_geom::Insets,
+};
 use std::{fs, path::PathBuf};
 
 fn temp_config(tag: &str) -> PathBuf {
@@ -405,6 +408,115 @@ fn set_appearance_mode_round_trips_and_preserves_other_keys() {
     assert_eq!(reparsed.config().playback.interval_secs, 30);
     let text = fs::read_to_string(&path).unwrap();
     assert!(text.contains("appearance = \"custom\""), "{text}");
+}
+
+// ---------- 内置画框参数（V2 相框外观专题工单 02） ----------
+
+#[test]
+fn builtin_frame_defaults_to_walnut_and_spec_widths_and_writes_back() {
+    let path = temp_config("frame-default");
+    let store = ConfigStore::load(&path);
+    let frame = store.config().display.frame;
+    assert_eq!(frame.preset, FramePreset::Walnut);
+    assert_eq!(frame.frame_width, 14.0);
+    assert_eq!(frame.mat_width, 18.0);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("frame_preset = \"walnut\""), "{text}");
+    assert!(text.contains("frame_width = 14.0"), "{text}");
+    assert!(text.contains("mat_width = 18.0"), "{text}");
+}
+
+#[test]
+fn frame_preset_parses_all_four_and_invalid_repairs_to_walnut() {
+    for (raw, expected) in [
+        ("walnut", FramePreset::Walnut),
+        ("oak", FramePreset::Oak),
+        ("black", FramePreset::Black),
+        ("white", FramePreset::White),
+    ] {
+        let path = temp_config(&format!("frame-preset-{raw}"));
+        fs::write(&path, format!("[display]\nframe_preset = \"{raw}\"\n")).unwrap();
+        let store = ConfigStore::load(&path);
+        assert_eq!(store.config().display.frame.preset, expected, "{raw}");
+    }
+    let path = temp_config("frame-preset-invalid");
+    fs::write(&path, "[display]\nframe_preset = \"marble\"\n").unwrap();
+    let store = ConfigStore::load(&path);
+    assert_eq!(store.config().display.frame.preset, FramePreset::Walnut);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("frame_preset = \"walnut\""), "{text}");
+}
+
+#[test]
+fn frame_widths_clamp_to_the_slider_range_and_accept_integers() {
+    let path = temp_config("frame-width-clamp");
+    fs::write(&path, "[display]\nframe_width = 99\nmat_width = -5.0\n").unwrap();
+    let store = ConfigStore::load(&path);
+    assert_eq!(store.config().display.frame.frame_width, 40.0);
+    assert_eq!(store.config().display.frame.mat_width, 0.0);
+    // 钳制结果写回磁盘。
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("frame_width = 40.0"), "{text}");
+    assert!(text.contains("mat_width = 0.0"), "{text}");
+}
+
+#[test]
+fn invalid_frame_widths_repair_to_defaults() {
+    let path = temp_config("frame-width-invalid");
+    fs::write(&path, "[display]\nframe_width = \"wide\"\n").unwrap();
+    let store = ConfigStore::load(&path);
+    assert_eq!(store.config().display.frame.frame_width, 14.0);
+    assert_eq!(store.config().display.frame.mat_width, 18.0);
+}
+
+#[test]
+fn set_builtin_frame_round_trips_and_preserves_other_keys() {
+    let path = temp_config("frame-set");
+    let mut store = ConfigStore::load(&path);
+    store
+        .set_builtin_frame(BuiltinFrame {
+            preset: FramePreset::Black,
+            frame_width: 22.0,
+            mat_width: 0.0,
+        })
+        .unwrap();
+    let reparsed = ConfigStore::load(&path);
+    assert_eq!(
+        reparsed.config().display.frame,
+        BuiltinFrame {
+            preset: FramePreset::Black,
+            frame_width: 22.0,
+            mat_width: 0.0,
+        }
+    );
+    assert_eq!(
+        reparsed.config().display.appearance,
+        AppearanceMode::Builtin
+    );
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("frame_preset = \"black\""), "{text}");
+}
+
+#[test]
+fn builtin_insets_equal_frame_plus_mat_on_every_side() {
+    // 内置模式的单边内距 = 框宽 + 卡纸宽（工单 01 占位在此替换）；
+    // 极简恒全 0；自定义仍全 0 占位（内距由工单 03 的分析结果供给）。
+    let frame = BuiltinFrame {
+        preset: FramePreset::Oak,
+        frame_width: 14.0,
+        mat_width: 18.0,
+    };
+    assert_eq!(
+        AppearanceMode::Builtin.insets(frame),
+        Insets {
+            left: 32.0,
+            top: 32.0,
+            right: 32.0,
+            bottom: 32.0,
+        }
+    );
+    assert_eq!(AppearanceMode::Minimal.insets(frame), Insets::ZERO);
+    assert_eq!(AppearanceMode::Custom.insets(frame), Insets::ZERO);
 }
 
 #[test]

@@ -10,7 +10,7 @@ impl FrameApp {
     pub(crate) fn physical_target(&self, ctx: &egui::Context) -> [u32; 2] {
         let rect = ctx.viewport_rect();
         let ppp = ctx.pixels_per_point();
-        let insets = self.appearance.insets();
+        let insets = self.appearance.insets(self.frame);
         [
             (((rect.width() - insets.horizontal()) * ppp).round() as u32).max(1),
             (((rect.height() - insets.vertical()) * ppp).round() as u32).max(1),

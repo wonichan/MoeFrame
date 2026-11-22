@@ -22,7 +22,7 @@
 use crate::{
     app_core::{CoreArgs, ResumeData},
     autostart::{AutostartStore, AutostartSync},
-    config::{AppearanceMode, ConfigStore, PlaybackMode, WindowConfig},
+    config::{AppearanceMode, BuiltinFrame, ConfigStore, PlaybackMode, WindowConfig},
 };
 use std::{
     io,
@@ -44,6 +44,9 @@ pub struct HostInit {
     /// 外观模式（V2 相框外观专题工单 01）：宿主持有当前值，
     /// 设置窗切换经 save_appearance_mode 写回。
     pub appearance: AppearanceMode,
+    /// 内置画框参数（V2 相框外观专题工单 02）：宿主持有当前值，
+    /// 设置窗调整经 save_builtin_frame 写回。
+    pub frame: BuiltinFrame,
 }
 
 /// 启动包：run() 拿到后只分发，不再逐字段翻译配置。
@@ -94,6 +97,7 @@ impl ConfigSync {
                 _ => None,
             },
             appearance: config.display.appearance,
+            frame: config.display.frame,
             window,
         };
         (
@@ -154,6 +158,12 @@ impl ConfigSync {
     pub fn save_appearance_mode(&mut self, mode: AppearanceMode) {
         let result = self.store.set_appearance_mode(mode);
         self.note_write_result("appearance", result);
+    }
+
+    /// 内置画框参数写回（V2 相框外观专题工单 02）：宿主调整即落盘。
+    pub fn save_builtin_frame(&mut self, frame: BuiltinFrame) {
+        let result = self.store.set_builtin_frame(frame);
+        self.note_write_result("builtin_frame", result);
     }
 
     // ---- 注册表反向对齐的镜像落盘 ----

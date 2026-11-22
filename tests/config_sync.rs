@@ -7,7 +7,7 @@ mod common;
 use common::temp_root;
 use moe_frame::{
     autostart::AutostartStore,
-    config::{AppearanceMode, ConfigStore, PlaybackMode},
+    config::{AppearanceMode, BuiltinFrame, ConfigStore, FramePreset, PlaybackMode},
     config_sync::ConfigSync,
 };
 use std::{
@@ -95,6 +95,47 @@ fn startup_translates_config_into_a_package() {
     assert_eq!(package.host.appearance, AppearanceMode::Custom);
     // 自启对账：实际与镜像一致，无回写。
     assert!(package.autostart.enabled());
+}
+
+#[test]
+fn builtin_frame_params_flow_through_startup_and_mirror_writes() {
+    // 内置画框参数（V2 相框外观专题工单 02）：启动包携带初值，
+    // 宿主改值经 save_builtin_frame 写回落盘。
+    let root = temp_root("config-sync", "frame");
+    let (config_path, log_path) = paths(&root);
+    let mut store = ConfigStore::load(&config_path);
+    store
+        .set_builtin_frame(BuiltinFrame {
+            preset: FramePreset::White,
+            frame_width: 8.0,
+            mat_width: 26.0,
+        })
+        .expect("seed");
+    drop(store);
+    let mut registry = FakeStore::default();
+    let (mut sync, package) = ConfigSync::startup(&config_path, &log_path, &mut registry);
+    assert_eq!(
+        package.host.frame,
+        BuiltinFrame {
+            preset: FramePreset::White,
+            frame_width: 8.0,
+            mat_width: 26.0,
+        }
+    );
+    sync.save_builtin_frame(BuiltinFrame {
+        preset: FramePreset::Oak,
+        frame_width: 30.0,
+        mat_width: 2.0,
+    });
+    let config = ConfigStore::load(&config_path).config().clone();
+    assert_eq!(
+        config.display.frame,
+        BuiltinFrame {
+            preset: FramePreset::Oak,
+            frame_width: 30.0,
+            mat_width: 2.0,
+        }
+    );
 }
 
 #[test]

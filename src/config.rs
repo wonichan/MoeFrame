@@ -13,6 +13,14 @@ pub const MAX_INTERVAL_SECS: i64 = 99_999_999;
 
 pub const DEFAULT_INTERVAL_SECS: i64 = 30;
 
+/// 框宽 / 卡纸宽两个滑杆的共同范围（逻辑 px，V2 相框外观专题
+/// 工单 02）：0..=40，卡纸可为 0。
+pub const MAX_LAYER_WIDTH: f32 = 40.0;
+/// 框宽默认值（逻辑 px）：spec 定案的初始裱法，真机再校准。
+pub const DEFAULT_FRAME_WIDTH: f32 = 14.0;
+/// 卡纸宽默认值（逻辑 px）：同上。
+pub const DEFAULT_MAT_WIDTH: f32 = 18.0;
+
 /// 秒数草稿的提交解析（工单 19）：与配置读取修复是两套规则——解析失败
 /// （空白、小数、非数字）返回 None，调用方保留上次有效值，绝不回退默认
 /// 30；能读成整数但越界的钳制到 [MIN_INTERVAL_SECS, MAX_INTERVAL_SECS]。
@@ -58,6 +66,9 @@ animation = \"slide\"
 [display]
 show_filename = false
 appearance = \"builtin\"
+frame_preset = \"walnut\"
+frame_width = 14.0
+mat_width = 18.0
 
 [general]
 autostart = false
@@ -132,20 +143,77 @@ impl AppearanceMode {
         }
     }
 
-    /// 本模式当前的四边内距：工单 01 只做地基，三种模式都先按
-    /// 全 0 占位——内置画框的真实内距（框宽 + 卡纸宽）由工单 02
-    /// 供给，自定义相框图的内距（分析结果缩放后）由工单 03 供给。
-    pub fn insets(self) -> Insets {
-        Insets::ZERO
+    /// 本模式当前的四边内距：内置画框按画框参数供给——单边 =
+    /// 框宽 + 卡纸宽、四边相等（工单 02 替换了工单 01 的全 0
+    /// 占位）；极简恒全 0；自定义相框图的内距来自相框图分析
+    /// 结果，由工单 03 供给，本工单仍全 0 占位。
+    pub fn insets(self, frame: BuiltinFrame) -> Insets {
+        match self {
+            AppearanceMode::Builtin => {
+                let side = frame.frame_width + frame.mat_width;
+                Insets {
+                    left: side,
+                    top: side,
+                    right: side,
+                    bottom: side,
+                }
+            }
+            AppearanceMode::Minimal | AppearanceMode::Custom => Insets::ZERO,
+        }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// 框体预设（`frame_preset` 配置键，V2 相框外观专题工单 02）：
+/// 胡桃木 / 原木 / 黑 / 白四款；颜色与简易木纹质感由宿主绘制层
+/// 合成，不引入图片素材。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FramePreset {
+    Walnut,
+    Oak,
+    Black,
+    White,
+}
+
+impl FramePreset {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FramePreset::Walnut => "walnut",
+            FramePreset::Oak => "oak",
+            FramePreset::Black => "black",
+            FramePreset::White => "white",
+        }
+    }
+}
+
+/// 内置画框参数（`frame_preset` / `frame_width` / `mat_width`
+/// 配置键，V2 相框外观专题工单 02）：框体预设与框宽、卡纸宽
+/// 两个滑杆值（逻辑 px，各 0..=MAX_LAYER_WIDTH，卡纸可为 0）；
+/// 单边内距 = 框宽 + 卡纸宽。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BuiltinFrame {
+    pub preset: FramePreset,
+    pub frame_width: f32,
+    pub mat_width: f32,
+}
+
+impl Default for BuiltinFrame {
+    fn default() -> Self {
+        Self {
+            preset: FramePreset::Walnut,
+            frame_width: DEFAULT_FRAME_WIDTH,
+            mat_width: DEFAULT_MAT_WIDTH,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct DisplayConfig {
     /// P1：只保存，不驱动行为。
     pub show_filename: bool,
     /// 外观模式（V2 相框外观专题工单 01）。
     pub appearance: AppearanceMode,
+    /// 内置画框参数（V2 相框外观专题工单 02）。
+    pub frame: BuiltinFrame,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,7 +227,7 @@ pub struct GeneralConfig {
     pub history: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub image_folder: Option<String>,
     pub recursive: bool,
@@ -189,6 +257,7 @@ impl Default for Config {
             display: DisplayConfig {
                 show_filename: false,
                 appearance: AppearanceMode::Builtin,
+                frame: BuiltinFrame::default(),
             },
             general: GeneralConfig {
                 autostart: false,
@@ -309,6 +378,17 @@ impl ConfigStore {
         self.update(|document, config| {
             document["display"]["appearance"] = value(mode.as_str());
             config.display.appearance = mode;
+        })
+    }
+
+    /// 保存内置画框参数（V2 相框外观专题工单 02）：只改 display 的
+    /// frame_preset / frame_width / mat_width 三键，其余字段原样保留。
+    pub fn set_builtin_frame(&mut self, frame: BuiltinFrame) -> io::Result<()> {
+        self.update(|document, config| {
+            document["display"]["frame_preset"] = value(frame.preset.as_str());
+            document["display"]["frame_width"] = value(f64::from(frame.frame_width));
+            document["display"]["mat_width"] = value(f64::from(frame.mat_width));
+            config.display.frame = frame;
         })
     }
 
@@ -461,6 +541,20 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
             AppearanceMode::Builtin
         }
     };
+    let frame_preset = match display_table.get("frame_preset").and_then(Item::as_str) {
+        Some("walnut") => FramePreset::Walnut,
+        Some("oak") => FramePreset::Oak,
+        Some("black") => FramePreset::Black,
+        Some("white") => FramePreset::White,
+        _ => {
+            display_table["frame_preset"] = value(FramePreset::Walnut.as_str());
+            *repaired = true;
+            FramePreset::Walnut
+        }
+    };
+    let frame_width =
+        repair_layer_width(display_table, "frame_width", DEFAULT_FRAME_WIDTH, repaired);
+    let mat_width = repair_layer_width(display_table, "mat_width", DEFAULT_MAT_WIDTH, repaired);
 
     let general_table = ensure_table(root, "general", repaired);
     let autostart = repair_bool(general_table, "autostart", false, repaired);
@@ -497,6 +591,11 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
         display: DisplayConfig {
             show_filename,
             appearance,
+            frame: BuiltinFrame {
+                preset: frame_preset,
+                frame_width,
+                mat_width,
+            },
         },
         general: GeneralConfig {
             autostart,
@@ -583,6 +682,32 @@ fn repair_dimension(table: &mut Table, key: &str, default: u32, repaired: &mut b
         Some(raw) if raw > 0 && raw <= i64::from(u32::MAX) => raw as u32,
         _ => {
             table[key] = value(i64::from(default));
+            *repaired = true;
+            default
+        }
+    }
+}
+
+/// 画框层宽字段（框宽 / 卡纸宽）的修复：整数与浮点都收，钳制到
+/// [0, MAX_LAYER_WIDTH]；缺失、非数值或非有限值回默认。钳制与
+/// 回退都写回并标记 repaired（与 interval_secs 的修复口径一致）；
+/// 合法整数原样保留，不改写其表示。
+fn repair_layer_width(table: &mut Table, key: &str, default: f32, repaired: &mut bool) -> f32 {
+    let raw = table.get(key).and_then(|item| {
+        item.as_float()
+            .or_else(|| item.as_integer().map(|raw| raw as f64))
+    });
+    match raw {
+        Some(raw) if raw.is_finite() => {
+            let clamped = (raw as f32).clamp(0.0, MAX_LAYER_WIDTH);
+            if clamped != raw as f32 {
+                table[key] = value(f64::from(clamped));
+                *repaired = true;
+            }
+            clamped
+        }
+        _ => {
+            table[key] = value(f64::from(default));
             *repaired = true;
             default
         }

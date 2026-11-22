@@ -73,14 +73,25 @@ impl eframe::App for FrameApp {
         self.handle_keys(&ctx, now);
         let mut menu_intent: Option<Intent> = None;
         let mut menu_settings = false;
-        // 窗口永远透明创建（V2 相框外观专题工单 01）：极简/内置模式
+        // 窗口永远透明创建（V2 相框外观专题工单 01）：极简/自定义
         // 靠这层铺满视口的不透明填充保持 V1 视觉（有图时纹理同样
-        // 铺满），透明只在自定义异形时透出（工单 04）。
+        // 铺满），透明只在自定义异形时透出（工单 04）；内置画框
+        // 模式面板底透明，三层与阴影由 frame_paint 照布局接缝
+        // 绘制（工单 02）。
+        let panel_fill = if self.appearance == AppearanceMode::Builtin {
+            egui::Color32::TRANSPARENT
+        } else {
+            egui::Color32::BLACK
+        };
         let panel = egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+            .frame(egui::Frame::NONE.fill(panel_fill))
             .show(ui, |ui| {
                 let rect = ui.max_rect();
                 let painter = ui.painter();
+                if self.appearance == AppearanceMode::Builtin {
+                    self.paint_builtin_frame(painter, rect);
+                    return;
+                }
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                 if let Some(texture) = &self.texture {
                     painter.image(texture.id(), rect, uv, egui::Color32::WHITE);

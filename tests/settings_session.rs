@@ -4,7 +4,7 @@
 //! 原 tests/settings_draft.rs 的结算用例已改走本 interface 表达。
 
 use moe_frame::{
-    config::{AppearanceMode, PlaybackMode},
+    config::{AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode},
     settings_session::{
         EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
     },
@@ -16,6 +16,7 @@ fn effective() -> EffectiveValues {
         interval_secs: 30,
         mode: PlaybackMode::Random,
         appearance: AppearanceMode::Builtin,
+        frame: BuiltinFrame::default(),
     }
 }
 
@@ -339,6 +340,50 @@ fn appearance_pick_orders_after_mode_and_before_interval_preset() {
         vec![
             SessionAction::ApplyMode(PlaybackMode::Sequential),
             SessionAction::ApplyAppearance(AppearanceMode::Custom),
+            SessionAction::ApplyIntervalPreset(60),
+        ]
+    );
+}
+
+// ---------- 内置画框参数点选（V2 相框外观专题工单 02） ----------
+
+#[test]
+fn builtin_frame_picks_apply_and_same_values_are_guarded() {
+    let mut session = opened();
+    // 点当前生效值（默认胡桃木 / 框宽 14 / 卡纸宽 18）：同值守卫，
+    // 不产生动作。
+    let mut picks = no_picks();
+    picks.frame_preset = Some(FramePreset::Walnut);
+    picks.frame_width = Some(14.0);
+    picks.mat_width = Some(18.0);
+    assert_eq!(frame(&mut session, picks), vec![]);
+    // 改预设与两宽：各产出一个动作，顺序为预设 → 框宽 → 卡纸宽。
+    let mut picks = no_picks();
+    picks.frame_preset = Some(FramePreset::Oak);
+    picks.frame_width = Some(22.0);
+    picks.mat_width = Some(0.0);
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![
+            SessionAction::ApplyFramePreset(FramePreset::Oak),
+            SessionAction::ApplyFrameWidth(22.0),
+            SessionAction::ApplyMatWidth(0.0),
+        ]
+    );
+}
+
+#[test]
+fn builtin_frame_picks_order_after_appearance_and_before_interval_preset() {
+    let mut session = opened();
+    let mut picks = no_picks();
+    picks.appearance = Some(AppearanceMode::Minimal);
+    picks.frame_width = Some(20.0);
+    picks.interval = Some(60);
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![
+            SessionAction::ApplyAppearance(AppearanceMode::Minimal),
+            SessionAction::ApplyFrameWidth(20.0),
             SessionAction::ApplyIntervalPreset(60),
         ]
     );

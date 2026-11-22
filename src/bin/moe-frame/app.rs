@@ -49,9 +49,13 @@ pub(crate) struct FrameApp {
     pub(crate) autostart: AutostartSync,
     pub(crate) autostart_store: RegAutostartStore,
     /// 当前外观模式（V2 相框外观专题工单 01）：宿主持有，几何观察
-    /// 与解码口径的四边内距都由它给出；设置窗切换时更新本字段并
-    /// 经 config_sync 写回。本工单三模式内距均为全 0（占位）。
+    /// 与解码口径的四边内距由它连同内置画框参数给出；设置窗切换
+    /// 时更新本字段并经 config_sync 写回。
     pub(crate) appearance: AppearanceMode,
+    /// 内置画框参数（V2 相框外观专题工单 02）：框体预设与框宽 /
+    /// 卡纸宽；内置模式的内距（框宽 + 卡纸宽）与三层绘制都读它，
+    /// 设置窗调整时更新本字段并经 config_sync 整组写回。
+    pub(crate) frame: BuiltinFrame,
     /// 设置窗会话（工单 19 的时序，architecture-deepening 工单 02 起归
     /// 库 settings_session）：草稿、基线、待结算与焦点记忆都在其中，
     /// 宿主只采样事件、渲染、执行它返回的动作。
