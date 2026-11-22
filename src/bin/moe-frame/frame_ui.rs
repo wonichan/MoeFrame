@@ -143,27 +143,25 @@ impl eframe::App for FrameApp {
                         ..
                     } = &self.frame_art
                     {
-                        let layout = moe_frame::frame_art::nine_slice_layout(
-                            analysis,
-                            [rect.width(), rect.height()],
-                        );
+                        let layout = nine_slice_layout(analysis, to_layout_rect(rect));
                         let art_size = [analysis.art_size[0] as f32, analysis.art_size[1] as f32];
                         for region in layout.regions {
-                            let dst = egui::Rect::from_min_size(
-                                rect.min + egui::vec2(region.dst[0], region.dst[1]),
-                                egui::vec2(region.dst[2], region.dst[3]),
-                            );
-                            let src_uv = egui::Rect::from_min_size(
+                            let src_uv = egui::Rect::from_min_max(
                                 egui::pos2(
-                                    region.src[0] / art_size[0],
-                                    region.src[1] / art_size[1],
+                                    region.src.left / art_size[0],
+                                    region.src.top / art_size[1],
                                 ),
-                                egui::vec2(
-                                    region.src[2] / art_size[0],
-                                    region.src[3] / art_size[1],
+                                egui::pos2(
+                                    region.src.right / art_size[0],
+                                    region.src.bottom / art_size[1],
                                 ),
                             );
-                            painter.image(art_texture.id(), dst, src_uv, egui::Color32::WHITE);
+                            painter.image(
+                                art_texture.id(),
+                                to_egui_rect(region.dst),
+                                src_uv,
+                                egui::Color32::WHITE,
+                            );
                         }
                     }
                 }

@@ -1,6 +1,7 @@
-//! 布局接缝（V2 相框外观专题工单 02）：画框绘制的全部矩形由这里的
-//! 纯函数产出，宿主只照单绘制。内置画框的三层（框体 / 卡纸 / 画面）
-//! 与自绘软阴影的扩散层都在这里；工单 03 的九宫格矩形在 frame_art。
+//! 布局接缝（V2 相框外观专题工单 02 / 03）：画框绘制的全部矩形由
+//! 这里的纯函数产出，宿主只照单绘制。内置画框的三层（框体 /
+//! 卡纸 / 画面）、自绘软阴影的扩散层与自定义相框图的九宫格矩形
+//! 都在这里（spec 定案：一处统一产出，共用 LayoutRect 口径）。
 //!
 //! 坐标是逻辑像素的平面矩形，不依赖 egui 类型：几何状态机给出的
 //! 画面区域口径（窗口 − 四边内距）在这里逐项复现，画面层矩形与
@@ -13,6 +14,7 @@
 
 use crate::{
     config::{AppearanceMode, BuiltinFrame},
+    frame_art::FrameArtAnalysis,
     window_geom::Insets,
 };
 
@@ -83,6 +85,81 @@ pub fn builtin_layers(window: LayoutRect, insets: Insets, frame_width: f32) -> B
         body: window,
         mat: window.shrink_uniform(frame_width),
         image: window.shrink(insets),
+    }
+}
+
+/// 九宫格的一块：源矩形（相框图原始像素）与目标矩形（窗口逻辑
+/// 坐标），与内置三层共用 LayoutRect 口径——宿主只有一份矩形
+/// 转换，不存在第二套数组口径。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SliceRegion {
+    pub src: LayoutRect,
+    pub dst: LayoutRect,
+}
+
+/// 九宫格布局：八个绘制区域（顺序为左上、上、右上、左、右、
+/// 左下、下、右下）加洞区目标矩形；洞区不绘制（插画在下层），
+/// 洞区矩形供宿主摆放插画与空状态提示。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NineSliceLayout {
+    pub factor: f32,
+    pub regions: [SliceRegion; 8],
+    pub hole_dst: LayoutRect,
+}
+
+/// 按洞把相框图切成九宫格：四角按缩放系数等比绘制、四边只沿
+/// 长度方向拉伸。缩放系数只由宽度决定（窗口内宽 ÷ 相框图原宽），
+/// 因此外框变高时四角与边厚不变、只有纵向边变长。分析本身在
+/// frame_art，本函数只吃分析结论产出矩形。
+pub fn nine_slice_layout(analysis: &FrameArtAnalysis, outer: LayoutRect) -> NineSliceLayout {
+    let factor = analysis.scale_factor(outer.width());
+    let insets = analysis.insets();
+    let (art_w, art_h) = (analysis.art_size[0] as f32, analysis.art_size[1] as f32);
+    let hole_src = LayoutRect::new(
+        insets.left as f32,
+        insets.top as f32,
+        (analysis.art_size[0] - insets.right) as f32,
+        (analysis.art_size[1] - insets.bottom) as f32,
+    );
+    let hole_dst = outer.shrink(insets.scaled(factor));
+    let region = |src: LayoutRect, dst: LayoutRect| SliceRegion { src, dst };
+    NineSliceLayout {
+        factor,
+        regions: [
+            region(
+                LayoutRect::new(0.0, 0.0, hole_src.left, hole_src.top),
+                LayoutRect::new(outer.left, outer.top, hole_dst.left, hole_dst.top),
+            ),
+            region(
+                LayoutRect::new(hole_src.left, 0.0, hole_src.right, hole_src.top),
+                LayoutRect::new(hole_dst.left, outer.top, hole_dst.right, hole_dst.top),
+            ),
+            region(
+                LayoutRect::new(hole_src.right, 0.0, art_w, hole_src.top),
+                LayoutRect::new(hole_dst.right, outer.top, outer.right, hole_dst.top),
+            ),
+            region(
+                LayoutRect::new(0.0, hole_src.top, hole_src.left, hole_src.bottom),
+                LayoutRect::new(outer.left, hole_dst.top, hole_dst.left, hole_dst.bottom),
+            ),
+            region(
+                LayoutRect::new(hole_src.right, hole_src.top, art_w, hole_src.bottom),
+                LayoutRect::new(hole_dst.right, hole_dst.top, outer.right, hole_dst.bottom),
+            ),
+            region(
+                LayoutRect::new(0.0, hole_src.bottom, hole_src.left, art_h),
+                LayoutRect::new(outer.left, hole_dst.bottom, hole_dst.left, outer.bottom),
+            ),
+            region(
+                LayoutRect::new(hole_src.left, hole_src.bottom, hole_src.right, art_h),
+                LayoutRect::new(hole_dst.left, hole_dst.bottom, hole_dst.right, outer.bottom),
+            ),
+            region(
+                LayoutRect::new(hole_src.right, hole_src.bottom, art_w, art_h),
+                LayoutRect::new(hole_dst.right, hole_dst.bottom, outer.right, outer.bottom),
+            ),
+        ],
+        hole_dst,
     }
 }
 

@@ -53,8 +53,8 @@ use moe_frame::{
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
     frame_art::FrameArtAnalysis,
     frame_layout::{
-        builtin_layers, effective_appearance, shadow_layers, EffectiveAppearance, LayoutRect,
-        SHADOW_STEP_PX,
+        builtin_layers, effective_appearance, nine_slice_layout, shadow_layers,
+        EffectiveAppearance, LayoutRect, SHADOW_STEP_PX,
     },
     gesture::GestureThresholds,
     loading::LoadRequest,
@@ -106,6 +106,21 @@ fn main() {
 #[cfg(windows)]
 fn now_ms(ctx: &egui::Context) -> u64 {
     (ctx.input(|input| input.time) * 1000.0) as u64
+}
+
+/// 布局接缝的平面矩形与 egui 矩形互转：宿主各绘制点共用这一份，
+/// 不在单个绘制文件里私藏第二套。
+#[cfg(windows)]
+fn to_layout_rect(rect: egui::Rect) -> LayoutRect {
+    LayoutRect::new(rect.left(), rect.top(), rect.right(), rect.bottom())
+}
+
+#[cfg(windows)]
+fn to_egui_rect(rect: LayoutRect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        egui::pos2(rect.left, rect.top),
+        egui::pos2(rect.right, rect.bottom),
+    )
 }
 
 #[cfg(windows)]

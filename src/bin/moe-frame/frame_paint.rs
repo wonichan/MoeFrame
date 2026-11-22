@@ -11,17 +11,6 @@ const MAT_COLOR: egui::Color32 = egui::Color32::from_rgb(246, 240, 224);
 /// 那道压痕），任何预设下都成立。
 const INNER_EDGE_ALPHA: u8 = 96;
 
-fn to_layout_rect(rect: egui::Rect) -> LayoutRect {
-    LayoutRect::new(rect.left(), rect.top(), rect.right(), rect.bottom())
-}
-
-fn to_egui_rect(rect: LayoutRect) -> egui::Rect {
-    egui::Rect::from_min_max(
-        egui::pos2(rect.left, rect.top),
-        egui::pos2(rect.right, rect.bottom),
-    )
-}
-
 /// 框体预设的三色：（基色，亮部，暗部）——亮/暗用于框带内的同心
 /// 细线与内外沿的明暗线，合成简易木纹与倒角感。
 fn preset_colors(preset: FramePreset) -> (egui::Color32, egui::Color32, egui::Color32) {

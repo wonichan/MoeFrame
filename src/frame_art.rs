@@ -1,6 +1,7 @@
 //! 自定义相框图分析（V2 相框外观专题工单 03）：把用户提供的
-//! 相框图解码像素翻成「洞矩形 + 四边内距」，或带原因的拒绝；
-//! 九宫格绘制矩形也由本模块的纯函数产出，宿主只照单绘制。
+//! 相框图解码像素翻成「洞矩形 + 四边内距」，或带原因的拒绝。
+//! 九宫格绘制矩形不在本模块：与内置三层一样由布局接缝
+//! frame_layout 统一产出，本模块只做分析与加载。
 //!
 //! 检测规则只有一条（spec 定案）：从图片中心像素向外扩展，取
 //! 包含中心的全透明矩形为洞；中心不透明即无效。格式限 PNG
@@ -134,61 +135,6 @@ pub fn analyze_frame_art(
             height: bottom - top + 1,
         },
     })
-}
-
-/// 九宫格的一块：源矩形（相框图原始像素）与目标矩形（窗口逻辑
-/// 坐标，原点在窗口左上角）。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SliceRegion {
-    pub src: [f32; 4],
-    pub dst: [f32; 4],
-}
-
-/// 九宫格布局：八个绘制区域（顺序为左上、上、右上、左、右、
-/// 左下、下、右下）加洞区目标矩形；洞区不绘制（插画在下层），
-/// 洞区矩形供宿主摆放插画与空状态提示。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct NineSliceLayout {
-    pub factor: f32,
-    pub regions: [SliceRegion; 8],
-    pub hole_dst: [f32; 4],
-}
-
-/// 按洞把相框图切成九宫格：四角按缩放系数等比绘制、四边只沿
-/// 长度方向拉伸。缩放系数只由宽度决定（窗口内宽 ÷ 相框图原宽），
-/// 因此外框变高时四角与边厚不变、只有纵向边变长。
-///
-/// 注：本函数与工单 02 内置画框的布局纯函数是两处实现，spec 的
-/// 「统一产出」留待专题收尾时合并（见工单 03 的 Comments）。
-pub fn nine_slice_layout(analysis: &FrameArtAnalysis, outer_size: [f32; 2]) -> NineSliceLayout {
-    let factor = analysis.scale_factor(outer_size[0]);
-    let insets = analysis.insets();
-    let (l, t, r, b) = (
-        insets.left as f32,
-        insets.top as f32,
-        insets.right as f32,
-        insets.bottom as f32,
-    );
-    let (art_w, art_h) = (analysis.art_size[0] as f32, analysis.art_size[1] as f32);
-    let hole_w = art_w - l - r;
-    let hole_h = art_h - t - b;
-    let (w, h) = (outer_size[0], outer_size[1]);
-    let (dl, dt, dr, db) = (l * factor, t * factor, r * factor, b * factor);
-    let region = |src: [f32; 4], dst: [f32; 4]| SliceRegion { src, dst };
-    NineSliceLayout {
-        factor,
-        regions: [
-            region([0.0, 0.0, l, t], [0.0, 0.0, dl, dt]),
-            region([l, 0.0, hole_w, t], [dl, 0.0, w - dl - dr, dt]),
-            region([art_w - r, 0.0, r, t], [w - dr, 0.0, dr, dt]),
-            region([0.0, t, l, hole_h], [0.0, dt, dl, h - dt - db]),
-            region([art_w - r, t, r, hole_h], [w - dr, dt, dr, h - dt - db]),
-            region([0.0, art_h - b, l, b], [0.0, h - db, dl, db]),
-            region([l, art_h - b, hole_w, b], [dl, h - db, w - dl - dr, db]),
-            region([art_w - r, art_h - b, r, b], [w - dr, h - db, dr, db]),
-        ],
-        hole_dst: [dl, dt, w - dl - dr, h - dt - db],
-    }
 }
 
 /// 一次成功加载的相框图：分析结论与全分辨率 RGBA 像素（宿主

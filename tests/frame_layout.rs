@@ -1,14 +1,15 @@
-//! 布局接缝（V2 相框外观专题工单 02）：内置画框的三层绘制矩形与
-//! 自绘软阴影的扩散层都在这个纯函数上验证——喂窗口矩形 + 四边
-//! 内距 + 框宽，断言框体 / 卡纸 / 画面三层矩形与阴影层序；宿主
-//! 只照单绘制，不另算几何。先行先例：宿主 next_frame_delay 的
-//! 纯函数回归测试。
+//! 布局接缝（V2 相框外观专题工单 02 / 03）：内置画框的三层绘制
+//! 矩形、自绘软阴影的扩散层与自定义相框图的九宫格矩形都在这个
+//! 纯函数上验证——喂窗口矩形 + 四边内距 + 框宽（或相框图分析
+//! 结论），断言各绘制矩形；宿主只照单绘制，不另算几何。先行
+//! 先例：宿主 next_frame_delay 的纯函数回归测试。
 
 use moe_frame::{
     config::{AppearanceMode, BuiltinFrame, FramePreset},
+    frame_art::{FrameArtAnalysis, HoleRect},
     frame_layout::{
-        builtin_layers, effective_appearance, paint_plan, shadow_layers, EffectiveAppearance,
-        FramePaint, HintPaint, LayoutRect, PaintPlan,
+        builtin_layers, effective_appearance, nine_slice_layout, paint_plan, shadow_layers,
+        EffectiveAppearance, FramePaint, HintPaint, LayoutRect, PaintPlan,
     },
     window_geom::Insets,
 };
@@ -194,6 +195,77 @@ fn custom_active_and_minimal_resolve_directly() {
     let minimal = effective_appearance(AppearanceMode::Minimal, false, user_frame());
     assert_eq!(minimal, EffectiveAppearance::Minimal);
     assert_eq!(minimal.insets(), Insets::ZERO);
+}
+
+/// 九宫格布局夹具：400×300 的相框图，洞 (100,50,200,200)，四边
+/// 内距左 100 / 上 50 / 右 100 / 下 50。布局接缝的输入就是分析
+/// 结论本身，故直接构造（洞检测本身在 frame_art 的测试里覆盖）。
+fn art_analysis() -> FrameArtAnalysis {
+    FrameArtAnalysis {
+        art_size: [400, 300],
+        hole: HoleRect {
+            x: 100,
+            y: 50,
+            width: 200,
+            height: 200,
+        },
+    }
+}
+
+#[test]
+fn nine_slice_corners_scale_only_by_the_factor() {
+    let layout = nine_slice_layout(&art_analysis(), LayoutRect::new(0.0, 0.0, 800.0, 600.0));
+    assert_eq!(layout.factor, 2.0);
+    // 四角目标尺寸 = 源尺寸 × 2，不随外框高度之外的因素变化。
+    let (tl, tr, bl, br) = (
+        layout.regions[0],
+        layout.regions[2],
+        layout.regions[5],
+        layout.regions[7],
+    );
+    assert_eq!(tl.src, LayoutRect::new(0.0, 0.0, 100.0, 50.0));
+    assert_eq!(tl.dst, LayoutRect::new(0.0, 0.0, 200.0, 100.0));
+    assert_eq!(tr.src, LayoutRect::new(300.0, 0.0, 400.0, 50.0));
+    assert_eq!(tr.dst, LayoutRect::new(600.0, 0.0, 800.0, 100.0));
+    assert_eq!(bl.src, LayoutRect::new(0.0, 250.0, 100.0, 300.0));
+    assert_eq!(bl.dst, LayoutRect::new(0.0, 500.0, 200.0, 600.0));
+    assert_eq!(br.src, LayoutRect::new(300.0, 250.0, 400.0, 300.0));
+    assert_eq!(br.dst, LayoutRect::new(600.0, 500.0, 800.0, 600.0));
+    // 洞区目标矩形 = 外框减去缩放后的四边内距。
+    assert_eq!(layout.hole_dst, LayoutRect::new(200.0, 100.0, 600.0, 500.0));
+}
+
+#[test]
+fn nine_slice_edges_stretch_only_along_their_length() {
+    let analysis = art_analysis();
+    let base = nine_slice_layout(&analysis, LayoutRect::new(0.0, 0.0, 800.0, 600.0));
+    // 外框只变高（宽不变 → 系数不变）：四角目标尺寸逐项不变；
+    // 上边只变长不变厚，左边只变高不变宽。
+    let tall = nine_slice_layout(&analysis, LayoutRect::new(0.0, 0.0, 800.0, 900.0));
+    for idx in [0usize, 2, 5, 7] {
+        assert_eq!(tall.regions[idx].dst.width(), base.regions[idx].dst.width());
+        assert_eq!(
+            tall.regions[idx].dst.height(),
+            base.regions[idx].dst.height()
+        );
+    }
+    let top = tall.regions[1];
+    assert_eq!(top.src, LayoutRect::new(100.0, 0.0, 300.0, 50.0));
+    assert_eq!(top.dst, LayoutRect::new(200.0, 0.0, 600.0, 100.0));
+    let left = tall.regions[3];
+    assert_eq!(left.src, LayoutRect::new(0.0, 50.0, 100.0, 250.0));
+    assert_eq!(left.dst, LayoutRect::new(0.0, 100.0, 200.0, 800.0));
+    // 外框只变宽：上边变长、左边变高都不发生（高不变），角仍按系数变。
+    let wide = nine_slice_layout(&analysis, LayoutRect::new(0.0, 0.0, 1200.0, 600.0));
+    assert_eq!(wide.factor, 3.0);
+    assert_eq!(
+        wide.regions[1].dst,
+        LayoutRect::new(300.0, 0.0, 900.0, 150.0)
+    );
+    assert_eq!(
+        wide.regions[3].dst,
+        LayoutRect::new(0.0, 150.0, 300.0, 450.0)
+    );
 }
 
 #[test]
