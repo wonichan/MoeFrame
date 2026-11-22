@@ -74,24 +74,72 @@ impl eframe::App for FrameApp {
         let mut menu_intent: Option<Intent> = None;
         let mut menu_settings = false;
         // 窗口永远透明创建（V2 相框外观专题工单 01）：极简/内置模式
-        // 靠这层铺满视口的不透明填充保持 V1 视觉（有图时纹理同样
-        // 铺满），透明只在自定义异形时透出（工单 04）。
+        // 靠这层铺满视口的不透明填充保持 V1 视觉；自定义相框图
+        // （工单 03）不铺底——相框图的透明像素直接透出桌面，宿主
+        // 只画画面区域的插画与九宫格八区，异形的完整行为在工单 04。
+        self.ensure_frame_art_texture(&ctx);
+        let custom_active = self.custom_art_active();
+        let panel_frame = if custom_active {
+            egui::Frame::NONE.fill(egui::Color32::TRANSPARENT)
+        } else {
+            egui::Frame::NONE.fill(egui::Color32::BLACK)
+        };
         let panel = egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+            .frame(panel_frame)
             .show(ui, |ui| {
                 let rect = ui.max_rect();
                 let painter = ui.painter();
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                // 画面区域 = 外框减去生效内距：插画只画在这里，
+                // 画框（内置或相框图）占其余部分；内距全 0 时即整窗。
+                let insets = self.effective_insets(rect.width());
+                let image_rect = egui::Rect::from_min_max(
+                    rect.min + egui::vec2(insets.left, insets.top),
+                    rect.max - egui::vec2(insets.right, insets.bottom),
+                );
                 if let Some(texture) = &self.texture {
-                    painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
+                    painter.image(texture.id(), image_rect, uv, egui::Color32::WHITE);
                 } else {
                     painter.text(
-                        rect.center(),
+                        image_rect.center(),
                         egui::Align2::CENTER_CENTER,
                         "右键打开设置，选择图库文件夹",
                         egui::FontId::proportional(15.0),
                         egui::Color32::from_rgb(200, 200, 200),
                     );
+                }
+                // 自定义相框图九宫格（工单 03）：八区盖在插画之上，
+                // 洞区不绘制；相框图的透明像素不被覆画。
+                if custom_active {
+                    if let FrameArtHost::Loaded {
+                        analysis,
+                        texture: Some(art_texture),
+                        ..
+                    } = &self.frame_art
+                    {
+                        let layout = moe_frame::frame_art::nine_slice_layout(
+                            analysis,
+                            [rect.width(), rect.height()],
+                        );
+                        let art_size = [analysis.art_size[0] as f32, analysis.art_size[1] as f32];
+                        for region in layout.regions {
+                            let dst = egui::Rect::from_min_size(
+                                rect.min + egui::vec2(region.dst[0], region.dst[1]),
+                                egui::vec2(region.dst[2], region.dst[3]),
+                            );
+                            let src_uv = egui::Rect::from_min_size(
+                                egui::pos2(
+                                    region.src[0] / art_size[0],
+                                    region.src[1] / art_size[1],
+                                ),
+                                egui::vec2(
+                                    region.src[2] / art_size[0],
+                                    region.src[3] / art_size[1],
+                                ),
+                            );
+                            painter.image(art_texture.id(), dst, src_uv, egui::Color32::WHITE);
+                        }
+                    }
                 }
             });
         let playing = self.core.is_playing();

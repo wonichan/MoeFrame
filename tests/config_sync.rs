@@ -250,3 +250,33 @@ fn a_non_utf8_current_image_skips_the_resume_save() {
     assert_eq!(config.general.current_image, None);
     assert!(!log_path.exists());
 }
+
+// ---------- 相框图路径（V2 相框外观专题工单 03） ----------
+
+#[test]
+fn startup_package_carries_the_frame_art_path_and_saves_write_through() {
+    let root = temp_root("config-sync", "frame-art");
+    let (config_path, log_path) = paths(&root);
+    seed_config(&config_path);
+    {
+        let mut store = ConfigStore::load(&config_path);
+        store
+            .set_frame_art_path(Some(r"D:\Art\frame.png"))
+            .expect("seed");
+    }
+    let mut registry = FakeStore::default();
+    let (mut sync, package) = ConfigSync::startup(&config_path, &log_path, &mut registry);
+    assert_eq!(
+        package.host.frame_art,
+        Some(PathBuf::from(r"D:\Art\frame.png"))
+    );
+    sync.save_frame_art_path(Some(Path::new(r"D:\Art\other.png")));
+    let config = ConfigStore::load(&config_path).config().clone();
+    assert_eq!(
+        config.display.frame_art.as_deref(),
+        Some(r"D:\Art\other.png")
+    );
+    sync.save_frame_art_path(None);
+    let config = ConfigStore::load(&config_path).config().clone();
+    assert_eq!(config.display.frame_art, None);
+}

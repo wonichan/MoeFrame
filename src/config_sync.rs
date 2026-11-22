@@ -44,6 +44,9 @@ pub struct HostInit {
     /// 外观模式（V2 相框外观专题工单 01）：宿主持有当前值，
     /// 设置窗切换经 save_appearance_mode 写回。
     pub appearance: AppearanceMode,
+    /// 自定义相框图的路径（V2 相框外观专题工单 03）：宿主持有，
+    /// 启动时据此分析一次；设置窗选新图经 save_frame_art_path 写回。
+    pub frame_art: Option<PathBuf>,
 }
 
 /// 启动包：run() 拿到后只分发，不再逐字段翻译配置。
@@ -94,6 +97,7 @@ impl ConfigSync {
                 _ => None,
             },
             appearance: config.display.appearance,
+            frame_art: config.display.frame_art.as_ref().map(PathBuf::from),
             window,
         };
         (
@@ -154,6 +158,14 @@ impl ConfigSync {
     pub fn save_appearance_mode(&mut self, mode: AppearanceMode) {
         let result = self.store.set_appearance_mode(mode);
         self.note_write_result("appearance", result);
+    }
+
+    /// 相框图路径写回（V2 相框外观专题工单 03）：宿主选定即落盘，
+    /// 只存路径不复制文件。
+    pub fn save_frame_art_path(&mut self, path: Option<&Path>) {
+        let text = path.map(|path| path.to_string_lossy().into_owned());
+        let result = self.store.set_frame_art_path(text.as_deref());
+        self.note_write_result("frame_art", result);
     }
 
     // ---- 注册表反向对齐的镜像落盘 ----

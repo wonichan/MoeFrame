@@ -132,9 +132,10 @@ impl AppearanceMode {
         }
     }
 
-    /// 本模式当前的四边内距：工单 01 只做地基，三种模式都先按
-    /// 全 0 占位——内置画框的真实内距（框宽 + 卡纸宽）由工单 02
-    /// 供给，自定义相框图的内距（分析结果缩放后）由工单 03 供给。
+    /// 本模式自身的四边内距：工单 01 只做地基，先按全 0 占位——
+    /// 内置画框的真实内距（框宽 + 卡纸宽）由工单 02 供给；
+    /// 自定义相框图的内距不走这里，由工单 03 的宿主生效内距
+    /// （分析结果按窗口宽度缩放）给出，本方法对 Custom 恒为 0。
     pub fn insets(self) -> Insets {
         Insets::ZERO
     }
@@ -146,6 +147,10 @@ pub struct DisplayConfig {
     pub show_filename: bool,
     /// 外观模式（V2 相框外观专题工单 01）。
     pub appearance: AppearanceMode,
+    /// 自定义相框图的路径（V2 相框外观专题工单 03）：只存路径、
+    /// 不复制文件（与图库文件夹同一口径），内容每次启动与切换
+    /// 时重新分析。
+    pub frame_art: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -189,6 +194,7 @@ impl Default for Config {
             display: DisplayConfig {
                 show_filename: false,
                 appearance: AppearanceMode::Builtin,
+                frame_art: None,
             },
             general: GeneralConfig {
                 autostart: false,
@@ -309,6 +315,24 @@ impl ConfigStore {
         self.update(|document, config| {
             document["display"]["appearance"] = value(mode.as_str());
             config.display.appearance = mode;
+        })
+    }
+
+    /// 保存自定义相框图的路径（V2 相框外观专题工单 03）：只改
+    /// display.frame_art，None 时删键；其余字段原样保留。
+    pub fn set_frame_art_path(&mut self, path: Option<&str>) -> io::Result<()> {
+        let path = path.map(str::to_owned);
+        self.update(|document, config| match &path {
+            Some(path) => {
+                document["display"]["frame_art"] = value(path.clone());
+                config.display.frame_art = Some(path.clone());
+            }
+            None => {
+                if let Some(table) = document["display"].as_table_mut() {
+                    table.remove("frame_art");
+                }
+                config.display.frame_art = None;
+            }
         })
     }
 
@@ -461,6 +485,19 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
             AppearanceMode::Builtin
         }
     };
+    // 相框图路径（工单 03）：缺失即未选（不写键）；不是字符串时
+    // 删键按未选处理，不牵连同表其他字段。
+    let frame_art = match display_table.get("frame_art") {
+        Some(item) => match item.as_str() {
+            Some(text) => Some(text.to_owned()),
+            None => {
+                display_table.remove("frame_art");
+                *repaired = true;
+                None
+            }
+        },
+        None => None,
+    };
 
     let general_table = ensure_table(root, "general", repaired);
     let autostart = repair_bool(general_table, "autostart", false, repaired);
@@ -497,6 +534,7 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
         display: DisplayConfig {
             show_filename,
             appearance,
+            frame_art,
         },
         general: GeneralConfig {
             autostart,

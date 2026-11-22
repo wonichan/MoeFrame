@@ -417,3 +417,48 @@ fn autostart_mirror_round_trips_through_a_real_file() {
     assert!(reparsed.config().general.autostart);
     assert_eq!(reparsed.config().playback.interval_secs, 30);
 }
+
+// ---------- 相框图路径（V2 相框外观专题工单 03） ----------
+
+#[test]
+fn frame_art_path_defaults_to_none_without_writing_the_key() {
+    let path = temp_config("frame-art-default");
+    let store = ConfigStore::load(&path);
+    assert_eq!(store.config().display.frame_art, None);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("frame_art"), "{text}");
+}
+
+#[test]
+fn set_frame_art_path_round_trips_and_clears() {
+    let path = temp_config("frame-art-set");
+    let mut store = ConfigStore::load(&path);
+    store.set_frame_art_path(Some(r"D:\Art\frame.png")).unwrap();
+    let reparsed = ConfigStore::load(&path);
+    assert_eq!(
+        reparsed.config().display.frame_art.as_deref(),
+        Some(r"D:\Art\frame.png")
+    );
+    // 只动这一个键：同表 appearance 与其他表原样保留。
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("appearance = \"builtin\""), "{text}");
+    assert_eq!(reparsed.config().playback.interval_secs, 30);
+
+    store.set_frame_art_path(None).unwrap();
+    let reparsed = ConfigStore::load(&path);
+    assert_eq!(reparsed.config().display.frame_art, None);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("frame_art"), "{text}");
+}
+
+#[test]
+fn a_non_string_frame_art_path_is_repaired_to_none() {
+    let path = temp_config("frame-art-invalid");
+    fs::write(&path, "[display]\nshow_filename = true\nframe_art = 42\n").unwrap();
+    let store = ConfigStore::load(&path);
+    assert_eq!(store.config().display.frame_art, None);
+    // 坏键被移除，同表其他字段不动。
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("frame_art"), "{text}");
+    assert!(text.contains("show_filename = true"), "{text}");
+}

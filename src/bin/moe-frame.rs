@@ -48,13 +48,14 @@ use moe_frame::{
     config_sync::ConfigSync,
     decode_validation::DisplayMode,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
+    frame_art::FrameArtAnalysis,
     gesture::GestureThresholds,
     loading::LoadRequest,
     resize_cursor, resize_direction,
     settings_session::{
         EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
     },
-    window_geom::{GeomCommand, GeomObservation, GeometryMachine, MIN_WINDOW_SIDE},
+    window_geom::{GeomCommand, GeomObservation, GeometryMachine, Insets, MIN_WINDOW_SIDE},
 };
 #[cfg(windows)]
 use std::{
@@ -258,7 +259,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 let _ = menu_event_tx.send(event);
                 menu_ctx.request_repaint();
             }));
-            Ok(Box::new(FrameApp {
+            let mut app = FrameApp {
                 core: FrameCore::new(
                     core_args,
                     system_gesture_thresholds(cc.egui_ctx.pixels_per_point()),
@@ -290,9 +291,15 @@ fn run() -> Result<(), Box<dyn Error>> {
                 autostart: autostart_sync,
                 autostart_store: RegAutostartStore,
                 appearance: host_init.appearance,
+                frame_art_path: host_init.frame_art.clone(),
+                frame_art: FrameArtHost::NotSelected,
                 session: SettingsSession::new(),
                 debug_last_inner: None,
-            }))
+            };
+            // 相框图启动分析（V2 相框外观专题工单 03）：按已保存
+            // 路径分析一次；失败置回退态，相框照常打开。
+            app.reload_frame_art();
+            Ok(Box::new(app))
         }),
     )?;
     Ok(())
