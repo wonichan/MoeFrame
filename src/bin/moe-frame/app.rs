@@ -44,6 +44,8 @@ pub(crate) struct FrameApp {
     /// 库 settings_session）：草稿、基线、待结算与焦点记忆都在其中，
     /// 宿主只采样事件、渲染、执行它返回的动作。
     pub(crate) session: SettingsSession,
+    /// Window level requested during this process; intentionally not persisted.
+    pub(crate) window_level: egui::WindowLevel,
     pub(crate) debug_last_inner: Option<[f32; 2]>,
 }
 impl FrameApp {
