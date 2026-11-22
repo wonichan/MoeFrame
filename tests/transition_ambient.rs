@@ -4,9 +4,9 @@
 
 use moe_frame::frame_layout::LayoutRect;
 use moe_frame::transition_ambient::{
-    blinds_strips, fit_rect, ink_fan, ink_ring_point, pixel_block, pixel_jitter, pixel_order,
-    pixel_visible_count, transition_progress, BLINDS_STRIPS, INK_SEGMENTS, PIXEL_BLOCKS,
-    PIXEL_JITTER_MS,
+    blinds_strips, ease_out_cubic, fit_rect, ink_fan, ink_ring_point, pixel_block, pixel_jitter,
+    pixel_order, pixel_visible_count, transition_progress, BLINDS_STRIPS, INK_SEGMENTS,
+    PIXEL_BLOCKS, PIXEL_JITTER_MS,
 };
 
 fn stage() -> LayoutRect {
@@ -21,6 +21,19 @@ fn wall_clock_progress_clamps_to_the_duration() {
     // 掉帧跳进度：超过时长不欠账，直接满格。
     assert_eq!(transition_progress(900, 650), 1.0);
     assert_eq!(transition_progress(10, 0), 1.0);
+}
+
+#[test]
+fn ease_out_cubic_is_the_shared_curve_for_all_five_animations() {
+    // 全仓唯一实现（宿主卷页也经此取曲线）：端点定死、中点
+    // 1-(1-0.5)^3=0.875（起步快、落位缓）、单调、越界钳制。
+    assert_eq!(ease_out_cubic(0.0), 0.0);
+    assert_eq!(ease_out_cubic(1.0), 1.0);
+    assert!((ease_out_cubic(0.5) - 0.875).abs() < 0.0001);
+    assert!(ease_out_cubic(0.25) < ease_out_cubic(0.5));
+    assert!(ease_out_cubic(0.5) < ease_out_cubic(0.75));
+    assert_eq!(ease_out_cubic(-0.5), 0.0);
+    assert_eq!(ease_out_cubic(1.5), 1.0);
 }
 
 #[test]

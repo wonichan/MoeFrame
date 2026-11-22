@@ -6,47 +6,20 @@
 //! `paint_transition` 的分发补齐，时长与回执仍按骨架走。
 
 use super::*;
+use moe_frame::transition_ambient as ambient;
 
 #[cfg(test)]
 mod tests {
-    use super::{card_frame, curl_frame, fit_rect, progress, CardSide};
-    use crate::egui::{pos2, vec2, Rect};
+    use super::{card_frame, curl_frame, CardSide};
+    use crate::egui::{pos2, Rect};
     use moe_frame::playlist::Direction;
 
     fn stage() -> Rect {
         Rect::from_min_max(pos2(10.0, 20.0), pos2(410.0, 320.0))
     }
 
-    #[test]
-    fn progress_is_wall_clock_and_clamped() {
-        assert_eq!(progress(1_000, 500, 900), 0.0);
-        assert_eq!(progress(1_000, 500, 1_000), 0.0);
-        assert_eq!(progress(1_000, 500, 1_250), 0.5);
-        assert_eq!(progress(1_000, 500, 1_500), 1.0);
-        // 掉帧/迟到不延长总时长：远超截止仍是 1。
-        assert_eq!(progress(1_000, 500, 99_000), 1.0);
-        // 零时长直接完成，避免除零。
-        assert_eq!(progress(1_000, 0, 1_000), 1.0);
-    }
-
-    #[test]
-    fn fit_rect_centers_without_stretching() {
-        // 舞台 400x300（4:3），旧图 1:1：左右留空、上下占满、居中。
-        let fit = fit_rect(stage(), vec2(100.0, 100.0));
-        assert_eq!(
-            fit,
-            Rect::from_min_max(pos2(60.0, 20.0), pos2(360.0, 320.0))
-        );
-        // 旧图比舞台更宽扁：上下留空。
-        let fit = fit_rect(stage(), vec2(200.0, 100.0));
-        assert_eq!(
-            fit,
-            Rect::from_min_max(pos2(10.0, 70.0), pos2(410.0, 270.0))
-        );
-        // 同比例：恰好铺满。
-        let fit = fit_rect(stage(), vec2(400.0, 300.0));
-        assert_eq!(fit, stage());
-    }
+    // 墙钟进度与 fit 矩形的断言在库 tests/transition_ambient.rs
+    // 钉住（宿主 progress/fit_rect 只是类型转换适配，见下）。
 
     #[test]
     fn curl_reveals_from_the_direction_side() {
@@ -152,28 +125,25 @@ impl HostTransition {
     }
 }
 
-/// 墙钟进度：(now - started) / duration，钳到 [0, 1]；掉帧只跳
-/// 进度、不延长总时长（spec 第 8 节）。零时长视为立即完成。
+/// 墙钟进度：宿主侧的 (started, now) 只是时间戳适配，数学走库
+/// `transition_progress`（已流逝 / 总时长，钳到 [0, 1]；掉帧只
+/// 跳进度、不延长总时长，spec 第 8 节；零时长视为立即完成）。
 pub(crate) fn progress(started_ms: u64, duration_ms: u64, now_ms: u64) -> f32 {
-    if duration_ms == 0 {
-        return 1.0;
-    }
-    (now_ms.saturating_sub(started_ms) as f32 / duration_ms as f32).clamp(0.0, 1.0)
-}
-
-fn ease_out_cubic(p: f32) -> f32 {
-    1.0 - (1.0 - p).powi(3)
+    ambient::transition_progress(now_ms.saturating_sub(started_ms), duration_ms)
 }
 
 /// 把纹理按自身宽高比居中放进舞台的最大内接矩形：转场期间新
-/// 旧图比例可不同，绝不拉伸（spec 第 7 节）。
+/// 旧图比例可不同，绝不拉伸（spec 第 7 节）。数学走库
+/// `fit_rect`（LayoutRect + 宽高比口径），这里只做 egui 类型
+/// 转换与舞台退化守卫；纹理尺寸非法时宽高比由库侧判退舞台。
 pub(crate) fn fit_rect(stage: egui::Rect, tex_size: egui::Vec2) -> egui::Rect {
-    if tex_size.x <= 0.0 || tex_size.y <= 0.0 || stage.width() <= 0.0 || stage.height() <= 0.0 {
+    if stage.width() <= 0.0 || stage.height() <= 0.0 {
         return stage;
     }
-    let scale = (stage.width() / tex_size.x).min(stage.height() / tex_size.y);
-    let size = tex_size * scale;
-    egui::Rect::from_center_size(stage.center(), size)
+    to_egui_rect(ambient::fit_rect(
+        to_layout_rect(stage),
+        tex_size.x / tex_size.y,
+    ))
 }
 
 /// 卷页一帧的几何（纯函数）：揭示区、卷边前沿横坐标、旧图亮度。
@@ -184,7 +154,7 @@ pub(crate) struct CurlFrame {
 }
 
 pub(crate) fn curl_frame(direction: Direction, p: f32, stage: egui::Rect) -> CurlFrame {
-    let e = ease_out_cubic(p.clamp(0.0, 1.0));
+    let e = ambient::ease_out_cubic(p);
     let edge_x = match direction {
         Direction::Next => stage.left() + stage.width() * e,
         Direction::Prev => stage.right() - stage.width() * e,

@@ -111,6 +111,7 @@ src/app_core.rs、playlist.rs    轮播状态机与历史
 src/config.rs、config_sync.rs   配置读写与跨进程同步
 src/library.rs、loading.rs      图库扫描与解码
 src/display.rs、display_data.rs 显示数据与共享帧
+src/transition_ambient.rs       切换动画纯计算（fit/进度/曲线与百叶帘、墨晕、像素）
 src/window_geom.rs              窗口位置/尺寸与 DPI 恢复
 src/diagnostics.rs              真实文件日志与窗口观测
 src/bin/moe-frame.rs            正式相框入口：main、日志、配置装载
