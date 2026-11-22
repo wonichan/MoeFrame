@@ -81,6 +81,7 @@ use tray::*;
 
 #[cfg(windows)]
 fn main() {
+    startup_marker("launch", "phase=process-entry");
     if let Err(error) = run() {
         // A GUI subsystem process has no console; surface startup failure via the log file.
         if let Some(directory) = app_directory() {
@@ -102,6 +103,26 @@ fn now_ms(ctx: &egui::Context) -> u64 {
 #[cfg(windows)]
 fn app_directory() -> Option<PathBuf> {
     std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join("MoeFrame"))
+}
+
+/// 启动耗时标记（NFR-4）：与调试日志同文件、不同前缀，只写一行，不参与行为。
+#[cfg(windows)]
+fn startup_marker(event: &str, details: &str) {
+    let Some(directory) = app_directory() else {
+        return;
+    };
+    let path = directory.join("moe_frame.log");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let _ = writeln!(
+        file,
+        "[startup] unix_ms={unix_ms} pid={} event={event} {details}",
+        std::process::id()
+    );
 }
 
 #[cfg(windows)]
@@ -169,6 +190,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             cc.egui_ctx
                 .options_mut(|options| options.zoom_with_keyboard = false);
             cc.egui_ctx.set_zoom_factor(1.0);
+            startup_marker("app-created", "phase=eframe-init-done");
             resize_debug_record("startup", "diagnostic=resize-f317");
             let (command_tx, reply_rx) = worker::spawn(log_path);
             let (tray_event_tx, tray_event_rx) = channel();
@@ -194,6 +216,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 tray_event_rx,
                 menu_event_rx,
                 started: false,
+                first_image_marked: false,
                 texture: None,
                 incoming: None,
                 press_window_pos: None,

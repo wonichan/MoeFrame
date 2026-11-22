@@ -40,6 +40,11 @@ impl FrameApp {
             image.display_pixels[0] as usize,
             image.display_pixels[1] as usize,
         ];
+        // 首张图口径：纹理上传即视为「到首张图显示」，供 NFR-4 启动测量标记；只写日志。
+        if !self.first_image_marked && self.texture.is_none() {
+            self.first_image_marked = true;
+            startup_marker("first-image", "phase=texture-upload");
+        }
         let color = egui::ColorImage::from_rgba_unmultiplied(size, &image.rgba);
         // 暂存新纹理，待核心提交显示后转正；当前宿主不播放转场动画。
         self.incoming =

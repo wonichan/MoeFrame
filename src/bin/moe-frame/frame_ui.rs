@@ -7,6 +7,7 @@ impl eframe::App for FrameApp {
         let ctx = ui.ctx().clone();
         if !self.started {
             self.started = true;
+            startup_marker("first-frame", "phase=egui-first-ui");
             let effects = self.core.handle(Intent::Started);
             self.dispatch(&ctx, effects);
         }

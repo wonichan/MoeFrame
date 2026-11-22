@@ -10,6 +10,8 @@ pub(crate) struct FrameApp {
     pub(crate) tray_event_rx: Receiver<tray_icon::TrayIconEvent>,
     pub(crate) menu_event_rx: Receiver<tray_icon::menu::MenuEvent>,
     pub(crate) started: bool,
+    /// 首张图的纹理已上传：只用于启动耗时标记，不参与行为。
+    pub(crate) first_image_marked: bool,
     pub(crate) texture: Option<egui::TextureHandle>,
     /// 加载完成、等待核心完成显示提交的目标纹理。
     pub(crate) incoming: Option<egui::TextureHandle>,
