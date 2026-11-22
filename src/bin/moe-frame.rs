@@ -11,6 +11,9 @@ compile_error!("MoeFrame supports Windows 10/11 only");
 mod worker;
 
 #[cfg(windows)]
+#[path = "moe-frame/ambient_paint.rs"]
+mod ambient_paint;
+#[cfg(windows)]
 #[path = "moe-frame/app.rs"]
 mod app;
 #[cfg(windows)]
@@ -82,6 +85,8 @@ use winit::platform::windows::WindowExtWindows;
 #[cfg(windows)]
 use worker::{Command, Reply};
 
+#[cfg(windows)]
+use ambient_paint::*;
 #[cfg(windows)]
 use app::*;
 #[cfg(windows)]

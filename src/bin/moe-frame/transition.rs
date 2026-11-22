@@ -2,8 +2,8 @@
 //! 里把动画种类、方向与时长全部定死，宿主只按墙钟进度绘制，
 //! 到期回送 `TransitionCompleted`——记账与纹理转正都等完成时刻。
 //! 本文件是共享骨架 + 有方向组（卷页 / 抽卡）；无方向组（百叶
-//! 帘 / 墨晕 / 像素故障）由工单 03 在 `paint_transition` 的分发
-//! 里补齐，未补齐前按新图直落绘制（时长与回执仍按骨架走）。
+//! 帘 / 墨晕 / 像素故障）的落笔在 ambient_paint（工单 03），经
+//! `paint_transition` 的分发补齐，时长与回执仍按骨架走。
 
 use super::*;
 
@@ -118,6 +118,9 @@ pub(crate) struct HostTransition {
     pub(crate) direction: Direction,
     pub(crate) started_ms: u64,
     pub(crate) duration_ms: u64,
+    /// 像素故障的块序种子（工单 03）：开始时由起始时刻与种类
+    /// 派生，每条动画不同；同条内逐帧不变（逐帧重洗会闪烁）。
+    pub(crate) seed: u64,
 }
 
 impl HostTransition {
@@ -127,11 +130,15 @@ impl HostTransition {
         started_ms: u64,
         duration_ms: u64,
     ) -> Self {
+        let seed = started_ms.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ 0xD1B5_4A32_D192_ED03
+            ^ (kind as u64 + 1).wrapping_mul(0xA076_1D64_78BD_642F);
         Self {
             kind,
             direction,
             started_ms,
             duration_ms,
+            seed,
         }
     }
 
@@ -345,16 +352,19 @@ impl FrameApp {
         };
         let now = (painter.ctx().input(|input| input.time) * 1000.0) as u64;
         let p = transition.progress(now);
-        paint_transition(painter, transition, p, old, new, image_rect);
+        let elapsed_ms = now.saturating_sub(transition.started_ms);
+        paint_transition(painter, transition, p, elapsed_ms, old, new, image_rect);
         true
     }
 }
 
-/// 转场绘制分发：保持局部 match，工单 03 的三类在此补臂。
+/// 转场绘制分发：有方向组在本文件，无方向组三臂转 ambient_paint
+/// （工单 03；三者无方向分支，direction 不传）。
 fn paint_transition(
     painter: &egui::Painter,
     transition: &HostTransition,
     p: f32,
+    elapsed_ms: u64,
     old: &egui::TextureHandle,
     new: &egui::TextureHandle,
     stage: egui::Rect,
@@ -398,15 +408,12 @@ fn paint_transition(
             ];
             paint_quad(painter, texture.id(), corners, gray_tint(frame.brightness));
         }
-        // 工单 03 未落地前的占位：新图直落（时长与完成回执仍走
-        // 骨架，转正等完成时刻），03 在此换成各自的渲染。
-        ConcreteAnimation::Blinds | ConcreteAnimation::Ink | ConcreteAnimation::Pixel => {
-            painter.image(
-                new.id(),
-                fit_rect(stage, new.size_vec2()),
-                full_uv,
-                egui::Color32::WHITE,
-            );
+        // 无方向组（工单 03）：落笔在 ambient_paint，纯计算在
+        // 库 transition_ambient；三种都不读 direction。
+        ConcreteAnimation::Blinds => paint_blinds(painter, p, old, new, stage),
+        ConcreteAnimation::Ink => paint_ink(painter, p, old, new, stage),
+        ConcreteAnimation::Pixel => {
+            paint_pixel(painter, p, elapsed_ms, transition.seed, old, new, stage)
         }
     }
 }
