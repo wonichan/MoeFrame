@@ -143,6 +143,8 @@ fn test_app(test_id: &str) -> (super::FrameApp, std::path::PathBuf) {
         settings_open: false,
         settings_positioned: false,
         pipeline: moe_frame::display_data::DisplayPipeline::new(),
+        heal_repaint_until_ms: 0,
+        stale_target_seen: None,
         geometry: moe_frame::window_geom::GeometryMachine::new(
             host.saved_geom,
             None,
