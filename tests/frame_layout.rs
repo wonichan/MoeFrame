@@ -514,3 +514,52 @@ fn corner_companions_carry_their_arc_radii() {
     assert_eq!(mat.bevel_radius, 5.0);
     assert_eq!(mat.cast_shadow.map(|band| band.radius), Some(10.0));
 }
+
+#[test]
+fn corner_strip_radii_come_from_the_seam() {
+    // 截面条带的角部弧半径（圆角工单 01，测试决策「截面带在
+    // 四角均有弧段对应物」）：12 条带在四角的弧中心半径由布
+    // 局接缝逐带给出，宿主只照单描弧——以外沿圆心为心、按条
+    // 带中心分位自外沿半径逐带递减框宽 / 12。默认内距（外沿
+    // 20、框宽 14）：首带 20 − 14/24、尾带 20 − 14×23/24，
+    // 整组严格递减、带间差恒为框宽 / 12。
+    let shading = builtin_shading(window(), uniform(32.0), 14.0, 18.0);
+    let radii = shading.corner_strip_radii;
+    assert_eq!(radii.len(), 12);
+    assert!(
+        (radii[0] - (20.0 - 14.0 / 24.0)).abs() < 0.001,
+        "首带弧半径应为外沿半径 − 框宽 / 24：{}",
+        radii[0]
+    );
+    assert!(
+        (radii[11] - (20.0 - 14.0 * 23.0 / 24.0)).abs() < 0.001,
+        "尾带弧半径应为外沿半径 − 框宽 ×23/24：{}",
+        radii[11]
+    );
+    for pair in radii.windows(2) {
+        assert!(pair[0] > pair[1], "弧半径应自外沿向内沿严格递减");
+        assert!(
+            (pair[0] - pair[1] - 14.0 / 12.0).abs() < 0.001,
+            "相邻带弧半径差应为框宽 / 12"
+        );
+    }
+    // 框带（40）比外沿半径（20）还宽：带中心越过圆心的尾部
+    // 各带半径钳到 0（角部无弧可描），整组单调不增、无负数。
+    let wide = builtin_shading(window(), uniform(58.0), 40.0, 18.0);
+    let radii = wide.corner_strip_radii;
+    assert!(radii.iter().all(|r| *r >= 0.0), "弧半径不得为负");
+    assert!(
+        radii.windows(2).all(|pair| pair[0] >= pair[1]),
+        "弧半径应单调不增"
+    );
+    assert!(radii[0] > 0.0, "首带仍应有弧");
+    assert_eq!(radii[11], 0.0, "尾带弧半径应钳到 0");
+    // 框宽 = 0：没有框带可描，弧半径整组等于外沿半径（被卡
+    // 纸带夹紧为 18）——宿主按框宽缺席整组跳过，本数据不被
+    // 消费，仍须是良定义的。
+    let frameless = builtin_shading(window(), uniform(18.0), 0.0, 18.0);
+    assert!(
+        frameless.corner_strip_radii.iter().all(|r| *r == 18.0),
+        "框宽 0 时弧半径应整组等于外沿半径"
+    );
+}

@@ -25,6 +25,60 @@ const GRAIN_STREAKS: usize = 14;
 /// 折线感低于可辨阈值。
 const ARC_SEGMENTS: usize = 16;
 
+/// 四角的弧起止方向（单位向量，y 向下），顺序左上、右上、
+/// 右下、左下：每个角自一条边的切向转到相邻边的切向。截面
+/// 弧带、角部木纹、扇形填充三处角部落笔共用这一份方向表
+/// （圆角工单 01 评审修复抽出）。
+const CORNER_DIRS: [((f32, f32), (f32, f32)); 4] = [
+    ((-1.0, 0.0), (0.0, -1.0)),
+    ((0.0, -1.0), (1.0, 0.0)),
+    ((1.0, 0.0), (0.0, 1.0)),
+    ((0.0, 1.0), (-1.0, 0.0)),
+];
+
+/// 一个角的圆弧几何：圆心 + 归一化后的起始角与扫角（起止
+/// 方向换成弧度，扫角取正向）。三处角部落笔共用：给半径与
+/// 角向分位区间即可采样折线点，角度归一化只在此处做一次。
+#[derive(Clone, Copy)]
+struct CornerArc {
+    center: (f32, f32),
+    start: f32,
+    sweep: f32,
+}
+
+impl CornerArc {
+    /// 由某个角边界的四角圆心与角序号组装（序号与
+    /// CORNER_DIRS 同序）。
+    fn of(centers: &[(f32, f32); 4], index: usize) -> Self {
+        let (d0, d1) = CORNER_DIRS[index];
+        let start = d0.1.atan2(d0.0);
+        let mut end = d1.1.atan2(d1.0);
+        while end < start {
+            end += std::f32::consts::TAU;
+        }
+        Self {
+            center: centers[index],
+            start,
+            sweep: end - start,
+        }
+    }
+
+    /// 沿半径 radius、在角向分位 [from, to] 内采样 segments
+    /// 段折线点（两端都含）。
+    fn points(&self, radius: f32, from: f32, to: f32, segments: usize) -> Vec<egui::Pos2> {
+        (0..=segments)
+            .map(|s| {
+                let a =
+                    self.start + self.sweep * (from + (to - from) * (s as f32 / segments as f32));
+                egui::pos2(
+                    self.center.0 + radius * a.cos(),
+                    self.center.1 + radius * a.sin(),
+                )
+            })
+            .collect()
+    }
+}
+
 /// 框体预设的基色：截面明暗、造型线与木纹都由基色按亮度倍率
 /// 合成，不再单列亮/暗色。
 fn preset_base(preset: FramePreset) -> egui::Color32 {
@@ -129,53 +183,34 @@ fn paint_edge(
 /// 四角的截面渐变（圆角工单 01）：以窗口外沿圆心为心、按条带
 /// 分位逐圈描弧，颜色与归属边的直边段同档位——角的归属与直
 /// 边铺法一致（上边带管上两角、下边带管下两角），截面明暗
-/// 因此沿弧连续。弧的内径止于外沿半径 − 框宽：再往里是卡纸
-/// 层自己的圆角填充，不归框带。
+/// 因此沿弧连续。逐带的弧半径由布局接缝给出
+/// （corner_strip_radii，与直边条带同分位），本函数只照单
+/// 描弧。弧的内径止于外沿半径 − 框宽：再往里是卡纸层自己
+/// 的圆角填充，不归框带。
 fn paint_corner_arcs(painter: &egui::Painter, shading: &BuiltinShading, base: egui::Color32) {
     let outer = shading.corners.outer;
     let frame_width = shading.layers.mat.left - shading.layers.body.left;
     if outer.radius <= 0.0 || frame_width <= 0.0 {
         return;
     }
-    // 四角（左上、右上、右下、左下）的弧起止方向（单位向量，
-    // y 向下）：自一条边切向转到相邻边切向。
-    const ARCS: [((f32, f32), (f32, f32)); 4] = [
-        ((-1.0, 0.0), (0.0, -1.0)),
-        ((0.0, -1.0), (1.0, 0.0)),
-        ((1.0, 0.0), (0.0, 1.0)),
-        ((0.0, 1.0), (-1.0, 0.0)),
-    ];
     let owners = [
         &shading.edges[0],
         &shading.edges[0],
         &shading.edges[2],
         &shading.edges[2],
     ];
-    for (ci, (d0, d1)) in ARCS.iter().enumerate() {
-        let center = outer.centers[ci];
-        let a0 = d0.1.atan2(d0.0);
-        let mut a1 = d1.1.atan2(d1.0);
-        while a1 < a0 {
-            a1 += std::f32::consts::TAU;
-        }
-        for i in 0..EDGE_STRIPS {
-            let f0 = i as f32 / EDGE_STRIPS as f32;
-            let f1 = (i + 1) as f32 / EDGE_STRIPS as f32;
-            let fm = (f0 + f1) / 2.0;
-            let radius = outer.radius - fm * frame_width;
+    let strips = shading.corner_strip_radii.len() as f32;
+    for (ci, owner) in owners.iter().enumerate() {
+        let arc = CornerArc::of(&outer.centers, ci);
+        for (i, &radius) in shading.corner_strip_radii.iter().enumerate() {
             if radius <= 0.0 {
                 continue;
             }
-            let color = shade(base, tone_at(&owners[ci].stops, fm));
-            let points: Vec<egui::Pos2> = (0..=ARC_SEGMENTS)
-                .map(|s| {
-                    let a = a0 + (a1 - a0) * (s as f32 / ARC_SEGMENTS as f32);
-                    egui::pos2(center.0 + radius * a.cos(), center.1 + radius * a.sin())
-                })
-                .collect();
+            let fm = (i as f32 + 0.5) / strips;
+            let color = shade(base, tone_at(&owner.stops, fm));
             painter.add(egui::Shape::line(
-                points,
-                egui::Stroke::new(frame_width / EDGE_STRIPS as f32, color),
+                arc.points(radius, 0.0, 1.0, ARC_SEGMENTS),
+                egui::Stroke::new(frame_width / strips, color),
             ));
         }
     }
@@ -191,20 +226,9 @@ fn paint_corner_grain(painter: &egui::Painter, shading: &BuiltinShading, base: e
     if outer.radius <= 0.0 || frame_width <= 0.0 {
         return;
     }
-    const ARCS: [((f32, f32), (f32, f32)); 4] = [
-        ((-1.0, 0.0), (0.0, -1.0)),
-        ((0.0, -1.0), (1.0, 0.0)),
-        ((1.0, 0.0), (0.0, 1.0)),
-        ((0.0, 1.0), (-1.0, 0.0)),
-    ];
     let mut grain = Grain(0x27D4_EB2F);
-    for (ci, (d0, d1)) in ARCS.iter().enumerate() {
-        let center = outer.centers[ci];
-        let a0 = d0.1.atan2(d0.0);
-        let mut a1 = d1.1.atan2(d1.0);
-        while a1 < a0 {
-            a1 += std::f32::consts::TAU;
-        }
+    for ci in 0..4 {
+        let arc = CornerArc::of(&outer.centers, ci);
         for _ in 0..5 {
             let frac = grain.range(0.08, 0.92);
             let start = grain.range(0.0, 0.5);
@@ -220,12 +244,7 @@ fn paint_corner_grain(painter: &egui::Painter, shading: &BuiltinShading, base: e
             if radius <= 1.0 {
                 continue;
             }
-            let points: Vec<egui::Pos2> = (0..=6)
-                .map(|s| {
-                    let a = a0 + (a1 - a0) * (start + len * (s as f32 / 6.0));
-                    egui::pos2(center.0 + radius * a.cos(), center.1 + radius * a.sin())
-                })
-                .collect();
+            let points = arc.points(radius, start, start + len, 6);
             painter.add(egui::Shape::line(
                 points,
                 egui::Stroke::new(1.0, with_alpha(shade(base, tone), alpha)),
@@ -374,51 +393,41 @@ fn paint_bevel(painter: &egui::Painter, outer: LayoutRect, image: LayoutRect, im
     }
 }
 
+/// 一个角的扇形填充参数（圆角工单 01）：角的圆弧几何、矩形
+/// 角点、外弧半径、可选的内弧半径（在场时填两弧之间的环
+/// 扇）与填充色，打包成一份落笔参数。
+struct CornerSector {
+    arc: CornerArc,
+    corner: (f32, f32),
+    outer_radius: f32,
+    inner_radius: Option<f32>,
+    color: egui::Color32,
+}
+
 /// 一个角的扇形填充路径（圆角工单 01）：外弧与角点围成的
 /// 区域；给了内弧半径时是两弧之间的环扇。路径 = 角点 → 沿
 /// 外弧自一侧切点到另一侧切点 →（环扇时）沿内弧反向回到
 /// 起点一侧 → 闭合。弧以采样折线近似，填充走路径填充（可
 /// 处理弧内凹的形状）。
-#[allow(clippy::too_many_arguments)]
-fn fill_corner_sector(
-    painter: &egui::Painter,
-    center: (f32, f32),
-    corner: (f32, f32),
-    d0: (f32, f32),
-    d1: (f32, f32),
-    r_outer: f32,
-    r_inner: Option<f32>,
-    color: egui::Color32,
-) {
-    if r_outer <= 0.0 {
+fn fill_corner_sector(painter: &egui::Painter, sector: CornerSector) {
+    if sector.outer_radius <= 0.0 {
         return;
     }
-    let a0 = d0.1.atan2(d0.0);
-    let mut a1 = d1.1.atan2(d1.0);
-    while a1 < a0 {
-        a1 += std::f32::consts::TAU;
-    }
-    let arc = |radius: f32, reverse: bool| -> Vec<egui::Pos2> {
-        let mut pts: Vec<egui::Pos2> = (0..=ARC_SEGMENTS)
-            .map(|s| {
-                let a = a0 + (a1 - a0) * (s as f32 / ARC_SEGMENTS as f32);
-                egui::pos2(center.0 + radius * a.cos(), center.1 + radius * a.sin())
-            })
-            .collect();
-        if reverse {
-            pts.reverse();
-        }
-        pts
-    };
-    let mut points = vec![egui::pos2(corner.0, corner.1)];
-    points.extend(arc(r_outer, false));
-    if let Some(inner) = r_inner {
-        points.extend(arc(inner, true));
+    let mut points = vec![egui::pos2(sector.corner.0, sector.corner.1)];
+    points.extend(
+        sector
+            .arc
+            .points(sector.outer_radius, 0.0, 1.0, ARC_SEGMENTS),
+    );
+    if let Some(inner) = sector.inner_radius {
+        let mut inner_points = sector.arc.points(inner, 0.0, 1.0, ARC_SEGMENTS);
+        inner_points.reverse();
+        points.extend(inner_points);
     }
     painter.add(egui::Shape::Path(egui::epaint::PathShape {
         points,
         closed: true,
-        fill: color,
+        fill: sector.color,
         stroke: egui::epaint::PathStroke::NONE,
     }));
 }
@@ -446,36 +455,29 @@ fn paint_image_corner_patches(
         (image.right, image.bottom),
         (image.left, image.bottom),
     ];
-    const DIRS: [((f32, f32), (f32, f32)); 4] = [
-        ((-1.0, 0.0), (0.0, -1.0)),
-        ((0.0, -1.0), (1.0, 0.0)),
-        ((1.0, 0.0), (0.0, 1.0)),
-        ((0.0, 1.0), (-1.0, 0.0)),
-    ];
     for (ci, &corner) in corners.iter().enumerate() {
-        let center = boundary.centers[ci];
-        let (d0, d1) = DIRS[ci];
+        let arc = CornerArc::of(&boundary.centers, ci);
         match &shading.mat {
             Some(mat) => {
                 fill_corner_sector(
                     painter,
-                    center,
-                    corner,
-                    d0,
-                    d1,
-                    mat.bevel_radius,
-                    None,
-                    MAT_COLOR,
+                    CornerSector {
+                        arc,
+                        corner,
+                        outer_radius: mat.bevel_radius,
+                        inner_radius: None,
+                        color: MAT_COLOR,
+                    },
                 );
                 fill_corner_sector(
                     painter,
-                    center,
-                    corner,
-                    d0,
-                    d1,
-                    mat.bevel_radius,
-                    Some(boundary.radius),
-                    BEVEL_COLOR,
+                    CornerSector {
+                        arc,
+                        corner,
+                        outer_radius: mat.bevel_radius,
+                        inner_radius: Some(boundary.radius),
+                        color: BEVEL_COLOR,
+                    },
                 );
             }
             None => {
@@ -487,13 +489,13 @@ fn paint_image_corner_patches(
                 let color = shade(base, owner.stops[3].1);
                 fill_corner_sector(
                     painter,
-                    center,
-                    corner,
-                    d0,
-                    d1,
-                    boundary.radius,
-                    None,
-                    color,
+                    CornerSector {
+                        arc,
+                        corner,
+                        outer_radius: boundary.radius,
+                        inner_radius: None,
+                        color,
+                    },
                 );
             }
         }

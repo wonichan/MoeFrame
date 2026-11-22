@@ -375,11 +375,11 @@ pub struct FrameCorners {
 }
 
 /// 内置画框的着色计划：三层矩形 + 框带截面着色 + 造型线 + 卡纸
-/// 着色 + 三个角边界的圆角，全部纯数据，宿主只照单落笔（颜色
-/// 按预设在宿主侧合成）。深度线索来自截面明暗、两道贴边投影
-/// 与卡纸斜切面——窗口尺寸即外框尺寸、窗外无可绘制像素，投影
-/// 只能落在相邻层面上（框影落卡纸、卡纸影落画面），不存在
-/// 游离的灰带。
+/// 着色 + 三个角边界的圆角 + 截面条带的角部弧半径，全部纯数据，
+/// 宿主只照单落笔（颜色按预设在宿主侧合成）。深度线索来自截面
+/// 明暗、两道贴边投影与卡纸斜切面——窗口尺寸即外框尺寸、窗外
+/// 无可绘制像素，投影只能落在相邻层面上（框影落卡纸、卡纸影
+/// 落画面），不存在游离的灰带。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BuiltinShading {
     pub layers: BuiltinLayers,
@@ -387,6 +387,15 @@ pub struct BuiltinShading {
     pub profile: Option<ProfileLines>,
     pub mat: Option<MatShading>,
     pub corners: FrameCorners,
+    /// 截面条带在四角逐圈描弧的弧中心半径（外沿 → 内沿序，与
+    /// 直边条带同分位同带数）：以外沿圆心为心，按条带中心分位
+    /// 自外沿半径起逐带递减（每带框宽 / 带数），止于外沿半径
+    /// − 框宽。框带比外沿半径还宽时，带中心越过圆心的尾部各
+    /// 带钳到 0（该带在角部无弧可描，宿主跳过）。四角共用同
+    /// 一组半径，圆心各取 corners.outer（圆角工单 01 评审修复：
+    /// 弧半径与造型线半径同一手法，由接缝按分位插值给出，
+    /// 宿主不推导）。
+    pub corner_strip_radii: [f32; CORNER_STRIP_COUNT],
 }
 
 /// 截面明暗走向（分位，基础倍率）：外沿略暗 → 中段隆起受光 →
@@ -412,6 +421,10 @@ const OUTER_CORNER_RADIUS: f32 = 20.0;
 const FRAME_INNER_CORNER_RADIUS: f32 = 10.0;
 /// 卡纸内沿（画面边缘）圆角半径定值（逻辑像素）。
 const IMAGE_CORNER_RADIUS: f32 = 12.0;
+/// 截面条带的角部弧半径采样带数：与宿主直边条带的细分同为
+/// 12 分，角部弧半径按同一分位逐带给出（见 BuiltinShading
+/// 的 corner_strip_radii）。
+const CORNER_STRIP_COUNT: usize = 12;
 /// 造型线成立的最小框宽：低于此带内只剩截面渐变本身。
 const PROFILE_MIN_FRAME_WIDTH: f32 = 2.0;
 /// 凹槽成立的最小框宽。
@@ -500,6 +513,13 @@ pub fn builtin_shading(
             .then(|| radius_at(frame_width - 3.0)),
         lip_radius: radius_at(frame_width - 1.0),
     });
+    // 截面条带在四角的弧中心半径：与造型线半径同一手法，按
+    // 条带中心分位在外沿圆心下逐带内收（分位 × 框宽即该带在
+    // 框带中的内收量），宿主只照单描弧。
+    let corner_strip_radii = std::array::from_fn(|i| {
+        let fm = (i as f32 + 0.5) / CORNER_STRIP_COUNT as f32;
+        (outer_radius - fm * frame_width).max(0.0)
+    });
     let mat = (mat_width > 0.0).then(|| {
         let bevel_width = BEVEL_WIDTH.min(mat_width);
         MatShading {
@@ -526,5 +546,6 @@ pub fn builtin_shading(
         profile,
         mat,
         corners,
+        corner_strip_radii,
     }
 }
