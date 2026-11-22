@@ -48,6 +48,21 @@ pub(crate) struct FrameApp {
     /// 经接缝注入，切换失败时状态不动（回滚）。
     pub(crate) autostart: AutostartSync,
     pub(crate) autostart_store: RegAutostartStore,
+    /// 当前外观模式（V2 相框外观专题工单 01）：宿主持有，几何观察
+    /// 与解码口径的四边内距经 effective_insets 给出（内置画框按画框
+    /// 参数、自定义相框图按分析结果缩放、回退时按内置默认画框）；
+    /// 设置窗切换时更新本字段并经 config_sync 写回。
+    pub(crate) appearance: AppearanceMode,
+    /// 内置画框参数（V2 相框外观专题工单 02）：框体预设与框宽 /
+    /// 卡纸宽；内置模式的内距（框宽 + 卡纸宽）与三层绘制都读它，
+    /// 设置窗调整时更新本字段并经 config_sync 整组写回。
+    pub(crate) frame: BuiltinFrame,
+    /// 自定义相框图的已保存路径（V2 相框外观专题工单 03）：只存
+    /// 路径、文件不复制；选定经 config_sync 写回。
+    pub(crate) frame_art_path: Option<PathBuf>,
+    /// 自定义相框图的当前分析状态（V2 相框外观专题工单 03）：
+    /// 启动、每次切到自定义、选新图时经 reload_frame_art 刷新。
+    pub(crate) frame_art: FrameArtHost,
     /// 设置窗会话（工单 19 的时序，architecture-deepening 工单 02 起归
     /// 库 settings_session）：草稿、基线、待结算与焦点记忆都在其中，
     /// 宿主只采样事件、渲染、执行它返回的动作。
@@ -157,7 +172,87 @@ impl FrameApp {
         }
     }
 }
+/// 自定义相框图在宿主侧的状态（V2 相框外观专题工单 03）：分析
+/// 在库 frame_art（纯逻辑），宿主只持有结论、待上传像素与纹理。
+pub(crate) enum FrameArtHost {
+    /// 尚未选择相框图。
+    NotSelected,
+    /// 分析成功：像素在首帧上传为纹理后释放；绘制走九宫格。
+    Loaded {
+        analysis: FrameArtAnalysis,
+        pixels: Option<Vec<u8>>,
+        texture: Option<egui::TextureHandle>,
+    },
+    /// 文件缺失或分析拒绝：按内置默认画框回退（胡桃木 + 默认
+    /// 宽，与用户自己的内置参数无关，spec 定案），原因在设置窗
+    /// 显示、日志记一行；已保存的外观模式与路径不改，用户修好
+    /// 图后切回自定义即恢复。
+    Fallback { reason: String },
+}
+
+/// 相框图回退记一行到现有日志文件（与图片跳过日志同格式同文件）。
+fn log_frame_art_fallback(path: &std::path::Path, reason: &str) {
+    let Some(directory) = app_directory() else {
+        return;
+    };
+    let error = moe_frame::decode_validation::DecodeError {
+        path: path.to_path_buf(),
+        reason: reason.to_owned(),
+    };
+    let _ = moe_frame::loading::append_skip_log(&directory.join("moe_frame.log"), &[error]);
+}
+
 impl FrameApp {
+    /// （重新）分析当前相框图路径：启动、每次切到自定义、选新图
+    /// 三处共用。成功存分析结论待上传纹理；失败置回退并记一行
+    /// 日志（不改已保存的模式与路径，不弹窗不崩溃）。
+    pub(crate) fn reload_frame_art(&mut self) {
+        let Some(path) = self.frame_art_path.clone() else {
+            self.frame_art = FrameArtHost::NotSelected;
+            return;
+        };
+        match moe_frame::frame_art::load_frame_art(&path) {
+            Ok(loaded) => {
+                self.frame_art = FrameArtHost::Loaded {
+                    analysis: loaded.analysis,
+                    pixels: Some(loaded.rgba),
+                    texture: None,
+                };
+            }
+            Err(reason) => {
+                log_frame_art_fallback(&path, &reason);
+                self.frame_art = FrameArtHost::Fallback { reason };
+            }
+        }
+    }
+
+    /// 当前生效外观（库 frame_layout 一次裁决）：绘制计划、生效
+    /// 内距与内置绘制参数都只消费这一份结论，「自定义未生效即
+    /// 回退内置默认画框」的规则不在宿主重复编码。
+    pub(crate) fn effective_appearance(&self) -> EffectiveAppearance {
+        effective_appearance(self.appearance, self.custom_art_active(), self.frame)
+    }
+
+    /// 当前生效的四边内距（逻辑像素）：自定义生效时为检测内距
+    /// 按「窗口内宽 ÷ 相框图原宽」缩放；其余结论（极简全 0、
+    /// 内置按用户参数、回退按默认参数）的内距由结论自身给出。
+    pub(crate) fn effective_insets(&self, inner_width: f32) -> Insets {
+        match self.effective_appearance() {
+            EffectiveAppearance::CustomArt => match &self.frame_art {
+                FrameArtHost::Loaded { analysis, .. } => analysis.insets_at(inner_width),
+                // CustomArt 只在分析成功时裁决得出，此分支不可达。
+                _ => Insets::ZERO,
+            },
+            effective => effective.insets(),
+        }
+    }
+
+    /// 当前是否按自定义相框图绘制（模式为自定义且分析成功）。
+    pub(crate) fn custom_art_active(&self) -> bool {
+        self.appearance == AppearanceMode::Custom
+            && matches!(self.frame_art, FrameArtHost::Loaded { .. })
+    }
+
     pub(crate) fn apply_autostart(&mut self, target: bool) {
         let Ok(exe) = std::env::current_exe() else {
             return;

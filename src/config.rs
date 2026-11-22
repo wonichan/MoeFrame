@@ -4,7 +4,7 @@
 //! 整个文件不可解析时恢复为合法默认配置，不崩溃。三个 P1 键（`pause_on_hover`、
 //! `animation`、`show_filename`）只保存与修复，不驱动行为。
 
-use crate::playlist::HISTORY_LIMIT;
+use crate::{playlist::HISTORY_LIMIT, window_geom::Insets};
 use std::{fs, io, path::Path};
 use toml_edit::{value, DocumentMut, Item, Table};
 
@@ -12,6 +12,14 @@ pub const MIN_INTERVAL_SECS: i64 = 3;
 pub const MAX_INTERVAL_SECS: i64 = 99_999_999;
 
 pub const DEFAULT_INTERVAL_SECS: i64 = 30;
+
+/// 框宽 / 卡纸宽两个滑杆的共同范围（逻辑 px，V2 相框外观专题
+/// 工单 02）：0..=40，卡纸可为 0。
+pub const MAX_LAYER_WIDTH: f32 = 40.0;
+/// 框宽默认值（逻辑 px）：spec 定案的初始裱法，真机再校准。
+pub const DEFAULT_FRAME_WIDTH: f32 = 14.0;
+/// 卡纸宽默认值（逻辑 px）：同上。
+pub const DEFAULT_MAT_WIDTH: f32 = 18.0;
 
 /// 秒数草稿的提交解析（工单 19）：与配置读取修复是两套规则——解析失败
 /// （空白、小数、非数字）返回 None，调用方保留上次有效值，绝不回退默认
@@ -57,6 +65,10 @@ animation = \"slide\"
 
 [display]
 show_filename = false
+appearance = \"builtin\"
+frame_preset = \"walnut\"
+frame_width = 14.0
+mat_width = 18.0
 
 [general]
 autostart = false
@@ -113,10 +125,99 @@ pub struct PlaybackConfig {
     pub animation: Animation,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// 外观模式（`appearance` 配置键，V2 相框外观专题工单 01）：极简 /
+/// 内置画框 / 自定义相框图三选一，默认内置画框。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppearanceMode {
+    Minimal,
+    Builtin,
+    Custom,
+}
+
+impl AppearanceMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AppearanceMode::Minimal => "minimal",
+            AppearanceMode::Builtin => "builtin",
+            AppearanceMode::Custom => "custom",
+        }
+    }
+
+    /// 本模式自身的静态四边内距：内置画框按画框参数供给——
+    /// 单边 = 框宽 + 卡纸宽、四边相等（工单 02）；极简恒全 0；
+    /// 自定义相框图无静态内距（全 0），其生效内距由宿主
+    /// effective_insets 在分析成功时换成检测结果（工单 03）。
+    pub fn insets(self, frame: BuiltinFrame) -> Insets {
+        match self {
+            AppearanceMode::Builtin => {
+                let side = frame.frame_width + frame.mat_width;
+                Insets {
+                    left: side,
+                    top: side,
+                    right: side,
+                    bottom: side,
+                }
+            }
+            AppearanceMode::Minimal | AppearanceMode::Custom => Insets::ZERO,
+        }
+    }
+}
+
+/// 框体预设（`frame_preset` 配置键，V2 相框外观专题工单 02）：
+/// 胡桃木 / 原木 / 黑 / 白四款；颜色与简易木纹质感由宿主绘制层
+/// 合成，不引入图片素材。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FramePreset {
+    Walnut,
+    Oak,
+    Black,
+    White,
+}
+
+impl FramePreset {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FramePreset::Walnut => "walnut",
+            FramePreset::Oak => "oak",
+            FramePreset::Black => "black",
+            FramePreset::White => "white",
+        }
+    }
+}
+
+/// 内置画框参数（`frame_preset` / `frame_width` / `mat_width`
+/// 配置键，V2 相框外观专题工单 02）：框体预设与框宽、卡纸宽
+/// 两个滑杆值（逻辑 px，各 0..=MAX_LAYER_WIDTH，卡纸可为 0）；
+/// 单边内距 = 框宽 + 卡纸宽。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BuiltinFrame {
+    pub preset: FramePreset,
+    pub frame_width: f32,
+    pub mat_width: f32,
+}
+
+impl Default for BuiltinFrame {
+    fn default() -> Self {
+        Self {
+            preset: FramePreset::Walnut,
+            frame_width: DEFAULT_FRAME_WIDTH,
+            mat_width: DEFAULT_MAT_WIDTH,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct DisplayConfig {
     /// P1：只保存，不驱动行为。
     pub show_filename: bool,
+    /// 外观模式（V2 相框外观专题工单 01）。
+    pub appearance: AppearanceMode,
+    /// 内置画框参数（V2 相框外观专题工单 02）。
+    pub frame: BuiltinFrame,
+    /// 自定义相框图的路径（V2 相框外观专题工单 03）：只存路径、
+    /// 不复制文件（与图库文件夹同一口径），内容每次启动与切换
+    /// 时重新分析。
+    pub frame_art: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,7 +231,7 @@ pub struct GeneralConfig {
     pub history: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub image_folder: Option<String>,
     pub recursive: bool,
@@ -159,6 +260,9 @@ impl Default for Config {
             },
             display: DisplayConfig {
                 show_filename: false,
+                appearance: AppearanceMode::Builtin,
+                frame: BuiltinFrame::default(),
+                frame_art: None,
             },
             general: GeneralConfig {
                 autostart: false,
@@ -270,6 +374,44 @@ impl ConfigStore {
             config.window.y = y;
             config.window.width = width;
             config.window.height = height;
+        })
+    }
+
+    /// 保存外观模式（V2 相框外观专题工单 01）：只改 display.appearance，
+    /// 其余字段原样保留。
+    pub fn set_appearance_mode(&mut self, mode: AppearanceMode) -> io::Result<()> {
+        self.update(|document, config| {
+            document["display"]["appearance"] = value(mode.as_str());
+            config.display.appearance = mode;
+        })
+    }
+
+    /// 保存内置画框参数（V2 相框外观专题工单 02）：只改 display 的
+    /// frame_preset / frame_width / mat_width 三键，其余字段原样保留。
+    pub fn set_builtin_frame(&mut self, frame: BuiltinFrame) -> io::Result<()> {
+        self.update(|document, config| {
+            document["display"]["frame_preset"] = value(frame.preset.as_str());
+            document["display"]["frame_width"] = value(f64::from(frame.frame_width));
+            document["display"]["mat_width"] = value(f64::from(frame.mat_width));
+            config.display.frame = frame;
+        })
+    }
+
+    /// 保存自定义相框图的路径（V2 相框外观专题工单 03）：只改
+    /// display.frame_art，None 时删键；其余字段原样保留。
+    pub fn set_frame_art_path(&mut self, path: Option<&str>) -> io::Result<()> {
+        let path = path.map(str::to_owned);
+        self.update(|document, config| match &path {
+            Some(path) => {
+                document["display"]["frame_art"] = value(path.clone());
+                config.display.frame_art = Some(path.clone());
+            }
+            None => {
+                if let Some(table) = document["display"].as_table_mut() {
+                    table.remove("frame_art");
+                }
+                config.display.frame_art = None;
+            }
         })
     }
 
@@ -412,6 +554,43 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
         *repaired = true;
     }
     let show_filename = repair_bool(display_table, "show_filename", false, repaired);
+    let appearance = match display_table.get("appearance").and_then(Item::as_str) {
+        Some("minimal") => AppearanceMode::Minimal,
+        Some("builtin") => AppearanceMode::Builtin,
+        Some("custom") => AppearanceMode::Custom,
+        _ => {
+            display_table["appearance"] = value(AppearanceMode::Builtin.as_str());
+            *repaired = true;
+            AppearanceMode::Builtin
+        }
+    };
+    let frame_preset = match display_table.get("frame_preset").and_then(Item::as_str) {
+        Some("walnut") => FramePreset::Walnut,
+        Some("oak") => FramePreset::Oak,
+        Some("black") => FramePreset::Black,
+        Some("white") => FramePreset::White,
+        _ => {
+            display_table["frame_preset"] = value(FramePreset::Walnut.as_str());
+            *repaired = true;
+            FramePreset::Walnut
+        }
+    };
+    let frame_width =
+        repair_layer_width(display_table, "frame_width", DEFAULT_FRAME_WIDTH, repaired);
+    let mat_width = repair_layer_width(display_table, "mat_width", DEFAULT_MAT_WIDTH, repaired);
+    // 相框图路径（工单 03）：缺失即未选（不写键）；不是字符串时
+    // 删键按未选处理，不牵连同表其他字段。
+    let frame_art = match display_table.get("frame_art") {
+        Some(item) => match item.as_str() {
+            Some(text) => Some(text.to_owned()),
+            None => {
+                display_table.remove("frame_art");
+                *repaired = true;
+                None
+            }
+        },
+        None => None,
+    };
 
     let general_table = ensure_table(root, "general", repaired);
     let autostart = repair_bool(general_table, "autostart", false, repaired);
@@ -445,7 +624,16 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
             pause_on_hover,
             animation,
         },
-        display: DisplayConfig { show_filename },
+        display: DisplayConfig {
+            show_filename,
+            appearance,
+            frame: BuiltinFrame {
+                preset: frame_preset,
+                frame_width,
+                mat_width,
+            },
+            frame_art,
+        },
         general: GeneralConfig {
             autostart,
             current_image,
@@ -531,6 +719,32 @@ fn repair_dimension(table: &mut Table, key: &str, default: u32, repaired: &mut b
         Some(raw) if raw > 0 && raw <= i64::from(u32::MAX) => raw as u32,
         _ => {
             table[key] = value(i64::from(default));
+            *repaired = true;
+            default
+        }
+    }
+}
+
+/// 画框层宽字段（框宽 / 卡纸宽）的修复：整数与浮点都收，钳制到
+/// [0, MAX_LAYER_WIDTH]；缺失、非数值或非有限值回默认。钳制与
+/// 回退都写回并标记 repaired（与 interval_secs 的修复口径一致）；
+/// 合法整数原样保留，不改写其表示。
+fn repair_layer_width(table: &mut Table, key: &str, default: f32, repaired: &mut bool) -> f32 {
+    let raw = table.get(key).and_then(|item| {
+        item.as_float()
+            .or_else(|| item.as_integer().map(|raw| raw as f64))
+    });
+    match raw {
+        Some(raw) if raw.is_finite() => {
+            let clamped = (raw as f32).clamp(0.0, MAX_LAYER_WIDTH);
+            if clamped != raw as f32 {
+                table[key] = value(f64::from(clamped));
+                *repaired = true;
+            }
+            clamped
+        }
+        _ => {
+            table[key] = value(f64::from(default));
             *repaired = true;
             default
         }

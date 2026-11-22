@@ -10,7 +10,9 @@
 //! 基线与快照不一致的字段草稿作废重播种。原 settings_draft 的两条
 //! 结算函数已吸收为本模块的内部实现，不再是公开面。
 
-use crate::config::{parse_interval_draft, PlaybackMode};
+use crate::config::{
+    parse_interval_draft, AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode,
+};
 
 /// 带草稿的输入字段。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +28,9 @@ pub struct EffectiveValues {
     pub folder_text: String,
     pub interval_secs: i64,
     pub mode: PlaybackMode,
+    pub appearance: AppearanceMode,
+    /// 内置画框参数（工单 02）：预设与双滑杆的同值守卫以它为准。
+    pub frame: BuiltinFrame,
 }
 
 /// 打开请求的裁决。
@@ -41,25 +46,33 @@ pub enum OpenDecision {
 #[derive(Clone, Debug, Default)]
 pub struct Picks {
     pub mode: Option<PlaybackMode>,
+    pub appearance: Option<AppearanceMode>,
     pub interval: Option<i64>,
     pub restore_default: bool,
     pub autostart: Option<bool>,
     pub rescan: bool,
     pub folder_pick: bool,
+    pub frame_art_pick: bool,
     pub open_image: bool,
     pub open_folder: bool,
     pub copy_path: bool,
     pub close: bool,
+    /// 内置画框参数点选（工单 02）：预设单选与框宽 / 卡纸宽滑杆。
+    pub frame_preset: Option<FramePreset>,
+    pub frame_width: Option<f32>,
+    pub mat_width: Option<f32>,
 }
 
 /// 本帧要由宿主执行的动作，按返回顺序执行。顺序即定案的应用顺序：
-/// 回车结算 → 模式 → 间隔预设 → 恢复默认 → 自启 → 当前图三项 →
-/// 关闭/重扫/选文件夹（后三者否决待结算）→ 帧尾待结算结算。
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// 回车结算 → 模式 → 外观 → 内置画框参数（预设 → 框宽 → 卡纸宽）→
+/// 间隔预设 → 恢复默认 → 自启 → 当前图三项 →
+/// 关闭/重扫/选文件夹/选相框图（后四者否决待结算）→ 帧尾待结算结算。
+#[derive(Clone, Debug, PartialEq)]
 pub enum SessionAction {
     CommitFolder(String),
     CommitInterval(i64),
     ApplyMode(PlaybackMode),
+    ApplyAppearance(AppearanceMode),
     ApplyIntervalPreset(i64),
     RestoreDefaultGeometry,
     ApplyAutostart(bool),
@@ -68,7 +81,11 @@ pub enum SessionAction {
     CopyCurrentPath,
     Rescan,
     PickFolder,
+    PickFrameArt,
     CloseWindow,
+    ApplyFramePreset(FramePreset),
+    ApplyFrameWidth(f32),
+    ApplyMatWidth(f32),
 }
 
 /// 一个草稿字段的文字与播种基线。
@@ -96,6 +113,10 @@ pub struct SettingsSession {
     viewport_focused: bool,
     /// 帧首快照的播放模式：模式点选的同值守卫用（点选应用后随之推进）。
     mode_now: Option<PlaybackMode>,
+    /// 帧首快照的外观模式：外观点选的同值守卫用（与 mode_now 同规）。
+    appearance_now: Option<AppearanceMode>,
+    /// 帧首快照的内置画框参数：预设与滑杆点选的同值守卫用（同规）。
+    frame_now: Option<BuiltinFrame>,
 }
 
 impl SettingsSession {
@@ -129,6 +150,8 @@ impl SettingsSession {
         self.seconds_focused = false;
         self.viewport_focused = false;
         self.mode_now = Some(effective.mode);
+        self.appearance_now = Some(effective.appearance);
+        self.frame_now = Some(effective.frame);
         OpenDecision::Opened
     }
 
@@ -137,6 +160,8 @@ impl SettingsSession {
     /// 其待结算一并取消。
     pub fn begin_frame(&mut self, effective: &EffectiveValues) {
         self.mode_now = Some(effective.mode);
+        self.appearance_now = Some(effective.appearance);
+        self.frame_now = Some(effective.frame);
         if self.path.base != effective.folder_text {
             self.path.base = effective.folder_text.clone();
             self.path.text = effective.folder_text.clone();
@@ -232,6 +257,39 @@ impl SettingsSession {
                 actions.push(SessionAction::ApplyMode(mode));
             }
         }
+        if let Some(appearance) = picks.appearance {
+            // 外观点选与播放模式同规：同值守卫，点选后内部推进。
+            if self.appearance_now != Some(appearance) {
+                self.appearance_now = Some(appearance);
+                actions.push(SessionAction::ApplyAppearance(appearance));
+            }
+        }
+        // 内置画框参数与外观点选同规：逐项同值守卫、点选后内部
+        // 推进，顺序为预设 → 框宽 → 卡纸宽。
+        if let Some(preset) = picks.frame_preset {
+            if self.frame_now.map(|frame| frame.preset) != Some(preset) {
+                if let Some(frame) = &mut self.frame_now {
+                    frame.preset = preset;
+                }
+                actions.push(SessionAction::ApplyFramePreset(preset));
+            }
+        }
+        if let Some(width) = picks.frame_width {
+            if self.frame_now.map(|frame| frame.frame_width) != Some(width) {
+                if let Some(frame) = &mut self.frame_now {
+                    frame.frame_width = width;
+                }
+                actions.push(SessionAction::ApplyFrameWidth(width));
+            }
+        }
+        if let Some(width) = picks.mat_width {
+            if self.frame_now.map(|frame| frame.mat_width) != Some(width) {
+                if let Some(frame) = &mut self.frame_now {
+                    frame.mat_width = width;
+                }
+                actions.push(SessionAction::ApplyMatWidth(width));
+            }
+        }
         if let Some(secs) = picks.interval {
             interval_now = secs;
             actions.push(SessionAction::ApplyIntervalPreset(secs));
@@ -273,6 +331,14 @@ impl SettingsSession {
             // PickFolder 走核心的 FolderPickRequested 既有路径）。
             self.pending = None;
             actions.push(SessionAction::PickFolder);
+            self.blurred = None;
+            return actions;
+        }
+        if picks.frame_art_pick {
+            // 与选文件夹同规：待结算被否决，草稿文字保留（宿主执行
+            // PickFrameArt 弹文件选择框，选定后保存路径并重新分析）。
+            self.pending = None;
+            actions.push(SessionAction::PickFrameArt);
             self.blurred = None;
             return actions;
         }

@@ -10,6 +10,8 @@ pub mod decode_validation;
 pub mod diagnostics;
 pub mod display;
 pub mod display_data;
+pub mod frame_art;
+pub mod frame_layout;
 pub mod gesture;
 pub mod library;
 pub mod loading;

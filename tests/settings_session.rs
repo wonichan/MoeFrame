@@ -4,7 +4,7 @@
 //! 原 tests/settings_draft.rs 的结算用例已改走本 interface 表达。
 
 use moe_frame::{
-    config::PlaybackMode,
+    config::{AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode},
     settings_session::{
         EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
     },
@@ -15,6 +15,8 @@ fn effective() -> EffectiveValues {
         folder_text: r"D:\图库".to_owned(),
         interval_secs: 30,
         mode: PlaybackMode::Random,
+        appearance: AppearanceMode::Builtin,
+        frame: BuiltinFrame::default(),
     }
 }
 
@@ -306,4 +308,116 @@ fn current_image_picks_emit_actions_in_order() {
             SessionAction::CopyCurrentPath,
         ]
     );
+}
+
+// ---------- 外观模式点选（V2 相框外观专题工单 01） ----------
+
+#[test]
+fn an_appearance_pick_applies_and_the_same_value_is_guarded() {
+    let mut session = opened();
+    // 点当前生效值（内置画框）：同值守卫，不产生动作。
+    let mut picks = no_picks();
+    picks.appearance = Some(AppearanceMode::Builtin);
+    assert_eq!(frame(&mut session, picks), vec![]);
+    // 点极简：产生一次应用动作；本帧内再点同值已被内部推进守卫。
+    let mut picks = no_picks();
+    picks.appearance = Some(AppearanceMode::Minimal);
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![SessionAction::ApplyAppearance(AppearanceMode::Minimal)]
+    );
+}
+
+#[test]
+fn appearance_pick_orders_after_mode_and_before_interval_preset() {
+    let mut session = opened();
+    let mut picks = no_picks();
+    picks.mode = Some(PlaybackMode::Sequential);
+    picks.appearance = Some(AppearanceMode::Custom);
+    picks.interval = Some(60);
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![
+            SessionAction::ApplyMode(PlaybackMode::Sequential),
+            SessionAction::ApplyAppearance(AppearanceMode::Custom),
+            SessionAction::ApplyIntervalPreset(60),
+        ]
+    );
+}
+
+// ---------- 内置画框参数点选（V2 相框外观专题工单 02） ----------
+
+#[test]
+fn builtin_frame_picks_apply_and_same_values_are_guarded() {
+    let mut session = opened();
+    // 点当前生效值（默认胡桃木 / 框宽 14 / 卡纸宽 18）：同值守卫，
+    // 不产生动作。
+    let mut picks = no_picks();
+    picks.frame_preset = Some(FramePreset::Walnut);
+    picks.frame_width = Some(14.0);
+    picks.mat_width = Some(18.0);
+    assert_eq!(frame(&mut session, picks), vec![]);
+    // 改预设与两宽：各产出一个动作，顺序为预设 → 框宽 → 卡纸宽。
+    let mut picks = no_picks();
+    picks.frame_preset = Some(FramePreset::Oak);
+    picks.frame_width = Some(22.0);
+    picks.mat_width = Some(0.0);
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![
+            SessionAction::ApplyFramePreset(FramePreset::Oak),
+            SessionAction::ApplyFrameWidth(22.0),
+            SessionAction::ApplyMatWidth(0.0),
+        ]
+    );
+}
+
+#[test]
+fn builtin_frame_picks_order_after_appearance_and_before_interval_preset() {
+    let mut session = opened();
+    let mut picks = no_picks();
+    picks.appearance = Some(AppearanceMode::Minimal);
+    picks.frame_width = Some(20.0);
+    picks.interval = Some(60);
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![
+            SessionAction::ApplyAppearance(AppearanceMode::Minimal),
+            SessionAction::ApplyFrameWidth(20.0),
+            SessionAction::ApplyIntervalPreset(60),
+        ]
+    );
+}
+
+// ---------- 选相框图（V2 相框外观专题工单 03） ----------
+
+#[test]
+fn frame_art_pick_vetoes_a_pending_commit_and_keeps_the_draft_text() {
+    let mut session = opened();
+    *session.path_text_mut() = "E:\\照片".to_owned();
+    session.note_blur(Field::Path);
+    assert_eq!(frame(&mut session, no_picks()), vec![]);
+    let mut picks = no_picks();
+    picks.frame_art_pick = true;
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![SessionAction::PickFrameArt]
+    );
+    // 与选文件夹同规：文字保留、未提交，后续帧不补交。
+    assert_eq!(session.path_text(), "E:\\照片");
+    assert_eq!(frame(&mut session, no_picks()), vec![]);
+}
+
+#[test]
+fn frame_art_pick_in_the_same_frame_as_blur_drops_the_blur() {
+    let mut session = opened();
+    *session.path_text_mut() = "E:\\照片".to_owned();
+    session.note_blur(Field::Path);
+    let mut picks = no_picks();
+    picks.frame_art_pick = true;
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![SessionAction::PickFrameArt]
+    );
+    assert_eq!(frame(&mut session, no_picks()), vec![]);
 }

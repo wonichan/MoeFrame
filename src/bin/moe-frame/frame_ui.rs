@@ -77,22 +77,97 @@ impl eframe::App for FrameApp {
         let requested_window_level = self.window_level;
         let mut menu_intent: Option<Intent> = None;
         let mut menu_settings = false;
+        // 窗口永远透明创建（V2 相框外观专题工单 01）：画哪一层、
+        // 面板铺不铺底、空状态提示怎么落，由布局接缝的绘制计划
+        // 一次裁决（frame_layout::paint_plan，工单 04）——极简靠
+        // 面板黑底保持 V1 视觉；内置三层与阴影由 frame_paint 照
+        // 计划绘制（工单 02）；自定义相框图生效时（工单 03）面板
+        // 不铺底，相框图的透明像素（洞与异形外轮廓）直接透出
+        // 桌面，宿主只画画面区域的插画与九宫格八区。
+        self.ensure_frame_art_texture(&ctx);
+        let effective = self.effective_appearance();
+        let plan = moe_frame::frame_layout::paint_plan(effective, self.texture.is_some());
+        let panel_fill = if plan.panel_opaque {
+            egui::Color32::BLACK
+        } else {
+            egui::Color32::TRANSPARENT
+        };
         let panel = egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+            .frame(egui::Frame::NONE.fill(panel_fill))
             .show(ui, |ui| {
                 let rect = ui.max_rect();
                 let painter = ui.painter();
+                // 内置画框（含自定义未生效时的回退）由 frame_paint
+                // 整窗绘制：三层、阴影与空状态提示都在其内部；绘制
+                // 参数取生效外观携带的那份（回退时是默认参数）。
+                if let EffectiveAppearance::Builtin(frame) = effective {
+                    self.paint_builtin_frame(painter, rect, frame);
+                    return;
+                }
                 let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                // 画面区域 = 外框减去生效内距：插画只画在这里，
+                // 画框（内置或相框图）占其余部分；内距全 0 时即整窗。
+                let insets = self.effective_insets(rect.width());
+                let image_rect = egui::Rect::from_min_max(
+                    rect.min + egui::vec2(insets.left, insets.top),
+                    rect.max - egui::vec2(insets.right, insets.bottom),
+                );
                 if let Some(texture) = &self.texture {
-                    painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
-                } else {
+                    painter.image(texture.id(), image_rect, uv, egui::Color32::WHITE);
+                } else if let moe_frame::frame_layout::HintPaint::Floating { outline } = plan.hint {
+                    // 空状态提示浮在画面区域中央：自定义生效时这里
+                    // 是相框图的洞，背景是透出的桌面——先衬一层深色
+                    // 描影再落浅字，明暗桌面上都可读（工单 04）。
+                    let hint_text = "右键打开设置，选择图库文件夹";
+                    let hint_font = egui::FontId::proportional(15.0);
+                    if outline {
+                        painter.text(
+                            image_rect.center() + egui::vec2(1.0, 1.0),
+                            egui::Align2::CENTER_CENTER,
+                            hint_text,
+                            hint_font.clone(),
+                            egui::Color32::from_black_alpha(160),
+                        );
+                    }
                     painter.text(
-                        rect.center(),
+                        image_rect.center(),
                         egui::Align2::CENTER_CENTER,
-                        "右键打开设置，选择图库文件夹",
-                        egui::FontId::proportional(15.0),
+                        hint_text,
+                        hint_font,
                         egui::Color32::from_rgb(200, 200, 200),
                     );
+                }
+                // 自定义相框图九宫格（工单 03）：八区盖在插画之上，
+                // 洞区不绘制；相框图的透明像素不被覆画——异形外
+                // 轮廓的透明处因此直接透出桌面（工单 04）。
+                if plan.frame_paint == moe_frame::frame_layout::FramePaint::CustomArt {
+                    if let FrameArtHost::Loaded {
+                        analysis,
+                        texture: Some(art_texture),
+                        ..
+                    } = &self.frame_art
+                    {
+                        let layout = nine_slice_layout(analysis, to_layout_rect(rect));
+                        let art_size = [analysis.art_size[0] as f32, analysis.art_size[1] as f32];
+                        for region in layout.regions {
+                            let src_uv = egui::Rect::from_min_max(
+                                egui::pos2(
+                                    region.src.left / art_size[0],
+                                    region.src.top / art_size[1],
+                                ),
+                                egui::pos2(
+                                    region.src.right / art_size[0],
+                                    region.src.bottom / art_size[1],
+                                ),
+                            );
+                            painter.image(
+                                art_texture.id(),
+                                to_egui_rect(region.dst),
+                                src_uv,
+                                egui::Color32::WHITE,
+                            );
+                        }
+                    }
                 }
             });
         let playing = self.core.is_playing();

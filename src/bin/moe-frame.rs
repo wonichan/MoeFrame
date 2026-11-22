@@ -17,6 +17,9 @@ mod app;
 #[path = "moe-frame/autostart_store.rs"]
 mod autostart_store;
 #[cfg(windows)]
+#[path = "moe-frame/frame_paint.rs"]
+mod frame_paint;
+#[cfg(windows)]
 #[path = "moe-frame/frame_ui.rs"]
 mod frame_ui;
 #[cfg(windows)]
@@ -44,17 +47,22 @@ use eframe::egui;
 use moe_frame::{
     app_core::{Effect, FrameCore, Intent, View},
     autostart::{autostart_command, AutostartStore, AutostartSync, RUN_KEY_PATH, RUN_VALUE_NAME},
-    config::PlaybackMode,
+    config::{AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode, MAX_LAYER_WIDTH},
     config_sync::ConfigSync,
     decode_validation::DisplayMode,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
+    frame_art::FrameArtAnalysis,
+    frame_layout::{
+        builtin_shading, effective_appearance, nine_slice_layout, BuiltinShading, EdgeShade,
+        EffectiveAppearance, FadeBand, FrameEdge, LayoutRect, ProfileLines,
+    },
     gesture::GestureThresholds,
     loading::LoadRequest,
     resize_cursor, resize_direction,
     settings_session::{
         EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
     },
-    window_geom::{GeomCommand, GeomObservation, GeometryMachine, MIN_WINDOW_SIDE},
+    window_geom::{GeomCommand, GeomObservation, GeometryMachine, Insets, MIN_WINDOW_SIDE},
 };
 #[cfg(windows)]
 use std::{
@@ -98,6 +106,21 @@ fn main() {
 #[cfg(windows)]
 fn now_ms(ctx: &egui::Context) -> u64 {
     (ctx.input(|input| input.time) * 1000.0) as u64
+}
+
+/// 布局接缝的平面矩形与 egui 矩形互转：宿主各绘制点共用这一份，
+/// 不在单个绘制文件里私藏第二套。
+#[cfg(windows)]
+fn to_layout_rect(rect: egui::Rect) -> LayoutRect {
+    LayoutRect::new(rect.left(), rect.top(), rect.right(), rect.bottom())
+}
+
+#[cfg(windows)]
+fn to_egui_rect(rect: LayoutRect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        egui::pos2(rect.left, rect.top),
+        egui::pos2(rect.right, rect.bottom),
+    )
 }
 
 #[cfg(windows)]
@@ -209,6 +232,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("MoeFrame")
         .with_decorations(false)
+        // 永远透明创建（V2 相框外观专题工单 01）：极简/内置模式由
+        // 绘制层自绘不透明背景，视觉与 V1 一致；透明为自定义
+        // 相框图的异形外轮廓透出桌面所必需（工单 04），切换模式
+        // 不重启。
+        .with_transparent(true)
         .with_resizable(true)
         .with_inner_size([window.width as f32, window.height as f32])
         .with_min_inner_size([MIN_WINDOW_SIDE, MIN_WINDOW_SIDE])
@@ -254,7 +282,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 let _ = menu_event_tx.send(event);
                 menu_ctx.request_repaint();
             }));
-            Ok(Box::new(FrameApp {
+            let mut app = FrameApp {
                 window_level: egui::WindowLevel::Normal,
                 core: FrameCore::new(
                     core_args,
@@ -286,9 +314,17 @@ fn run() -> Result<(), Box<dyn Error>> {
                 ),
                 autostart: autostart_sync,
                 autostart_store: RegAutostartStore,
+                appearance: host_init.appearance,
+                frame: host_init.frame,
+                frame_art_path: host_init.frame_art.clone(),
+                frame_art: FrameArtHost::NotSelected,
                 session: SettingsSession::new(),
                 debug_last_inner: None,
-            }))
+            };
+            // 相框图启动分析（V2 相框外观专题工单 03）：按已保存
+            // 路径分析一次；失败置回退态，相框照常打开。
+            app.reload_frame_art();
+            Ok(Box::new(app))
         }),
     )?;
     Ok(())

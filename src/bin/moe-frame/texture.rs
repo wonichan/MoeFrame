@@ -3,12 +3,18 @@
 use super::*;
 
 impl FrameApp {
+    /// 解码口径 = 画面区域的物理尺寸（V2 相框外观专题工单 01）：
+    /// 窗口物理尺寸减去四边内距的物理量，不含画框；内距全 0 时
+    /// 与 V1 的整窗尺寸逐项等值。显示数据管线的接口不变，变的
+    /// 只是宿主喂入的目标值。内距取生效内距（工单 03：自定义
+    /// 相框图按检测结果缩放，回退时按内置）。
     pub(crate) fn physical_target(&self, ctx: &egui::Context) -> [u32; 2] {
         let rect = ctx.viewport_rect();
         let ppp = ctx.pixels_per_point();
+        let insets = self.effective_insets(rect.width());
         [
-            ((rect.width() * ppp).round() as u32).max(1),
-            ((rect.height() * ppp).round() as u32).max(1),
+            (((rect.width() - insets.horizontal()) * ppp).round() as u32).max(1),
+            (((rect.height() - insets.vertical()) * ppp).round() as u32).max(1),
         ]
     }
 }
@@ -71,5 +77,29 @@ impl FrameApp {
         // 暂存新纹理，待核心提交显示后转正；当前宿主不播放转场动画。
         self.incoming =
             Some(ctx.load_texture("moe-frame-incoming", color, egui::TextureOptions::LINEAR));
+    }
+
+    /// 相框图纹理懒上传（V2 相框外观专题工单 03）：分析在启动/
+    /// 切换时已完成（当时没有 egui 上下文），像素在首帧上传为
+    /// 纹理后释放；已上传或回退/未选时什么都不做。
+    pub(crate) fn ensure_frame_art_texture(&mut self, ctx: &egui::Context) {
+        if let FrameArtHost::Loaded {
+            analysis,
+            pixels,
+            texture,
+        } = &mut self.frame_art
+        {
+            if texture.is_none() {
+                if let Some(rgba) = pixels.take() {
+                    let size = [analysis.art_size[0] as usize, analysis.art_size[1] as usize];
+                    let image = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
+                    *texture = Some(ctx.load_texture(
+                        "moe-frame-frame-art",
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
+            }
+        }
     }
 }

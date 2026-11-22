@@ -7,7 +7,7 @@ mod common;
 use common::temp_root;
 use moe_frame::{
     autostart::AutostartStore,
-    config::{ConfigStore, PlaybackMode},
+    config::{AppearanceMode, BuiltinFrame, ConfigStore, FramePreset, PlaybackMode},
     config_sync::ConfigSync,
 };
 use std::{
@@ -60,6 +60,9 @@ fn seed_config(config_path: &Path) {
         .expect("seed");
     store.set_autostart(true).expect("seed");
     store
+        .set_appearance_mode(AppearanceMode::Custom)
+        .expect("seed");
+    store
         .save_resume_state(
             Some(r"D:\图库\b.png"),
             &[r"D:\图库\a.png".to_owned(), r"D:\图库\b.png".to_owned()],
@@ -89,8 +92,50 @@ fn startup_translates_config_into_a_package() {
     // 宿主初值包。
     assert_eq!(package.host.saved_geom, (Some(10), Some(20), 640, 480));
     assert_eq!(package.host.saved_position, Some([10.0, 20.0]));
+    assert_eq!(package.host.appearance, AppearanceMode::Custom);
     // 自启对账：实际与镜像一致，无回写。
     assert!(package.autostart.enabled());
+}
+
+#[test]
+fn builtin_frame_params_flow_through_startup_and_mirror_writes() {
+    // 内置画框参数（V2 相框外观专题工单 02）：启动包携带初值，
+    // 宿主改值经 save_builtin_frame 写回落盘。
+    let root = temp_root("config-sync", "frame");
+    let (config_path, log_path) = paths(&root);
+    let mut store = ConfigStore::load(&config_path);
+    store
+        .set_builtin_frame(BuiltinFrame {
+            preset: FramePreset::White,
+            frame_width: 8.0,
+            mat_width: 26.0,
+        })
+        .expect("seed");
+    drop(store);
+    let mut registry = FakeStore::default();
+    let (mut sync, package) = ConfigSync::startup(&config_path, &log_path, &mut registry);
+    assert_eq!(
+        package.host.frame,
+        BuiltinFrame {
+            preset: FramePreset::White,
+            frame_width: 8.0,
+            mat_width: 26.0,
+        }
+    );
+    sync.save_builtin_frame(BuiltinFrame {
+        preset: FramePreset::Oak,
+        frame_width: 30.0,
+        mat_width: 2.0,
+    });
+    let config = ConfigStore::load(&config_path).config().clone();
+    assert_eq!(
+        config.display.frame,
+        BuiltinFrame {
+            preset: FramePreset::Oak,
+            frame_width: 30.0,
+            mat_width: 2.0,
+        }
+    );
 }
 
 #[test]
@@ -142,6 +187,7 @@ fn mirror_writes_land_in_the_config_file() {
     sync.save_interval(99);
     sync.save_playback_mode(PlaybackMode::Sequential);
     sync.save_window_geometry((Some(1), Some(2), 800, 600));
+    sync.save_appearance_mode(AppearanceMode::Minimal);
     sync.save_autostart_mirror(true);
     sync.save_resume_state(
         Path::new(r"E:\新图库\x.png"),
@@ -162,6 +208,7 @@ fn mirror_writes_land_in_the_config_file() {
         (Some(1), Some(2), 800, 600)
     );
     assert!(config.general.autostart);
+    assert_eq!(config.display.appearance, AppearanceMode::Minimal);
     assert_eq!(
         config.general.current_image.as_deref(),
         Some(r"E:\新图库\x.png")
@@ -243,4 +290,34 @@ fn a_non_utf8_current_image_skips_the_resume_save() {
     let config = ConfigStore::load(&config_path).config().clone();
     assert_eq!(config.general.current_image, None);
     assert!(!log_path.exists());
+}
+
+// ---------- 相框图路径（V2 相框外观专题工单 03） ----------
+
+#[test]
+fn startup_package_carries_the_frame_art_path_and_saves_write_through() {
+    let root = temp_root("config-sync", "frame-art");
+    let (config_path, log_path) = paths(&root);
+    seed_config(&config_path);
+    {
+        let mut store = ConfigStore::load(&config_path);
+        store
+            .set_frame_art_path(Some(r"D:\Art\frame.png"))
+            .expect("seed");
+    }
+    let mut registry = FakeStore::default();
+    let (mut sync, package) = ConfigSync::startup(&config_path, &log_path, &mut registry);
+    assert_eq!(
+        package.host.frame_art,
+        Some(PathBuf::from(r"D:\Art\frame.png"))
+    );
+    sync.save_frame_art_path(Some(Path::new(r"D:\Art\other.png")));
+    let config = ConfigStore::load(&config_path).config().clone();
+    assert_eq!(
+        config.display.frame_art.as_deref(),
+        Some(r"D:\Art\other.png")
+    );
+    sync.save_frame_art_path(None);
+    let config = ConfigStore::load(&config_path).config().clone();
+    assert_eq!(config.display.frame_art, None);
 }
