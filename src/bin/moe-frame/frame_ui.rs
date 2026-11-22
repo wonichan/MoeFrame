@@ -71,6 +71,8 @@ impl eframe::App for FrameApp {
             self.dispatch(&ctx, effects);
         }
         self.handle_keys(&ctx, now);
+        let mut menu_window_level = None;
+        let requested_window_level = self.window_level;
         let mut menu_intent: Option<Intent> = None;
         let mut menu_settings = false;
         let panel = egui::CentralPanel::default()
@@ -108,6 +110,46 @@ impl eframe::App for FrameApp {
                     menu_intent = Some(Intent::PlayPauseToggled { now_ms: now });
                     ui.close();
                 }
+                if ui
+                    .selectable_label(
+                        requested_window_level == egui::WindowLevel::AlwaysOnTop,
+                        if requested_window_level == egui::WindowLevel::AlwaysOnTop {
+                            "✓ 置于顶层"
+                        } else {
+                            "置于顶层"
+                        },
+                    )
+                    .clicked()
+                {
+                    menu_window_level = Some(
+                        if requested_window_level == egui::WindowLevel::AlwaysOnTop {
+                            egui::WindowLevel::Normal
+                        } else {
+                            egui::WindowLevel::AlwaysOnTop
+                        },
+                    );
+                    ui.close();
+                }
+                if ui
+                    .selectable_label(
+                        requested_window_level == egui::WindowLevel::AlwaysOnBottom,
+                        if requested_window_level == egui::WindowLevel::AlwaysOnBottom {
+                            "✓ 置于底层"
+                        } else {
+                            "置于底层"
+                        },
+                    )
+                    .clicked()
+                {
+                    menu_window_level = Some(
+                        if requested_window_level == egui::WindowLevel::AlwaysOnBottom {
+                            egui::WindowLevel::Normal
+                        } else {
+                            egui::WindowLevel::AlwaysOnBottom
+                        },
+                    );
+                    ui.close();
+                }
                 if ui.button("设置").clicked() {
                     menu_settings = true;
                     ui.close();
@@ -117,6 +159,10 @@ impl eframe::App for FrameApp {
                     ui.close();
                 }
             });
+        if let Some(level) = menu_window_level {
+            self.window_level = level;
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+        }
         self.handle_pointer(&ctx);
         if let Some(intent) = menu_intent {
             let effects = self.core.handle(intent);
