@@ -12,6 +12,11 @@ impl FrameApp {
         ]
     }
 }
+/// 治愈保活时长（毫秒）：口径过期后保活出帧的上限，覆盖窗口尺寸
+/// 落地、0.25s 停稳与一次刷新解码的正常耗时；超时未愈合维持原行为
+/// （下一次外部唤醒时治愈），不无限保活。
+const HEAL_KEEPALIVE_MS: u64 = 2_000;
+
 impl FrameApp {
     pub(crate) fn refresh_display_data(&mut self, ctx: &egui::Context) {
         let showing = match self.core.view() {
@@ -25,8 +30,25 @@ impl FrameApp {
             slide_active: false,
             now_secs: ctx.input(|input| input.time),
         };
-        if let Some(key) = self.pipeline.tick(&observation) {
-            let _ = self.command_tx.send(Command::Refresh { key });
+        let issued = self.pipeline.tick(&observation);
+        if let Some(key) = &issued {
+            let _ = self.command_tx.send(Command::Refresh { key: key.clone() });
+        }
+        // 治愈保活（.scratch/blur-heal 工单 01）：当前口径仍过期且本帧
+        // 没发出刷新时，若过期目标是新出现的变化，给帧尾设保活截止——
+        // 停稳计时走的是帧时间，没有后续帧刷新就永远不发（失焦切换后
+        // 模糊持续到聚焦才清晰的根源）。同一目标只设一次：刷新失败被
+        // 管线按期望键抑制后，目标不变就不再续，保活自然到期。
+        let stale = self.pipeline.current_key().is_some_and(|key| {
+            key.target != observation.target || key.mode != observation.fit_mode
+        });
+        if stale && issued.is_none() {
+            if self.stale_target_seen != Some(observation.target) {
+                self.stale_target_seen = Some(observation.target);
+                self.heal_repaint_until_ms = now_ms(ctx) + HEAL_KEEPALIVE_MS;
+            }
+        } else if !stale {
+            self.stale_target_seen = None;
         }
     }
 }

@@ -32,6 +32,14 @@ pub(crate) struct FrameApp {
     /// 转正、过期判定与刷新决策都在库 display_data 里；纹理句柄归宿主，
     /// 按它的当前/传入槽位对应持有。
     pub(crate) pipeline: DisplayPipeline,
+    /// 治愈保活截止（宿主毫秒时钟）：当前图口径过期且目标刚变化时，
+    /// 帧尾在此之前保持 50ms 唤醒，让管线的停稳计时与刷新回送不依赖
+    /// 外部唤醒（失焦切换模糊修复，.scratch/blur-heal 工单 01）。
+    /// 0 表示未激活。
+    pub(crate) heal_repaint_until_ms: u64,
+    /// 已为哪个过期目标设过保活：同一目标只设一次，防止刷新失败后
+    /// 保活被每帧无限延长。
+    pub(crate) stale_target_seen: Option<[u32; 2]>,
     /// 窗口几何状态机（工单 20 的生命周期，architecture-deepening
     /// 工单 05 起归库 window_geom）：宿主每帧喂观察、执行命令，几何
     /// 落盘经 config_sync，退出结算经它的 exit_settle 交接。
