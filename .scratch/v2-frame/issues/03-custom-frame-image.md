@@ -65,3 +65,10 @@
   真机复核（角部图案上屏不变形、回退后设置窗原因显示、透明
   处透出桌面、自定义模式稳态工作集）只能在用户 Windows 机
   上核。
+- 2026-11-22 评审修复（分支 impl/v2-frame-review-fixes）：上述
+  已知跟进项已关闭——九宫格布局迁入布局接缝 frame_layout，与
+  内置三层统一由同一模块产出、共用 LayoutRect 口径，frame_art
+  只余分析与加载；宿主矩形转换收拢为根模块一份。同批另修：
+  回退口径按 spec 改为内置默认画框（胡桃木 + 默认宽），不再用
+  用户当前内置参数，裁决收拢为 frame_layout 的 effective_appearance
+  一处。记录见 `.agents/notes/implemented/bug-fix/2026-11-22-v2-frame-review-fixes.md`。
