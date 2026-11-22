@@ -23,6 +23,7 @@
 ## Comments
 
 - 2026-11-20（用户确认，验收第一项满足）：产品 Limits 定为最大宽/高 12000 px、解码输出上限 96 MiB（100663296 字节），即工单 09 同二进制实测所用输入转为产品值；峰值预算为标准测试集下生命周期峰值 ≤200 MB，作为工单 22/23 的发布验收预算门，非运行时硬杀线。备选的 192 MiB / 320 MB 方案未采用。详见 `.agents/notes/implemented/process/2026-11-20-product-limits-peak-budget.md`。两项前置票 08、09 均已 resolved，本票开工。
+- 2026-11-22：上条记录的峰值预算 ≤200 MB 已被取代——完整程序实测峰值 130.82 MB，用户改确认为 **≤192 MB**（稳态 80 MB + max_alloc 96 MiB + 8% 抖动）。产品 Limits 未变。详见 `.agents/notes/implemented/process/2026-11-22-peak-budget-192mb.md`。
 
 ## Context
 
