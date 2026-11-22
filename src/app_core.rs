@@ -136,7 +136,7 @@ pub enum Effect {
 /// 相框当前呈现给用户的视图。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum View {
-    /// 无图状态：可操作，提示右键选择文件夹。
+    /// 无图状态：可操作，提示右键打开设置、选择图库文件夹。
     Empty,
     Showing(PathBuf),
 }

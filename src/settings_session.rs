@@ -4,9 +4,9 @@
 //! 渲染借它的草稿文字、执行它返回的动作；定位居中留宿主。
 //!
 //! 时序规则（工单 19 定案，本模块是唯一实现）：打字只是草稿；失焦或
-//! 回车才结算，其中失焦延迟一帧在帧尾结算，给同帧的关闭/重扫留否决
-//! 位——关闭丢弃、重扫不提交，都是本模块内部的事件顺序，不靠宿主的
-//! 调用顺序。外部改值不设通知通道：宿主每帧帧首递交生效值快照，
+//! 回车才结算，其中失焦延迟一帧在帧尾结算，给同帧的关闭/重扫/选文件
+//! 夹留否决位——关闭丢弃、重扫与选文件夹不提交，都是本模块内部的事
+//! 件顺序，不靠宿主的调用顺序。外部改值不设通知通道：宿主每帧帧首递交生效值快照，
 //! 基线与快照不一致的字段草稿作废重播种。原 settings_draft 的两条
 //! 结算函数已吸收为本模块的内部实现，不再是公开面。
 
@@ -45,12 +45,16 @@ pub struct Picks {
     pub restore_default: bool,
     pub autostart: Option<bool>,
     pub rescan: bool,
+    pub folder_pick: bool,
+    pub open_image: bool,
+    pub open_folder: bool,
+    pub copy_path: bool,
     pub close: bool,
 }
 
-/// 本帧要由宿主执行的动作，按返回顺序执行（顺序即工单 19 的应用
-/// 应用顺序：回车提交 → 模式 → 间隔预设 → 恢复默认 → 自启 → 关闭/重扫/帧尾结算。
-/// → 自启 → 关闭/重扫/帧尾结算）。
+/// 本帧要由宿主执行的动作，按返回顺序执行。顺序即定案的应用顺序：
+/// 回车结算 → 模式 → 间隔预设 → 恢复默认 → 自启 → 当前图三项 →
+/// 关闭/重扫/选文件夹（后三者否决待结算）→ 帧尾待结算结算。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionAction {
     CommitFolder(String),
@@ -59,7 +63,11 @@ pub enum SessionAction {
     ApplyIntervalPreset(i64),
     RestoreDefaultGeometry,
     ApplyAutostart(bool),
+    OpenCurrentImage,
+    OpenCurrentFolder,
+    CopyCurrentPath,
     Rescan,
+    PickFolder,
     CloseWindow,
 }
 
@@ -183,8 +191,8 @@ impl SettingsSession {
     }
 
     /// 帧尾：按定案顺序产出本帧动作——视口失焦合成 → 回车结算 →
-    /// 点选应用 → 关闭（丢弃待结算）/ 重扫（否决待结算）/ 待结算
-    /// 结算 → 记录本帧失焦为下帧待结算。
+    /// 点选应用 → 关闭（丢弃待结算）/ 重扫、选文件夹（否决待结算）/
+    /// 待结算结算 → 记录本帧失焦为下帧待结算。
     pub fn end_frame(&mut self, picks: Picks, viewport_focused: bool) -> Vec<SessionAction> {
         let mut actions = Vec::new();
         // 点相框（另一个系统窗口）算失焦：视口焦点 true→false 且某
@@ -234,6 +242,17 @@ impl SettingsSession {
         if let Some(target) = picks.autostart {
             actions.push(SessionAction::ApplyAutostart(target));
         }
+        // 当前图三项是即时动作：不碰草稿与待结算，只按点选产出动作，
+        // 作用对象由宿主执行时按核心当前视图取（与渲染同帧同图）。
+        if picks.open_image {
+            actions.push(SessionAction::OpenCurrentImage);
+        }
+        if picks.open_folder {
+            actions.push(SessionAction::OpenCurrentFolder);
+        }
+        if picks.copy_path {
+            actions.push(SessionAction::CopyCurrentPath);
+        }
         if picks.close {
             self.pending = None;
             self.open = false;
@@ -245,6 +264,15 @@ impl SettingsSession {
         if picks.rescan {
             self.pending = None;
             actions.push(SessionAction::Rescan);
+            self.blurred = None;
+            return actions;
+        }
+        if picks.folder_pick {
+            // 与重扫同规：选文件夹是离开草稿的动作，待结算被否决，
+            // 草稿文字保留；选定生效后由快照作废重播种（宿主执行
+            // PickFolder 走核心的 FolderPickRequested 既有路径）。
+            self.pending = None;
+            actions.push(SessionAction::PickFolder);
             self.blurred = None;
             return actions;
         }

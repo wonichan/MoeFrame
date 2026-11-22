@@ -324,7 +324,7 @@ fn tray_click_intent(
     }
 }
 
-/// 用系统默认看图器打开原图（工单 15）：菜单项与双击效果共用这一处；
+/// 用系统默认看图器打开原图（工单 15）：设置窗「当前图」按钮与双击共用这一处；
 /// 失败不崩溃。路径含中文、空格与特殊字符时由系统打开命令原样处理。
 #[cfg(windows)]
 fn open_image(path: &std::path::Path) {
@@ -367,7 +367,7 @@ fn system_gesture_thresholds(pixels_per_point: f32) -> GestureThresholds {
     }
 }
 
-/// 间隔六档预设（工单 11/18）：相框菜单与设置窗共用同一份，不各写一份。
+/// 间隔六档预设（工单 11/18）：设置窗间隔单选的数据来源。
 const INTERVAL_PRESETS: [(&str, i64); 6] = [
     ("10 秒", 10),
     ("30 秒", 30),
@@ -378,7 +378,7 @@ const INTERVAL_PRESETS: [(&str, i64); 6] = [
 ];
 
 /// 设置窗尺寸（工单 18）：建窗与屏幕居中计算共用。
-const SETTINGS_SIZE: [f32; 2] = [420.0, 630.0];
+const SETTINGS_SIZE: [f32; 2] = [420.0, 700.0];
 
 /// 设置窗的视口标识（工单 18）：全程只有一块。
 fn settings_viewport_id() -> egui::ViewportId {
@@ -438,7 +438,7 @@ struct FrameApp {
     /// 工单 05 起归库 window_geom）：宿主每帧喂观察、执行命令，几何
     /// 落盘经 config_sync，退出结算经它的 exit_settle 交接。
     geometry: GeometryMachine,
-    /// 开机自启的真实状态（工单 21）：菜单与设置窗都读它；注册表实现
+    /// 开机自启的真实状态（工单 21）：设置窗读它渲染开关；注册表实现
     /// 经接缝注入，切换失败时状态不动（回滚）。
     autostart: AutostartSync,
     autostart_store: RegAutostartStore,
@@ -624,6 +624,27 @@ impl FrameApp {
                     let effects = self.core.handle(Intent::RescanRequested);
                     self.dispatch(ctx, effects);
                 }
+                SessionAction::PickFolder => {
+                    let effects = self.core.handle(Intent::FolderPickRequested);
+                    self.dispatch(ctx, effects);
+                }
+                SessionAction::OpenCurrentImage => {
+                    if let View::Showing(path) = self.core.view() {
+                        open_image(&path);
+                    }
+                }
+                SessionAction::OpenCurrentFolder => {
+                    if let View::Showing(path) = self.core.view() {
+                        if let Some(parent) = path.parent() {
+                            let _ = open::that(parent);
+                        }
+                    }
+                }
+                SessionAction::CopyCurrentPath => {
+                    if let View::Showing(path) = self.core.view() {
+                        ctx.copy_text(path.to_string_lossy().into_owned());
+                    }
+                }
                 SessionAction::CloseWindow => {
                     self.settings_open = false;
                 }
@@ -656,6 +677,10 @@ impl FrameApp {
         let mode_now = self.core.playback_mode();
         let interval_now = self.core.interval_secs();
         let autostart_now = self.autostart.enabled();
+        let current_showing = match self.core.view() {
+            View::Showing(path) => Some(path),
+            View::Empty => None,
+        };
         let mut picks = Picks::default();
         let mut viewport_focused_now = true;
         let session = &mut self.session;
@@ -684,9 +709,14 @@ impl FrameApp {
                 if blurred {
                     session.note_blur(Field::Path);
                 }
-                if ui.button("重新扫描").clicked() {
-                    picks_ref.rescan = true;
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("选择文件夹…").clicked() {
+                        picks_ref.folder_pick = true;
+                    }
+                    if ui.button("重新扫描").clicked() {
+                        picks_ref.rescan = true;
+                    }
+                });
                 ui.separator();
                 ui.label("播放模式");
                 ui.horizontal(|ui| {
@@ -722,6 +752,21 @@ impl FrameApp {
                         session.note_blur(Field::Seconds);
                     }
                 });
+                if current_showing.is_some() {
+                    ui.separator();
+                    ui.label("当前图");
+                    ui.horizontal(|ui| {
+                        if ui.button("打开当前原图").clicked() {
+                            picks_ref.open_image = true;
+                        }
+                        if ui.button("打开所在文件夹").clicked() {
+                            picks_ref.open_folder = true;
+                        }
+                        if ui.button("复制图片路径").clicked() {
+                            picks_ref.copy_path = true;
+                        }
+                    });
+                }
                 ui.separator();
                 if ui.button("恢复默认位置与大小").clicked() {
                     picks_ref.restore_default = true;
@@ -855,7 +900,7 @@ impl FrameApp {
     /// 切换开机自启（工单 21）：先写注册表，成功才保存配置镜像
     /// （保存失败不回滚系统状态——界面与系统仍一致，镜像靠下次启动
     /// 对齐自愈）；
-    /// 失败时状态保持操作前——菜单与设置窗都从 autostart 状态渲染，
+    /// 失败时状态保持操作前——设置窗的开关从 autostart 状态渲染，
     /// 自然回到原值，不弹窗、不伪报。目标命令每次按当前程序路径生成。
     fn apply_autostart(&mut self, target: bool) {
         let Ok(exe) = std::env::current_exe() else {
@@ -1022,7 +1067,6 @@ impl eframe::App for FrameApp {
         self.handle_keys(&ctx, now);
         let mut menu_intent: Option<Intent> = None;
         let mut menu_settings = false;
-        let mut menu_autostart: Option<bool> = None;
         let panel = egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ui, |ui| {
@@ -1035,32 +1079,17 @@ impl eframe::App for FrameApp {
                     painter.text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
-                        "右键选择文件夹",
+                        "右键打开设置，选择图库文件夹",
                         egui::FontId::proportional(15.0),
                         egui::Color32::from_rgb(200, 200, 200),
                     );
                 }
             });
         let playing = self.core.is_playing();
-        let current_interval = self.core.interval_secs();
-        let current_mode = self.core.playback_mode();
-        let current_path = match self.core.view() {
-            View::Showing(path) => Some(path),
-            View::Empty => None,
-        };
         panel
             .response
             .interact(egui::Sense::click())
             .context_menu(|ui| {
-                if ui.button("选择文件夹…").clicked() {
-                    menu_intent = Some(Intent::FolderPickRequested);
-                    ui.close();
-                }
-                if ui.button("重新扫描").clicked() {
-                    menu_intent = Some(Intent::RescanRequested);
-                    ui.close();
-                }
-                ui.separator();
                 if ui.button("上一张").clicked() {
                     menu_intent = Some(Intent::PrevRequested);
                     ui.close();
@@ -1073,53 +1102,8 @@ impl eframe::App for FrameApp {
                     menu_intent = Some(Intent::PlayPauseToggled { now_ms: now });
                     ui.close();
                 }
-                ui.menu_button("播放模式", |ui| {
-                    for (label, mode) in [
-                        ("顺序", PlaybackMode::Sequential),
-                        ("随机", PlaybackMode::Random),
-                    ] {
-                        if ui.selectable_label(mode == current_mode, label).clicked() {
-                            menu_intent = Some(Intent::PlaybackModeSelected(mode));
-                            ui.close();
-                        }
-                    }
-                });
-                ui.menu_button("切换间隔", |ui| {
-                    for (label, secs) in INTERVAL_PRESETS {
-                        if ui
-                            .selectable_label(secs == current_interval, label)
-                            .clicked()
-                        {
-                            menu_intent = Some(Intent::IntervalSelected { secs, now_ms: now });
-                            ui.close();
-                        }
-                    }
-                });
-                if let Some(current) = &current_path {
-                    ui.separator();
-                    if ui.button("打开当前原图").clicked() {
-                        open_image(current);
-                        ui.close();
-                    }
-                    if ui.button("打开所在文件夹").clicked() {
-                        if let Some(parent) = current.parent() {
-                            let _ = open::that(parent);
-                        }
-                        ui.close();
-                    }
-                    if ui.button("复制图片路径").clicked() {
-                        ui.ctx().copy_text(current.to_string_lossy().into_owned());
-                        ui.close();
-                    }
-                }
-                ui.separator();
                 if ui.button("设置").clicked() {
                     menu_settings = true;
-                    ui.close();
-                }
-                let mut autostart_checked = self.autostart.enabled();
-                if ui.checkbox(&mut autostart_checked, "开机自启").clicked() {
-                    menu_autostart = Some(autostart_checked);
                     ui.close();
                 }
                 if ui.button("退出").clicked() {
@@ -1131,9 +1115,6 @@ impl eframe::App for FrameApp {
         if let Some(intent) = menu_intent {
             let effects = self.core.handle(intent);
             self.dispatch(&ctx, effects);
-        }
-        if let Some(target) = menu_autostart {
-            self.apply_autostart(target);
         }
         if menu_settings {
             self.request_settings(&ctx);

@@ -106,6 +106,31 @@ fn rescan_in_the_same_frame_as_blur_drops_the_blur() {
 }
 
 #[test]
+fn folder_pick_vetoes_a_pending_commit_and_keeps_the_draft_text() {
+    let mut session = opened();
+    *session.path_text_mut() = "E:\\照片".to_owned();
+    session.note_blur(Field::Path);
+    assert_eq!(frame(&mut session, no_picks()), vec![]);
+    let mut picks = no_picks();
+    picks.folder_pick = true;
+    assert_eq!(frame(&mut session, picks), vec![SessionAction::PickFolder]);
+    // 与重扫同规：文字保留、未提交，后续帧不补交。
+    assert_eq!(session.path_text(), "E:\\照片");
+    assert_eq!(frame(&mut session, no_picks()), vec![]);
+}
+
+#[test]
+fn folder_pick_in_the_same_frame_as_blur_drops_the_blur() {
+    let mut session = opened();
+    *session.path_text_mut() = "E:\\照片".to_owned();
+    session.note_blur(Field::Path);
+    let mut picks = no_picks();
+    picks.folder_pick = true;
+    assert_eq!(frame(&mut session, picks), vec![SessionAction::PickFolder]);
+    assert_eq!(frame(&mut session, no_picks()), vec![]);
+}
+
+#[test]
 fn close_discards_pending_and_reopen_reseeds() {
     let mut session = opened();
     *session.path_text_mut() = "E:\\照片".to_owned();
@@ -264,4 +289,21 @@ fn seconds_same_value_enter_is_a_noop() {
     session.note_enter(Field::Seconds);
     assert_eq!(frame(&mut session, no_picks()), vec![]);
     assert_eq!(session.seconds_text(), "30");
+}
+
+#[test]
+fn current_image_picks_emit_actions_in_order() {
+    let mut session = opened();
+    let mut picks = no_picks();
+    picks.open_image = true;
+    picks.open_folder = true;
+    picks.copy_path = true;
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![
+            SessionAction::OpenCurrentImage,
+            SessionAction::OpenCurrentFolder,
+            SessionAction::CopyCurrentPath,
+        ]
+    );
 }
