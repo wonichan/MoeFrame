@@ -1,7 +1,7 @@
 # 01: 相框窗口层级菜单
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Spec: ../spec.md
 
 ## Goal
