@@ -125,6 +125,7 @@ impl FrameApp {
             .with_title("萌框设置")
             .with_inner_size(SETTINGS_SIZE)
             .with_taskbar(false)
+            .with_icon(app_icon_data())
             .with_resizable(false);
         if !self.settings_positioned {
             self.settings_positioned = true;

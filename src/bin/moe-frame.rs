@@ -167,6 +167,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         .with_maximized(false)
         .with_fullscreen(false)
         .with_taskbar(false)
+        .with_icon(app_icon_data())
         .with_window_level(egui::WindowLevel::Normal);
     if let Some(position) = saved_position {
         viewport = viewport.with_position(position);

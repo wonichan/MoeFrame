@@ -31,6 +31,7 @@ fn main() {
         ".agents/notes",
         ".scratch/v1-exe",
         "docs",
+        "assets/icon.ico",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }
@@ -134,4 +135,16 @@ fn main() {
         "missing pinned image in Cargo.lock"
     );
     emit("DEPENDENCIES", &versions.join(", "));
+
+    // 应用图标（.scratch/app-icon 工单 01）：仅 Windows 宿主把
+    // assets/icon.ico 编入 exe 资源；失败只警告不中断——图标是
+    // 外观项，不该挡住构建。交叉检查等非 Windows 宿主直接跳过。
+    #[cfg(windows)]
+    {
+        let mut resource = winresource::WindowsResource::new();
+        resource.set_icon("assets/icon.ico");
+        if let Err(error) = resource.compile() {
+            println!("cargo:warning=应用图标资源编译失败，已跳过: {error}");
+        }
+    }
 }

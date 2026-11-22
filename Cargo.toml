@@ -42,6 +42,11 @@ winreg = "=0.55.0"
 raw-window-handle = "=0.6.2"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Wdk_System_SystemServices"] }
 
+# exe 资源图标嵌入（build.rs 使用）：仅 Windows 目标的构建依赖，
+# 运行时零成本；图标是外观项，不值得为它引入运行时依赖。
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [profile.release]
 strip = true
 lto = true

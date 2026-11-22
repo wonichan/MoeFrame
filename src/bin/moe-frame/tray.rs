@@ -12,14 +12,29 @@ pub(crate) struct TrayHandles {
     pub(crate) settings: tray_icon::menu::MenuItem,
     pub(crate) exit: tray_icon::menu::MenuItem,
 }
-/// 托盘图标（工单 17）：需求文档 8.3 定的内置 PNG（仓库 assets/tray-icon.png，
-/// 红框白底、琥珀色太阳、青色山峦），编译时嵌入，运行时解码为 RGBA。
+/// 托盘图标（工单 17）：内置 PNG（仓库 assets/tray-icon.png，48×48），
+/// 编译时嵌入，运行时解码为 RGBA。像素内容与应用图标同一母图
+/// （.scratch/app-icon 工单 01：粉色蝴蝶结相框 + 少女侧颜）。
 pub(crate) fn tray_icon_image() -> tray_icon::Icon {
     let image = image::load_from_memory(include_bytes!("../../../assets/tray-icon.png"))
         .expect("内置托盘图标 PNG 固定可解码")
         .to_rgba8();
     let (width, height) = image.dimensions();
     tray_icon::Icon::from_rgba(image.into_raw(), width, height).expect("托盘图标像素格式固定")
+}
+/// 窗口图标（.scratch/app-icon 工单 01）：应用图标母图
+/// （assets/icon.png，512×512），主视口与设置视口共用；exe 的文件
+/// 图标由 build.rs 把同一母图的 assets/icon.ico 编入资源。
+pub(crate) fn app_icon_data() -> egui::IconData {
+    let image = image::load_from_memory(include_bytes!("../../../assets/icon.png"))
+        .expect("内置应用图标 PNG 固定可解码")
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    }
 }
 /// 建托盘图标与右键菜单（工单 17）：菜单项与相框菜单走同一套核心意图；
 /// 「设置」打开工单 18 的设置窗（宿主窗口，不经核心）。失败返回 None，
