@@ -3,7 +3,9 @@
 Windows 10/11 x64 的无边框相框：选一个图片文件夹，它按你的高度把整张图铺满窗口，
 按间隔自动轮播，托盘常驻，最小化到后台继续放。
 
-免安装：`target\release\MoeFrame.exe` 是静态链接的单文件，拷到任意目录双击即可运行。
+免安装：到 [Releases](https://github.com/wonichan/MoeFrame/releases) 下载最新 `v0.1.0` 的 `MoeFrame.exe`，
+拷到任意目录双击即可运行；不装运行库、不写注册表。自己构建的产物是 `target\release\MoeFrame.exe`，
+与发布版同一条命令构建，静态链接单文件。
 
 ## 第一次使用
 
@@ -59,6 +61,7 @@ Windows 10/11 x64 的无边框相框：选一个图片文件夹，它按你的�
 cargo build --release --bin MoeFrame --locked
 .\target\release\MoeFrame.exe
 ```
+发布版 `v0.1.0` 就是这条命令产出的 `MoeFrame.exe`，由人工构建后上传到 Releases。
 
 `scripts/check.sh` 是唯一检查入口，CI 跑同一套：
 
