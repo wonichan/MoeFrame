@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -24,3 +24,5 @@
 ## Comments
 
 - 2026-11-22 交付（Muse 侧）：菜单五项化、设置窗「选择文件夹…」+「当前图」组、空状态提示、窗高 700 均落地。会话层：Picks::folder_pick / SessionAction::PickFolder（与重扫同规否决待结算，文字保留）+ 当前图三点选统一走 Picks → SessionAction；新增 3 项会话测试，全量 230/230 绿，Windows check/clippy 干净。双轴审查（基线 e66eeb4）：Spec 轴标准 1–7 达标；Standards 轴两处硬问题（三处宿主注释、SessionAction 顺序文档仍述旧菜单）与模块头否决枚举已修；当前图三项初稿的宿主内联执行按审查意见改走统一 Picks 通道。实施笔记：.agents/notes/implemented/feature/2026-11-22-menu-settings-split.md（三道校验门通过）。受影响工单（v1 10/15/18/19、深挖 02）已补对齐评论，两份实机清单已同步（10-21 清单新增「菜单与设置窗再分工复测」3 项）。状态 needs-info：待实机复测回执后转 resolved。
+
+- Windows 补测通过：用户回执确认选图库、取消时保留草稿、当前图三项和空图库提示（[W3b、W4](../../../real-machine-check-closeout.md)）。主菜单按已验收的窗口层级专题更新后的口径核对，原「严格五项」不再适用。关闭本票。

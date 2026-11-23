@@ -4,7 +4,7 @@
 
 **Blocked by:** [02: 设置窗会话机 settings_session](02-settings-session.md)（锁定开关经会话发动作）、[04: 持久化镜像与启动装配 config_sync](04-config-sync.md)（落盘与启动初值归它）。
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -28,3 +28,5 @@
 - 2026-11-21 实现完成，状态置 needs-info：八条验收标准在本侧满足（标准 5 带口径标注，见该条勾选注与实施笔记）。实机项已追加到 `real-machine-check-deepening.md` 的工单 05 小节（锁定手感、几何记忆与退出冲刷、恢复默认、副屏已知限制），且工单 20 在 10–21 清单里的条目在新代码上照旧执行；确认后转 resolved。实施笔记：`.agents/notes/implemented/feature/2026-11-21-geometry-machine.md`。
 - 双轴审查（基线 6ba9ec2）：Standards 1 处硬违规已修（新注释三处误用 GLOSSARY Avoid 词「锁定比例」，改「宽高比锁定的比例」），判断项两条全采纳（aspect_locked_size 陈旧调用方表述改述、GeomCommand 两变体补文档）；删除残留专项核查无问题（Debounce/常量/旧方法/六字段删除点干净）。Spec 行为等价 (a)(c)(d)(e)(f) 全成立、(b) 终态等价，无范围蔓延；另记基线边角一处被原样保留：恢复默认后 observed_geom 仍是旧观察值（仅恢复后同帧立刻退出可触及，两版相同）。
 - 2026-11-22 对齐（提交 `7861e5f`，决定见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`）：状态机已无宽高比锁定——`set_lock` 与锁定修正移除，改为接收源图比例并按用户高度推导宽度；恢复默认输出改为当前图比例 + 默认高度。本票的启动钳制、首次放置、防抖落盘、退出冲刷不变。深挖实机清单工单 05 节的锁定手感项已作废、恢复默认项已改写。
+
+- Windows 补测通过：[W2b](../../../real-machine-check-closeout.md)确认副屏重启后回主屏的已知行为；用户回执 W5 确认未停稳退出仍保存几何、隐藏时恢复默认会唤出相框、重开保持恢复后的几何。关闭本票；缩放途中切图的问题已由[深挖 01](01-display-data-pipeline.md)另行修复。
