@@ -811,7 +811,7 @@ fn release_without_snap_request_keeps_nominal_position() {
 /// 切图变尺寸的锚边场景：先以 aspect 2.0 落稳 640x320，再切到
 /// aspect 1.0（目标 320x320，宽度收缩），观察带贴合边进场。
 fn resize_with_anchor(
-    anchor: Vec<moe_frame::snap::AnchorEdge>,
+    anchor: Vec<moe_frame::snap_follow::AnchorEdge>,
     work_area: Option<[f32; 4]>,
 ) -> Vec<GeomCommand> {
     let saved: GeometryRecord = (Some(100), Some(100), 640, 320);
@@ -829,7 +829,7 @@ fn resize_with_anchor(
 #[test]
 fn anchored_resize_keeps_the_right_edge_and_grows_left() {
     // 右贴合：宽度 640→320 时右边（x=740）不动，左上移到 420。
-    let commands = resize_with_anchor(vec![moe_frame::snap::AnchorEdge::Right], None);
+    let commands = resize_with_anchor(vec![moe_frame::snap_follow::AnchorEdge::Right], None);
     assert_eq!(sizes(&commands), vec![[320.0, 320.0]]);
     assert_eq!(positions(&commands), vec![[420.0, 100.0]]);
 }
@@ -837,7 +837,7 @@ fn anchored_resize_keeps_the_right_edge_and_grows_left() {
 #[test]
 fn anchored_resize_keeps_the_left_edge_and_grows_right() {
     // 左贴合：位置纹丝不动，只发尺寸命令。
-    let commands = resize_with_anchor(vec![moe_frame::snap::AnchorEdge::Left], None);
+    let commands = resize_with_anchor(vec![moe_frame::snap_follow::AnchorEdge::Left], None);
     assert_eq!(sizes(&commands), vec![[320.0, 320.0]]);
     assert!(positions(&commands).is_empty(), "{commands:?}");
 }
@@ -852,7 +852,7 @@ fn anchored_resize_is_followed_by_the_existing_work_area_clamp() {
     m.observe(&obs_in_work_area([500.0, 100.0], [320.0, 320.0], 0.0, area));
     m.set_image_aspect(Some(2.0));
     let mut second = obs_in_work_area([500.0, 100.0], [320.0, 320.0], 0.1, area);
-    second.snap_anchor = vec![moe_frame::snap::AnchorEdge::Left];
+    second.snap_anchor = vec![moe_frame::snap_follow::AnchorEdge::Left];
     let commands = m.observe(&second);
     assert_eq!(sizes(&commands), vec![[640.0, 320.0]]);
     assert_eq!(positions(&commands), vec![[154.0, 100.0]]);

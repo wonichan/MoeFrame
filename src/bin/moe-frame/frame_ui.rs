@@ -347,8 +347,8 @@ impl eframe::App for FrameApp {
 
 /// 帧尾的下一帧唤醒裁决（纯函数，回归测试钉住），优先级从高到低：
 /// 隐藏低频心跳 → 导航加载轮询 → 转场动画帧（≤16ms，截止已过为
-/// 0）→ 治愈保活 → 几何落盘结算、轮播截止与吸附轮询延时取更早
-/// 者；都不命中则不唤醒（None），避免空转重绘。吸附轮询延时是
+/// 0）→ 治愈保活 → 几何落盘结算、轮播截止与吸附轮询间隔取更早
+/// 者；都不命中则不唤醒（None），避免空转重绘。吸附轮询间隔是
 /// 最低优先级的一项：调度休眠时为 None（无伙伴零唤醒，工单 03
 /// 轮询成本口径），静止心跳为 1000ms、跟随节奏为 16ms，都不会把
 /// 本裁决顶成常开。
@@ -386,7 +386,7 @@ pub(crate) fn next_frame_delay(
             next_deadline_ms.map(|deadline| Duration::from_millis(deadline.saturating_sub(now_ms)));
         let settle =
             geom_settle_ms.map(|deadline| Duration::from_millis(deadline.saturating_sub(now_ms)));
-        // 吸附轮询延时是相对延时（不是截止时刻）：心跳/跟随节奏
+        // 吸附轮询间隔是相对间隔（不是截止时刻）：心跳/跟随节奏
         // 直接参与取更早者；休眠（None）不产生任何唤醒。
         let follow = follow_delay_ms.map(Duration::from_millis);
         // 几何还没停稳 0.6 秒：结算时刻前必须再出一帧，否则要等下一次

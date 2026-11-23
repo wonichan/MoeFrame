@@ -1,9 +1,10 @@
 //! 多实例吸附专题工单 03：组联动跟随、抑制标记（菜单脱离）、轮询
 //! 调度与锚边变尺寸的纯逻辑测试。跟随引擎只掌握「自己的窗口 +
 //! 枚举到的伙伴矩形 + 接触派生」，没有中心协调者（ADR-0004）。
-use moe_frame::snap::{
-    anchored_resize_position, AnchorEdge, FollowEngine, FollowPartner, PartnerFrame, PollOutcome,
-    PollPhase, PollSchedule, WindowRect, SNAP_THRESHOLD,
+use moe_frame::snap::{PartnerFrame, WindowRect, SNAP_THRESHOLD};
+use moe_frame::snap_follow::{
+    anchored_resize_position, AnchorEdge, FollowEngine, FollowPartner, PollOutcome, PollPhase,
+    PollSchedule,
 };
 
 const MONITOR: WindowRect = WindowRect {
@@ -342,6 +343,24 @@ fn direct_contacts_exclude_suppressed_partners() {
     assert_eq!(engine.direct_contact_ids(own(), &partners), vec![2]);
     engine.detach(own(), &partners);
     assert!(engine.direct_contact_ids(own(), &partners).is_empty());
+}
+
+#[test]
+fn detached_partner_still_anchors_resize_but_never_pulls() {
+    // 审查修复 S3：抑制与锚边解耦——脱离只断拖动联动，锚边按
+    // 原始接触派生，被脱离的伙伴仍作锚；跟随仍被抑制。
+    let mut engine = FollowEngine::new();
+    let partners = [right_partner(300.0)];
+    engine.poll(own(), &partners, true, false);
+    engine.detach(own(), &partners);
+    assert_eq!(
+        engine.anchor_edges(own(), &partners),
+        vec![AnchorEdge::Right]
+    );
+    assert_eq!(
+        engine.poll(own(), &[right_partner(340.0)], true, false),
+        None
+    );
 }
 
 // ---------- 锚边 ----------

@@ -93,15 +93,15 @@ pub(crate) struct FrameApp {
     /// 组联动跟随引擎（多实例吸附专题工单 03）：纯逻辑在库 snap，
     /// 宿主按轮询调度枚举伙伴喂入、执行它返回的位置；含菜单脱离
     /// 的抑制标记（只存本进程内存，不落盘）。
-    pub(crate) follow: moe_frame::snap::FollowEngine,
+    pub(crate) follow: moe_frame::snap_follow::FollowEngine,
     /// 轮询调度（工单 03）：无伙伴时休眠、零唤醒；重新武装靠本窗
     /// 自身事件（启动、拖动开始/结束、开关打开）。
-    pub(crate) poll_schedule: moe_frame::snap::PollSchedule,
+    pub(crate) poll_schedule: moe_frame::snap_follow::PollSchedule,
     /// 最近一轮派生的直接接触伙伴（未抑制）：右键菜单「脱离吸附
     /// 组」的出现条件与脱离名单都取它。
-    pub(crate) snap_contacts: Vec<moe_frame::snap::PartnerId>,
+    pub(crate) snap_contacts: Vec<moe_frame::snap_follow::PartnerId>,
     /// 最近一轮派生的贴合边：喂几何机的锚边变尺寸接缝。
-    pub(crate) snap_anchor: Vec<moe_frame::snap::AnchorEdge>,
+    pub(crate) snap_anchor: Vec<moe_frame::snap_follow::AnchorEdge>,
     /// 本次移动手势是 Shift 拖动（手势开始时采样）：被拖窗 solo，
     /// 松手不做松手吸附，松手后按新几何重新派生。
     pub(crate) solo_drag: bool,

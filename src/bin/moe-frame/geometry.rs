@@ -57,7 +57,7 @@ impl FrameApp {
                             self.snap_contacts.clear();
                             self.snap_anchor.clear();
                             self.poll_schedule
-                                .report(moe_frame::snap::PollOutcome::NoPartners, now_ms);
+                                .report(moe_frame::snap_follow::PollOutcome::NoPartners, now_ms);
                         } else {
                             let own_dragging = ctx.input(|input| input.pointer.any_down());
                             follow_target =
@@ -66,16 +66,16 @@ impl FrameApp {
                                 self.follow.direct_contact_ids(own_frame, &partners);
                             self.snap_anchor = self.follow.anchor_edges(own_frame, &partners);
                             let outcome = if follow_target.is_some() {
-                                moe_frame::snap::PollOutcome::Movement
+                                moe_frame::snap_follow::PollOutcome::Movement
                             } else {
-                                moe_frame::snap::PollOutcome::Quiet
+                                moe_frame::snap_follow::PollOutcome::Quiet
                             };
                             self.poll_schedule.report(outcome, now_ms);
                         }
                     }
                     _ => {
                         self.poll_schedule
-                            .report(moe_frame::snap::PollOutcome::NoPartners, now_ms);
+                            .report(moe_frame::snap_follow::PollOutcome::NoPartners, now_ms);
                     }
                 }
             }

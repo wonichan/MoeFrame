@@ -315,6 +315,26 @@ fn solve_attach_wins_over_alignment() {
 }
 
 #[test]
+fn solve_attach_on_one_edge_beats_smaller_gap_alignment_on_the_other() {
+    // 审查修复 S6 回归：跨边组裁决类别先行——右边贴合（间隙 10）
+    // 对左边对齐（间隙 2），旧实现跨组只比间隙会误取对齐。
+    // 不给工作区候选，排除其干扰。
+    let moving = rect(200.0, 200.0, 300.0, 300.0);
+    let partners = vec![
+        // 右侧伙伴：右边贴合候选，间隙 10，目标 x=210。
+        snap_partner(rect(310.0, 200.0, 410.0, 300.0)),
+        // 纵向错开的伙伴：左边缘与被拖窗左边缘只差 2，构成小间隙
+        // 对齐候选（目标 x=198），无贴合候选。
+        snap_partner(rect(198.0, 500.0, 298.0, 600.0)),
+    ];
+    assert_eq!(
+        solve_snap(moving, &partners, MONITOR_MAIN, None),
+        Some([210.0, 200.0]),
+        "横轴取贴合目标而非小间隙对齐目标"
+    );
+}
+
+#[test]
 fn solve_nearest_partner_wins_and_tie_keeps_enumeration_order() {
     let moving = rect(0.0, 0.0, 100.0, 100.0);
     // 近者（间隙 4）排在远者（间隙 9）之后：仍取近者。

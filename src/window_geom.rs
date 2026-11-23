@@ -22,7 +22,8 @@
 
 use crate::{
     config_sync::GeometryRecord,
-    snap::{anchored_resize_position, solve_snap, AnchorEdge, SnapRequest, WindowRect},
+    snap::{solve_snap, SnapRequest, WindowRect},
+    snap_follow::{anchored_resize_position, AnchorEdge},
 };
 
 /// 窗口最小边（逻辑尺寸）：保持无黑边时仍满足宿主最小窗口约束。
