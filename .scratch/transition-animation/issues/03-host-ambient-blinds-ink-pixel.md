@@ -4,7 +4,7 @@
 
 **Blocked by:** [01: 配置转正与核心转场状态机](01-config-and-core-transition.md)
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -24,3 +24,4 @@
 
 - 2026-11-22 实现完成，状态置 needs-info：纯计算入库 `src/transition_ambient.rs`（循 frame_layout 先例，TDD 三切片先红后绿，tests/transition_ambient.rs 11 用例：条带拼满/错峰/UV 同步、扇形覆盖四角/灰纱单调、块序全排列/种子确定、抖动窗口归零）；落笔入新宿主模块 `src/bin/moe-frame/ambient_paint.rs`（百叶帘 UV 条带、墨晕 64 段扇形 Mesh + 羽化外环、像素 UV 块拼齐，全程舞台裁剪）；接入面只动 02 骨架的分发臂（占位臂换三臂、`paint_transition` 补 elapsed_ms、`HostTransition` 加 seed 字段存像素块序种子），骨架其余一行未动。墨晕去色按批准近似（压暗 0.65 + 灰纱 alpha→110）。本票开工时 02 未合入，曾自建平行最小骨架跑通，02 合入（86ddeeb）后已主动撤除平行骨架改接 02 骨架，无残迹。验证：Windows 目标 check/clippy 全过、fmt 通过；Linux 副本 lib+集成 312/312 绿。实施笔记：`.agents/notes/implemented/feature/2026-11-22-transition-animation-host-ambient.md`。needs-info 原因：实机目检（三种动画观感、墨晕灰纱近似单独一条、随机档五种混排）并入工单 04 实机清单，待回执后转 resolved。
 - 2026-11-22 工单 04 收口回填：实机清单已就绪——`real-machine-check-transition-animation.md`「工单 03 · 无方向组」节覆盖三动画手动+自动、随机混排，并含**墨晕灰纱近似目检**单独一条（灰纱 + 压暗近似）。本票继续 needs-info，待回执后转 resolved。
+- 2026-11-23 用户实机验收通过（`real-machine-check-transition-animation.md` 全部条目逐项验过、无大问题，含两个近似目检项），状态置 resolved；随 PR #4 合入 main，并以 v0.1.3 发布。

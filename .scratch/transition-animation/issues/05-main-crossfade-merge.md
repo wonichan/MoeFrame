@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 / 02 / 03 / 04（均已实现）
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -17,7 +17,7 @@
 - [x] 名义高度与超宽临时缩高不落盘保留（瞬时形式：切图时按工作区适配显示尺寸，落盘仍按名义尺寸）；落盘位置改为以实际观察位置为准、名义中心只兜底（中心锚定撤除后的必要修正）
 - [x] 文档留痕：对方专题 spec/工单/实施笔记与 ADR-0003 加收编注记（不删除）；本专题 spec 更新 8 档/池 6/fade 迁移/合并注记；GLOSSARY 与 README 同步；实机清单补工单 05 一节
 - [x] 全量测试与 Windows 目标 check/clippy/fmt 通过（327 通过 / 0 失败，数字记入实施笔记；check.sh 本体在 VM 跑不了的口径与前票一致）
-- [ ] 实机验收并入 `real-machine-check-transition-animation.md` 的工单 05 一节，与 01–04 一并验收
+- [x] 实机验收并入 `real-machine-check-transition-animation.md` 的工单 05 一节，与 01–04 一并验收
 
 ## 对方 window_geom 测试的逐条处置
 
@@ -35,3 +35,7 @@
 | 其余 25 个（首帧放置/启动钳制/缩放校正/沉降落盘/内距/恢复默认等） | 原样保留 | 与平滑动画无关 |
 
 另：对方 `settings_session` 的重复测试 `an_animation_pick_applies_and_the_same_value_is_guarded`（同名第二份，基于 Fade 生效值）已撤除一份——同名测试在本专题票 01 已有 Curl/Ink 版本覆盖同值守卫+点选生效；`effective()` 助手的重复 `animation` 字段合并为一份。
+
+## Comments
+
+- 2026-11-23 用户实机验收通过（`real-machine-check-transition-animation.md` 全部条目逐项验过、无大问题，含两个近似目检项），状态置 resolved；随 PR #4 合入 main，并以 v0.1.3 发布。

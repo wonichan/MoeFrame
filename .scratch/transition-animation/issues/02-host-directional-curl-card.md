@@ -4,7 +4,7 @@
 
 **Blocked by:** [01: 配置转正与核心转场状态机](01-config-and-core-transition.md)
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -24,3 +24,4 @@
 
 - 2026-11-22 实现完成，状态置 needs-info：宿主转场骨架落地（新模块 `src/bin/moe-frame/transition.rs`：`HostTransition` + `begin_transition`/`advance_transition`/`paint_stage`；`StartTransition` 不再秒回，转正从 `Reply::Loaded` 分支尾搬到完成时刻，旧纹理随转正释放；重扫/变空同步清宿主转场；`slide_active` 两处喂真值；`next_frame_delay` 新增转场唤醒臂 ≤16ms/到期 0ms）。卷页（clip 揭示 + 卷边高光线与渐淡影带 + 旧图变暗）与抽卡（单 Mesh 梯形、绕竖轴两半程换面、倾斜随方向反号）接入两处绘制点（frame_paint 内置、frame_ui 极简/自定义共用 `paint_stage`）；旧图按 `fit_rect` 居中不拉伸。工单 03 三类在分发 match 占位直落（时长/回执/转正走骨架）。验证：Windows 目标 check/clippy 全过、fmt 通过；Linux 副本 lib+集成 296/296 绿；宿主内联纯函数测试（progress/fit_rect/curl/card + next_frame_delay 转场用例）Windows 目标编译通过、本 VM 不能执行。实施笔记：`.agents/notes/implemented/feature/2026-11-22-transition-animation-host-directional.md`。needs-info 原因：实机目检（卷页/抽卡观感、宽高图互切、转正时序）并入工单 04 实机清单，待回执后转 resolved。
 - 2026-11-22 工单 04 收口回填：实机清单已就绪——`real-machine-check-transition-animation.md`「工单 02 · 有方向组」节覆盖卷页/抽卡手动+自动、转正时序，并含**卷页近似目检**单独一条（clip 揭示 + 亮影近似）；宽↔高互切与三外观绘制在「几何与外观」节。本票继续 needs-info，待回执后转 resolved。
+- 2026-11-23 用户实机验收通过（`real-machine-check-transition-animation.md` 全部条目逐项验过、无大问题，含两个近似目检项），状态置 resolved；随 PR #4 合入 main，并以 v0.1.3 发布。

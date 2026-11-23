@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -27,3 +27,4 @@
 - 2026-11-22 实现完成，状态置 needs-info：配置转正（7 档、默认 curl、none 保留 / slide·fade·未知落 curl 写回、set_animation + save_animation + 启动翻译进 CoreArgs）、核心转场泛化（StartTransition 扩 animation/duration_ms、五档冻结时长、AnimationSelected/SaveAnimation 同值守卫、隐藏与无档汇合 commit_display 直落）与随机接缝（复用 playlist 的 RandomSource trait，`FrameCore::new` 委托 `with_animation_random`，生产 SystemRandom、测试脚本源；池排除 last_animation，等概率，last 在转场完成时才记、只存内存）全部落地。宿主仅加 SaveAnimation 落盘臂，秒回完成保持（02/03 再延迟）。验证：全量 297/297 绿（新增 8 项：config +3、app_core +6、既有隐藏轮播测试按新直落口径改断言 1 项），fmt 通过，clippy（lib+集成测试）干净，Windows 目标 check/clippy 全过；check.sh 在本 VM 的 Linux 副本止步于工单 09 验证程序的既有警告（未触其文件），与基线一致。实施笔记：`.agents/notes/implemented/feature/2026-11-22-transition-animation-core.md`。needs-info 原因：本票无独立实机项，宿主真实渲染与观感验收在 02/03/04，待专题收口后随 04 回执转 resolved。
 - 2026-11-22 工单 04 收口回填：实机清单已就绪——仓库根目录 `real-machine-check-transition-animation.md`「工单 01 · 核心口径」节覆盖本票行为项（随机连切 10 张、连点只留最后意图、慢图不闪白、隐藏直落、暂停播完不续计时、改档下一条生效、首图/重扫直落），资源复测在清单末节。本票继续 needs-info，待用户跑完清单回执后转 resolved。
 - 2026-11-22 评审修复·随机口径明示（spec 第 3 节「与上一次实际播放的动画不同」的实现口径）：`last_animation` 只在转场完成时才记——被重扫中途取消的转场即使画面已部分播放也不记。理由：取消的转场没有完成提交，把它计入会让下一次随机平白排除一种动画；且与「提交点在转场完成时」的全专题口径一致。此口径实施时已记于本票实施笔记，双轴评审建议在工单里再明示，即本条。
+- 2026-11-23 用户实机验收通过（`real-machine-check-transition-animation.md` 全部条目逐项验过、无大问题，含两个近似目检项），状态置 resolved；随 PR #4 合入 main，并以 v0.1.3 发布。
