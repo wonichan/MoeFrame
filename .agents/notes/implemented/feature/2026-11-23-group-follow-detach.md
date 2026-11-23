@@ -52,12 +52,12 @@ Status: implemented
      为不存在。
 - 轮询成本口径（定死，调度状态机测试锁住）：无伙伴窗口时零轮
   询成本——枚举不到任何伙伴即进入休眠（Dormant），调度给帧尾
-  唤醒裁决的延时为 None，不再周期性唤醒宿主帧循环；重新武装
+  唤醒裁决的间隔为 None，不再周期性唤醒宿主帧循环；重新武装
   靠本窗自身事件（启动探活 Probing、拖动开始/结束、开关打开
   时 wake）。有伙伴但全静止时只允许低频心跳级检查（1000ms）、
   不发命令；检测到移动才进入约一帧量级（16ms）的跟随节奏，
   连续 30 轮静默回落心跳。宿主 `next_frame_delay` 只在最低优先
-  级并入轮询延时（新增一参数 + 回归测试），未被顶成常开；多实
+  级并入轮询间隔（新增一参数 + 回归测试），未被顶成常开；多实
   例静止时各自回到零重绘。
 - Shift 拆组的可实现边界（如实）：无 IPC 下被拖窗的 solo 状态
   无法通知伙伴进程，伙伴的跟随引擎无从知道它在 solo 拖动、仍
@@ -78,7 +78,7 @@ Status: implemented
   伴枚举）与 `own_monitor_work_area`；geometry 的
   update_window_geometry 在调度到期、相框可见、无原生手势时
   轮询一轮，跟随目标经既有 execute_geometry_commands 落地；
-  frame_ui 右键菜单加脱离项、帧尾唤醒并入轮询延时；settings
+  frame_ui 右键菜单加脱离项、帧尾唤醒并入轮询间隔；settings
   落地处接开关的停摆/武装。
 
 ## Alternatives considered
@@ -108,7 +108,7 @@ Status: implemented
   生与优先级、缩尺寸自然脱开、调度休眠/武装/心跳/跟随节奏/
   静默回落）；tests/window_geom.rs 4 项（右贴合向左长、左贴
   合向右长、锚后叠加工单 06 钳制、无锚边保持既有口径）；
-  frame_ui 宿主测试 1 项（next_frame_delay 并入轮询延时的最低
+  frame_ui 宿主测试 1 项（next_frame_delay 并入轮询间隔的最低
   优先级，Windows 目标编译通过、Linux 测试副本不含宿主 bin
   未执行）。
 - 全量（Linux 测试副本，沿用既有替代口径）：413 passed / 0

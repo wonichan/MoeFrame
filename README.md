@@ -140,7 +140,8 @@ bash scripts/check.sh   # cargo fmt --check + clippy -D warnings + test --all-ta
 src/lib.rs                      egui 输入 → 视口命令（拖动、八方向缩放、最大化守卫）
 src/app_core.rs、playlist.rs    轮播状态机与历史
 src/config.rs、config_sync.rs   配置读写与跨进程同步
-src/instance.rs、snap.rs        实例编号认领、窗口吸附与组联动跟随的纯逻辑
+src/instance.rs、snap.rs、snap_follow.rs
+                                实例编号认领、窗口吸附判定/派生/求解与组联动跟随的纯逻辑
 src/global_sync.rs               全局设置跨实例同步的纯判定
 src/library.rs、loading.rs      图库扫描与解码
 src/display.rs、display_data.rs 显示数据与共享帧
@@ -149,7 +150,8 @@ src/window_geom.rs              窗口位置/尺寸与 DPI 恢复
 src/diagnostics.rs              真实文件日志与窗口观测
 src/bin/moe-frame.rs            正式相框入口：main、日志、配置装载
 src/bin/moe-frame/              宿主分模块：app、frame_ui、settings_ui、input、geometry、
-                                tray、texture、autostart_store、ui_regressions
+                                tray、texture、autostart_store、snap_enum、instance_launch、
+                                ui_regressions
 src/bin/window-validation/      08 验证程序与 Win32 观测
 src/bin/decode-validation/      09 解码与内存验证程序
 tests/                          输入、配置、轮播与日志的自动测试

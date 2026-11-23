@@ -42,3 +42,4 @@
 - 既有测试断言变更：无断言改动；仅 tests/window_geom.rs 的观察构造助手补 `snap: None` 字段、tests/settings_session.rs 的 EffectiveValues 构造补 `window_snap: true` 字段（新字段的机械补齐）。`GeomObservation` 因内含伙伴列表不再是 Copy（全仓按引用传递，无其他影响）。
 - 边界检查（safe_code_edits_and_commits）：最终 diff 专项复读无劈裂/孤儿文档注释、无重复属性；GLOSSARY Avoid 词（磁吸/贴边停靠/窗口组/编组/窗口号/进程号/设置窗口）对 diff 与新文件 grep 零命中。代码与文档分两笔提交，暂存清单逐笔核对一致。
 - 遗留风险：Win32 宿主枚举层未实机验证（枚举结果、模态拖动结束帧的组装时机、落位观感待工单 04 实机清单）；两屏 DPI 不同时伙伴矩形按各自 DPI 换算的精度未实机验；松手帧与切图比例校正同帧时吸附命令后发覆盖校正位置命令（以校正后有效位置为求解输入，口径自洽，未实机验同帧叠加）。
+- 双轴审查修复（2026-11-24）：S6——松手求解跨边组裁决改类别先行（贴合无条件压过对齐、跨组亦然，同类再比间隙/生成序），此前跨组只比间隙、对边小间隙对齐可压过本边贴合；新增回归测试 solve_attach_on_one_edge_beats_smaller_gap_alignment_on_the_other。类别表示由 u8 常量改真枚举 SnapCandidateKind（Standards 轴 J1）。另 S4 的启动枚举在 snap_enum 新增 startup_partner_positions（启动瞬间、无自窗、含隐藏窗、pid→编号），供级联基点使用，判定仍走本票的 is_partner_frame。
