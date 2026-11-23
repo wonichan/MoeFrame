@@ -214,7 +214,7 @@ fn log_frame_art_fallback(path: &std::path::Path, reason: &str) {
     let Some(directory) = app_directory() else {
         return;
     };
-    let error = moe_frame::decode_validation::DecodeError {
+    let error = moe_frame::loading::DecodeError {
         path: path.to_path_buf(),
         reason: reason.to_owned(),
     };

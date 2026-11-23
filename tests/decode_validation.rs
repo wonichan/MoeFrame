@@ -1,7 +1,10 @@
 #[path = "support/decode_samples.rs"]
 mod decode_samples;
 use image::{Rgb, RgbImage};
-use moe_frame::decode_validation::{load_display, DecodeLimits, DecodeRequest, DisplayMode};
+use moe_frame::{
+    decode_validation::load_display,
+    loading::{DecodeLimits, DecodePhase, DisplayMode, LoadRequest},
+};
 use std::{
     fs,
     path::PathBuf,
@@ -32,8 +35,8 @@ impl Drop for TempDirectory {
     }
 }
 
-fn request(mode: DisplayMode) -> DecodeRequest {
-    DecodeRequest {
+fn request(mode: DisplayMode) -> LoadRequest {
+    LoadRequest {
         target_pixels: [720, 480],
         mode,
         limits: DecodeLimits {
@@ -106,36 +109,7 @@ fn extreme_fill_is_rejected_before_allocating_the_coverage_buffer() {
     let error = result.unwrap_err();
     assert_eq!(error.path, path);
     assert!(error.reason.contains("coverage buffer"));
-    assert!(!phases.contains(&moe_frame::decode_validation::DecodePhase::Resizing));
-}
-
-#[test]
-fn encoded_input_above_the_experimental_budget_is_rejected_by_path() {
-    use std::io::Write;
-    let directory = TempDirectory::new();
-    let path = directory.0.join("trailing-data.png");
-    RgbImage::from_pixel(16, 16, Rgb([40, 80, 120]))
-        .save(&path)
-        .unwrap();
-    fs::OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .unwrap()
-        .write_all(&[0; 4096])
-        .unwrap();
-    let mut policy = request(DisplayMode::Fit);
-    policy.target_pixels = [8, 8];
-    policy.limits.max_alloc = 1024;
-
-    let result = load_display(&path, policy, |_| {});
-
-    assert!(
-        result.is_err(),
-        "large encoded inputs must not bypass the explicit experiment budget"
-    );
-    let error = result.unwrap_err();
-    assert_eq!(error.path, path);
-    assert!(error.reason.contains("encoded file"));
+    assert!(!phases.contains(&DecodePhase::Resizing));
 }
 
 #[test]
@@ -154,7 +128,7 @@ fn a_valid_image_disguised_as_another_extension_is_refused_before_decode() {
 
     assert_eq!(error.path, disguised);
     assert!(error.reason.contains("extension/header mismatch"));
-    assert!(!phases.contains(&moe_frame::decode_validation::DecodePhase::Decoding));
+    assert!(!phases.contains(&DecodePhase::Decoding));
 }
 #[test]
 fn all_four_required_formats_decode_real_files_with_display_sized_output() {
@@ -215,7 +189,7 @@ fn explicit_dimension_and_decoded_output_limits_stop_before_full_decode() {
         let error = load_display(&path, policy, |p| phases.push(p)).unwrap_err();
         assert_eq!(error.path, path);
         assert!(!error.reason.is_empty());
-        assert!(!phases.contains(&moe_frame::decode_validation::DecodePhase::Decoding));
+        assert!(!phases.contains(&DecodePhase::Decoding));
     }
 }
 
@@ -239,7 +213,6 @@ fn corrupt_and_truncated_inputs_keep_the_real_path_and_error() {
 
 #[test]
 fn release_is_observed_before_display_ready_but_is_not_a_working_set_measurement() {
-    use moe_frame::decode_validation::DecodePhase;
     let directory = TempDirectory::new();
     let path = directory.0.join("portrait.png");
     RgbImage::from_pixel(480, 960, Rgb([40, 80, 120]))
@@ -249,15 +222,16 @@ fn release_is_observed_before_display_ready_but_is_not_a_working_set_measurement
     let display = load_display(&path, request(DisplayMode::Fit), |p| phases.push(p)).unwrap();
     assert_eq!(display.display_pixels, [240, 480]);
     assert_eq!(display.rgba.len(), 460_800);
-    let released = phases
-        .iter()
-        .position(|p| *p == DecodePhase::FullResolutionReleased)
-        .unwrap();
-    let ready = phases
-        .iter()
-        .position(|p| *p == DecodePhase::DisplayReady)
-        .unwrap();
-    assert!(released < ready);
+    assert_eq!(
+        phases,
+        [
+            DecodePhase::Opening,
+            DecodePhase::Decoding,
+            DecodePhase::Resizing,
+            DecodePhase::FullResolutionReleased,
+            DecodePhase::DisplayReady,
+        ]
+    );
 }
 
 #[test]
@@ -401,7 +375,7 @@ fn cycle_reports_real_bad_paths_and_keeps_preloading_good_png_and_jpeg() {
         vec![&corrupt, &over, &disguised]
     );
     assert!(failures.iter().all(|(_, reason)| !reason.is_empty()));
-    assert!(!events.iter().any(|e| matches!(e, CycleEvent::Phase { path, phase: moe_frame::decode_validation::DecodePhase::Decoding, .. } if path == &corrupt || path == &over || path == &disguised)));
+    assert!(!events.iter().any(|e| matches!(e, CycleEvent::Phase { path, phase: DecodePhase::Decoding, .. } if path == &corrupt || path == &over || path == &disguised)));
     drop(ready);
     let advanced = cycle.advance(|_| {});
     assert_eq!(advanced.current.as_ref().unwrap().path, second);

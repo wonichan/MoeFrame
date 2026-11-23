@@ -2,19 +2,19 @@
 
 **What to build:** 全仓只剩一份解码实现：产品类型与实现回到产品侧，工单 09 的验证接缝变成骑在同一实现上的薄 adapter；fit/fill 计算只剩一份口径；encoded 预检的历史分歧在合流时裁决关闭，不再留给下一个人。
 
-**Blocked by:** [06: 双解码交叉等价测试](06-decode-equivalence-tests.md)、v1-exe 工单 22/23 发布门完成（发布门须用工单 09 原接缝完成最后一次复测、闭合其实测证据链）。
+**Blocked by:** [06: 双解码交叉等价测试](06-decode-equivalence-tests.md)、v1-exe 工单 22/23 发布门完成（采信完整产品实测，不要求原验证器另做最后一次复测，见 Comments）。
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance criteria
 
-- [ ] 产品解码实现与产品类型（DisplayMode、DisplayImage、DecodeError、DecodeLimits）迁到产品侧；loading.rs 就地演进为产品解码 module 承接（不新起 module、不改名），模块头文档写清职责。
-- [ ] decode_validation 只剩验证装配：命令行、样本生成、内存观测，加一个薄 adapter 把「可独立传 Limits 的实验入口」接到产品实现上；decode-validation 二进制保留且可运行。
-- [ ] fit/fill 尺寸计算三份合一：解码与绘制共用一份，取整政策只定义一次；与 display_data 的分工不重叠（它管记账与决策，尺寸是纯算术）。
-- [ ] encoded-size 悬案裁决落地：验证 adapter 不再自带编码字节预检，Limits 只按解码输出判定（与产品、与父规格统一）；工单 06 记录的已知差异在本票消除，交叉等价测试相应改为断言一致。
-- [ ] 工单 06 的交叉等价测试改打统一实现并长期保留、保持全绿；display_data 等消费方对迁动类型的导入随迁移动（纯机械，不重开工单 01 的任何定案）。
-- [ ] 文档同步：新写一份 implemented 笔记取代工单 09 冻结处置（说明接缝已合流、原实测对应合流前实现、发布门已用原接缝闭合）并与旧笔记交叉链接，旧笔记原文不改写；docs/decode-validation.md 同步为 adapter 形态。
-- [ ] 全量测试绿、Windows 目标 check/clippy 通过；产品代码中解码实现只剩一份（可由仓库搜索核验）；双轴 code-review 通过。
+- [x] 产品解码实现与产品类型（DisplayMode、DisplayImage、DecodeError、DecodeLimits）迁到产品侧；loading.rs 就地演进为产品解码 module 承接（不新起 module、不改名），模块头文档写清职责。
+- [x] decode_validation 只剩验证装配：命令行、样本生成、内存观测，加一个薄 adapter 把「可独立传 Limits 的实验入口」接到产品实现上；decode-validation 二进制保留且可运行。
+- [x] fit/fill 尺寸计算三份合一：解码与绘制共用一份，取整政策只定义一次；与 display_data 的分工不重叠（它管记账与决策，尺寸是纯算术）。
+- [x] encoded-size 悬案裁决落地：验证 adapter 不再自带编码字节预检，Limits 只按解码输出判定（与产品、与父规格统一）；工单 06 记录的已知差异在本票消除，交叉等价测试相应改为断言一致。
+- [x] 工单 06 的交叉等价测试改打统一实现并长期保留、保持全绿；display_data 等消费方对迁动类型的导入随迁移动（纯机械，不重开工单 01 的任何定案）。
+- [x] 文档同步：新写一份 implemented 笔记取代工单 09 冻结处置（说明接缝已合流、原实测对应合流前实现、发布门按完整产品实测闭合）并与旧笔记交叉链接，旧笔记原文不改写；docs/decode-validation.md 同步为 adapter 形态。
+- [x] 全量测试绿、Windows 目标 check/clippy 通过；产品代码中解码实现只剩一份（可由仓库搜索核验）；双轴 code-review 通过。
 
 ## Context
 
@@ -32,3 +32,5 @@
   - **已知差异 D2（文本）**：拒绝原因措辞——覆盖超限：验证 `coverage buffer exceeds experimental max_alloc` vs 产品 `coverage buffer exceeds max_alloc`（等价测试首轮失败输出实测）；正数守卫：验证 `physical target and experimental Limits must be positive` vs 产品 `physical target and Limits must be positive`。结果（同为拒绝）一致，等价断言不断言原因文本；合流后随实现统一自然消失。
   - **尺寸取整归类（三份实现）**：解码侧两份整数版逐项全等；绘制侧浮点版 `display::display_size` 与整数版对照（9 种源尺寸 × 4 种目标 × 双模式）——驱动边只差 f32 表示误差（<0.01px）；派生边 Fit 向下取整（浮点−整数 ∈ [0,1)；浮点 <1 时整数钳到 1），Fill 向上取整（整数−浮点 ∈ [0,1)）。无归类外差异。工单 07 合一时以此归类为取整政策的定义依据。
   - **未知差异：无。** 测试期间唯一失败是本票测试自身的 max_alloc 取值未避开覆盖缓冲门，属测试设计修正，非管线差异。
+- 2026-11-23 开工前重新定界（用户确认）：保留内部 `DisplayMode` 和 Fill 路径，本票只合并尺寸计算，不恢复用户侧模式选择；发布门以 22/23 的完整产品实测闭合。未找到原工单 09 验证器完成发布门最后复测的证据，合流文档区分两次测量，不补写为已完成。
+- 2026-11-23 完成：图库只经 `loading` 解码，验证器保留独立 Limits 与阶段观测；适应/填充尺寸由 `display` 统一计算。Windows x64 MSVC `check`、`bash scripts/check.sh`（340 项测试）、双轴评审通过，`decode-validation --help` 可运行。未重跑图形内存测量，发布门继续引用 22/23 完整产品实测。见[实施笔记](../../../.agents/notes/implemented/architecture/2026-11-23-decode-merge.md)。

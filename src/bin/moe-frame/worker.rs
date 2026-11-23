@@ -4,10 +4,9 @@
 //! display_data 定义（architecture-deepening 工单 01），本文件只管存储。
 
 use moe_frame::{
-    decode_validation::DisplayImage,
     display_data::DisplayKey,
     library::scan_library,
-    loading::{append_skip_log, load_first_available, load_image, LoadRequest},
+    loading::{append_skip_log, load_first_available, load_image, DisplayImage, LoadRequest},
 };
 use std::{
     path::{Path, PathBuf},

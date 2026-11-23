@@ -1,24 +1,16 @@
-//! 深挖工单 06：双解码管线交叉等价测试。
-//!
-//! 同一组样本、同一组请求参数，分别经产品管线（`loading::load_image`）与
-//! 工单 09 验证管线（`decode_validation::load_display`）加载，断言接受/拒绝
-//! 结果与输出尺寸（源尺寸、缩放尺寸、显示尺寸、RGBA 字节）一致。已知的
-//! 有意差异不在等价断言内，单独在
-//! `encoded_precheck_is_the_known_difference` 中以「差异存在且形态如此」
-//! 的方式钉住：验证接缝按编码字节长度预检拒绝，产品管线不预检、
-//! 按解码输出判定。拒绝原因的文字措辞差异（如 "experimental" 有无）
-//! 同样属已知差异：等价断言只断言两侧同为拒绝，不断言原因文本相等；
-//! 已知差异测试则反过来把验证侧的原因原文钉死，以记录差异的形态。
+//! 常驻的解码接缝等价测试（深挖工单 06/07）。验证 adapter 和正式解码入口
+//! 接同一组请求，对比尺寸、像素和拒绝原因。每组都钉住接受或拒绝方向，
+//! 避免共享实现同时退化而未被发现。绘制保留小数，解码按整数像素取整。
 
 mod common;
 
 use common::temp_root;
 use image::{DynamicImage, ImageBuffer, Rgb};
-use moe_frame::decode_validation::{
-    load_display, DecodeError, DecodeLimits, DecodeRequest, DisplayImage, DisplayMode,
-};
+use moe_frame::decode_validation::load_display;
 use moe_frame::display::display_size;
-use moe_frame::loading::{load_image, LoadRequest};
+use moe_frame::loading::{
+    load_image, DecodeError, DecodeLimits, DisplayImage, DisplayMode, LoadRequest,
+};
 use std::path::{Path, PathBuf};
 
 const GENEROUS: DecodeLimits = DecodeLimits {
@@ -42,7 +34,7 @@ fn save_sample(dir: &Path, name: &str, width: u32, height: u32) -> PathBuf {
     path
 }
 
-/// 同一样本、同一请求分别走两条管线。
+/// 同一样本、同一请求分别走两个公开入口。
 fn both(
     path: &Path,
     target: [u32; 2],
@@ -52,53 +44,43 @@ fn both(
     Result<DisplayImage, DecodeError>,
     Result<DisplayImage, DecodeError>,
 ) {
-    let validation = load_display(
-        path,
-        DecodeRequest {
-            target_pixels: target,
-            mode,
-            limits,
-        },
-        |_| {},
-    );
-    let product = load_image(
-        path,
-        LoadRequest {
-            target_pixels: target,
-            mode,
-            limits,
-        },
-    );
-    (validation, product)
+    let request = LoadRequest {
+        target_pixels: target,
+        mode,
+        limits,
+    };
+    (
+        load_display(path, request, |_| {}),
+        load_image(path, request),
+    )
 }
 
-/// 等价断言：接受/拒绝一致；接受时四项输出全等（含 RGBA 字节）；
-/// 拒绝时只断言两侧同为拒绝（原因措辞属已知差异，不在此断言）。
-fn assert_equivalent(path: &Path, target: [u32; 2], mode: DisplayMode, limits: DecodeLimits) {
+fn assert_both_accept(path: &Path, target: [u32; 2], mode: DisplayMode, limits: DecodeLimits) {
     let (validation, product) = both(path, target, mode, limits);
     let ctx = format!(
         "{} target={target:?} mode={mode:?} limits={limits:?}",
         path.display()
     );
-    match (validation, product) {
-        (Ok(v), Ok(p)) => {
-            assert_eq!(v.source_pixels, p.source_pixels, "source_pixels: {ctx}");
-            assert_eq!(v.scaled_pixels, p.scaled_pixels, "scaled_pixels: {ctx}");
-            assert_eq!(v.display_pixels, p.display_pixels, "display_pixels: {ctx}");
-            assert_eq!(v.rgba, p.rgba, "rgba bytes: {ctx}");
-        }
-        (Err(v), Err(p)) => {
-            assert!(
-                !v.reason.is_empty() && !p.reason.is_empty(),
-                "reasons: {ctx}"
-            );
-        }
-        (v, p) => panic!(
-            "accept/reject divergence: {ctx}: validation ok={} product ok={}",
-            v.is_ok(),
-            p.is_ok()
-        ),
-    }
+    let v = validation.unwrap_or_else(|error| panic!("validator must accept {ctx}: {error}"));
+    let p = product.unwrap_or_else(|error| panic!("product must accept {ctx}: {error}"));
+    assert_images_equal(&v, &p, &ctx);
+}
+
+fn assert_images_equal(validation: &DisplayImage, product: &DisplayImage, ctx: &str) {
+    assert_eq!(validation.path, product.path, "path: {ctx}");
+    assert_eq!(
+        validation.source_pixels, product.source_pixels,
+        "source_pixels: {ctx}"
+    );
+    assert_eq!(
+        validation.scaled_pixels, product.scaled_pixels,
+        "scaled_pixels: {ctx}"
+    );
+    assert_eq!(
+        validation.display_pixels, product.display_pixels,
+        "display_pixels: {ctx}"
+    );
+    assert_eq!(validation.rgba, product.rgba, "rgba bytes: {ctx}");
 }
 
 #[test]
@@ -114,8 +96,8 @@ fn formats_and_aspects_agree_across_limits() {
     for path in &samples {
         for mode in [DisplayMode::Fit, DisplayMode::Fill] {
             for target in [[100, 100], [72, 40], [40, 72]] {
-                assert_equivalent(path, target, mode, GENEROUS);
-                assert_equivalent(path, target, mode, TIGHT_DIMS);
+                assert_both_accept(path, target, mode, GENEROUS);
+                assert_both_accept(path, target, mode, TIGHT_DIMS);
             }
         }
     }
@@ -135,21 +117,28 @@ fn fill_crop_boundary_sizes_agree() {
     ] {
         let path = save_sample(&dir, name, w, h);
         for mode in [DisplayMode::Fit, DisplayMode::Fill] {
-            assert_equivalent(&path, [100, 100], mode, GENEROUS);
-            assert_equivalent(&path, [37, 73], mode, GENEROUS);
+            assert_both_accept(&path, [100, 100], mode, GENEROUS);
+            assert_both_accept(&path, [37, 73], mode, GENEROUS);
         }
     }
 }
 
-/// 拒绝方向钉死：两侧必须同为拒绝（原因文本属已知差异，不断言相等）。
+/// 同一实现下，两端都必须拒绝，并给出相同的路径和原因。
 fn assert_both_reject(path: &Path, target: [u32; 2], mode: DisplayMode, limits: DecodeLimits) {
     let (validation, product) = both(path, target, mode, limits);
     let ctx = format!(
         "{} target={target:?} mode={mode:?} limits={limits:?}",
         path.display()
     );
-    assert!(validation.is_err(), "validation must reject: {ctx}");
-    assert!(product.is_err(), "product must reject: {ctx}");
+    let Err(v) = validation else {
+        panic!("validator must reject: {ctx}");
+    };
+    let Err(p) = product else {
+        panic!("product must reject: {ctx}");
+    };
+    assert_eq!(v, p, "rejections: {ctx}");
+    assert_eq!(v.path, path);
+    assert!(!v.reason.is_empty(), "missing rejection reason: {ctx}");
 }
 
 #[test]
@@ -174,16 +163,14 @@ fn over_limit_and_corrupt_inputs_agree() {
         // 源宽/源高超限：解码器 Limits 在两侧同口径拒绝。
         assert_both_reject(&wide, [100, 100], mode, TIGHT_DIMS);
         assert_both_reject(&tall, [100, 100], mode, TIGHT_DIMS);
-        // 解码输出预留超 max_alloc：BMP 编码与原始字节同量级，两侧同为拒绝
-        // （验证侧可能先在编码预检拒绝，原因归类不同、结果同为拒绝）。
+        // BMP 的解码输出预留超 max_alloc，两侧同为拒绝。
         let alloc_tight = DecodeLimits {
             max_width: 1_000,
             max_height: 1_000,
             max_alloc: 100_000,
         };
         assert_both_reject(&big, [100, 100], mode, alloc_tight);
-        // 填充覆盖缓冲超 max_alloc：预留可过、覆盖字节超限，两侧同为拒绝；
-        // 适应模式下同一文件缩放后覆盖很小，两侧同为接受（等价断言覆盖）。
+        // 填充覆盖缓冲超 max_alloc；同一文件在适应模式下可以显示。
         let coverage_tight = DecodeLimits {
             max_width: 12_000,
             max_height: 12_000,
@@ -192,7 +179,7 @@ fn over_limit_and_corrupt_inputs_agree() {
         if mode == DisplayMode::Fill {
             assert_both_reject(&extreme, [100, 100], mode, coverage_tight);
         } else {
-            assert_equivalent(&extreme, [100, 100], mode, coverage_tight);
+            assert_both_accept(&extreme, [100, 100], mode, coverage_tight);
         }
         // 损坏、截断、扩展名与文件头不一致：两侧同为拒绝。
         assert_both_reject(&corrupt, [100, 100], mode, GENEROUS);
@@ -217,12 +204,10 @@ fn guard_rejections_agree() {
     }
 }
 
-/// 已知差异（清单首项）：编码字节预检。同一文件、同一 Limits——验证接缝
-/// 按编码长度（文件尾部填充计入）超过 max_alloc 拒绝，产品管线不预检、
-/// 解码输出在限内则接受。差异以这个形态被钉住，而不是断言一致。
+/// Limits constrain decoded output, not the bytes in the encoded file.
 #[test]
-fn encoded_precheck_is_the_known_difference() {
-    let dir = temp_root("decode-equivalence", "known-diff");
+fn encoded_length_above_max_alloc_does_not_reject_bounded_output() {
+    let dir = temp_root("decode-equivalence", "encoded-length");
     let padded = save_sample(&dir, "padded.png", 8, 8);
     {
         use std::io::Write;
@@ -239,22 +224,17 @@ fn encoded_precheck_is_the_known_difference() {
         max_height: 12_000,
         max_alloc: 2_048,
     };
+    assert!(std::fs::metadata(&padded).unwrap().len() > mid_alloc.max_alloc);
     let (validation, product) = both(&padded, [16, 16], DisplayMode::Fit, mid_alloc);
-    let error = validation.expect_err("validation seam must reject on encoded length");
-    assert_eq!(error.reason, "encoded file exceeds experimental max_alloc");
-    let image = product.expect("product pipeline must accept: decode output is within limits");
-    assert_eq!(image.source_pixels, [8, 8]);
-    assert_eq!(image.display_pixels, [16, 16]);
-
-    // 同一文件在宽松 Limits 下两侧同为接受且输出全等：填充本身不构成差异。
-    assert_equivalent(&padded, [100, 100], DisplayMode::Fit, GENEROUS);
-    assert_equivalent(&padded, [100, 100], DisplayMode::Fill, GENEROUS);
+    let validation = validation.expect("validator must accept: decoded output is within limits");
+    let product = product.expect("product must accept: decoded output is within limits");
+    assert_eq!(validation.source_pixels, [8, 8]);
+    assert_eq!(validation.scaled_pixels, [16, 16]);
+    assert_eq!(validation.display_pixels, [16, 16]);
+    assert_images_equal(&validation, &product, "encoded length above max_alloc");
 }
 
-/// 尺寸计算三份实现的交叉校验：解码侧两份整数版先由等价断言保证彼此
-/// 一致（scaled_pixels），再与绘制侧浮点版（display::display_size）对照。
-/// 取整归类：驱动边两侧恒等；派生边适应为向下取整（差在 [0,1)，
-/// 浮点结果小于 1 时整数版钳到 1），填充为向上取整（差在 [0,1)）。
+/// 同一个缩放比例，绘制保留小数，解码按模式取整。
 #[test]
 fn decode_integer_sizes_match_painting_float_sizes_within_rounding() {
     let dir = temp_root("decode-equivalence", "sizes");

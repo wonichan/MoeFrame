@@ -60,11 +60,7 @@ impl FrameApp {
     }
 }
 impl FrameApp {
-    pub(crate) fn upload(
-        &mut self,
-        ctx: &egui::Context,
-        image: moe_frame::decode_validation::DisplayImage,
-    ) {
+    pub(crate) fn upload(&mut self, ctx: &egui::Context, image: moe_frame::loading::DisplayImage) {
         let size = [
             image.display_pixels[0] as usize,
             image.display_pixels[1] as usize,

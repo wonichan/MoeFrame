@@ -1,6 +1,6 @@
 //! 工单 18：显示几何——适应完整放入、填充覆盖居中（尺寸层面），横竖图都验。
-use moe_frame::decode_validation::DisplayMode;
 use moe_frame::display::display_size;
+use moe_frame::loading::DisplayMode;
 
 const AREA: [f32; 2] = [480.0, 320.0];
 

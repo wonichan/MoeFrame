@@ -57,7 +57,6 @@ use moe_frame::{
     autostart::{autostart_command, AutostartStore, AutostartSync, RUN_KEY_PATH, RUN_VALUE_NAME},
     config::{Animation, AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode, MAX_LAYER_WIDTH},
     config_sync::ConfigSync,
-    decode_validation::DisplayMode,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
     frame_art::FrameArtAnalysis,
     frame_layout::{
@@ -65,7 +64,7 @@ use moe_frame::{
         EffectiveAppearance, FadeBand, FrameEdge, LayoutRect, ProfileLines,
     },
     gesture::GestureThresholds,
-    loading::LoadRequest,
+    loading::{DisplayMode, LoadRequest},
     playlist::Direction,
     resize_cursor, resize_direction,
     settings_session::{
