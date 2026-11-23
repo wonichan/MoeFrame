@@ -13,6 +13,8 @@
 //! 与名义中心锚定已撤除。保留的名义量只有“名义高度”：目标尺寸按
 //! 它推导并按工作区等比适配（超宽临时缩高），临时值不落盘。原生
 //! 拖动后的回弹修复保留：指针按下期间只更新名义量、松手后重校正。
+//! 工单 06 补充条款（spec §12）：校正后的外框矩形在当前位置溢出
+//! 工作区时，同帧最小平移回界内；不溢出时位置仍纹丝不动。
 //!
 //! 已知限制：启动离屏判定把主屏当作原点 (0,0) 的矩形。egui 只提供
 //! 相框所在屏尺寸，不提供屏幕原点与屏幕枚举；正式宿主会另外从
@@ -181,6 +183,7 @@ impl GeometryMachine {
     /// → 落盘观察 → 首次放置。
     pub fn observe(&mut self, obs: &GeomObservation) -> Vec<GeomCommand> {
         let mut commands = Vec::new();
+        let mut startup_position_issued = false;
         // 启动离屏钳制：只查一次，等外矩形与显示器都取到才查。
         if !self.startup_clamp_done {
             if let (Some(pos), Some(size), Some(monitor)) =
@@ -191,6 +194,7 @@ impl GeometryMachine {
                     self.nominal_center =
                         Some([clamped[0] + size[0] * 0.5, clamped[1] + size[1] * 0.5]);
                     commands.push(GeomCommand::SetOuterPosition(clamped));
+                    startup_position_issued = true;
                 }
             }
         }
@@ -207,7 +211,7 @@ impl GeometryMachine {
         let cur_changed = cur != self.last_observed_inner;
 
         let mut effective_inner = cur;
-        let effective_pos = cur_pos;
+        let mut effective_pos = cur_pos;
         if obs.pointer_down {
             // 拖动/缩放中用户最大：只记名义高度，不抢方向盘。
             if cur_changed {
@@ -235,12 +239,31 @@ impl GeometryMachine {
             if let Some(aspect) = self.image_aspect {
                 if !self.aspect_applied || cur_changed || insets_changed {
                     // 瞬时校正（收编定案）：按名义高度推导，再按工作区
-                    // 等比适配（超宽临时缩高，只改显示不落盘）；只发
-                    // 尺寸命令，不移动窗口位置。
+                    // 等比适配（超宽临时缩高，只改显示不落盘）；位置
+                    // 原则上不动——只有校正后的外框矩形在当前位置
+                    // 溢出工作区时，才同帧最小平移回界内（工单 06
+                    // 补充条款）。本帧启动钳制已发位置命令时不叠加，
+                    // 留待下一帧按新位置观察再判。
                     let desired = self.size_from_nominal_height(aspect, obs.insets);
                     let target_size = fit_size_to_work_area(desired, work_area);
                     if size_differs(cur, target_size) {
                         commands.push(GeomCommand::SetInnerSize(target_size));
+                    }
+                    if !startup_position_issued {
+                        if let (Some(pos), Some(outer)) = (cur_pos, obs.outer_size) {
+                            // 钳制按外框矩形算：目标外尺寸 = 目标内
+                            // 尺寸 + 当前窗口边框差（外 − 内）。
+                            let target_outer = [
+                                target_size[0] + outer[0] - cur[0],
+                                target_size[1] + outer[1] - cur[1],
+                            ];
+                            if let Some(clamped) =
+                                clamp_outer_position_into_work_area(pos, target_outer, work_area)
+                            {
+                                commands.push(GeomCommand::SetOuterPosition(clamped));
+                                effective_pos = Some(clamped);
+                            }
+                        }
                     }
                     effective_inner = target_size;
                     self.aspect_applied = true;
@@ -417,6 +440,29 @@ fn fit_size_to_work_area(size: [f32; 2], work_area: Option<[f32; 4]>) -> [f32; 2
         .min(available_height / size[1])
         .min(1.0);
     [size[0] * scale, size[1] * scale]
+}
+
+/// 切图溢出钳制（工单 06）：外框矩形在 pos 处溢出工作区时，返回
+/// 平移刚好回界的位置——四边各保留 WORK_AREA_MARGIN 边距，每轴只
+/// 移动越界的那一截；不溢出或工作区未知时返回 None。外框比可用区
+/// 还大时贴到左上界兜底（尺寸本身已由 fit_size_to_work_area 先行
+/// 适配，此处只差窗口边框差量级）。
+fn clamp_outer_position_into_work_area(
+    pos: [f32; 2],
+    outer_size: [f32; 2],
+    work_area: Option<[f32; 4]>,
+) -> Option<[f32; 2]> {
+    let [left, top, right, bottom] = work_area?;
+    let min_x = left + WORK_AREA_MARGIN;
+    let min_y = top + WORK_AREA_MARGIN;
+    let max_x = (right - WORK_AREA_MARGIN - outer_size[0]).max(min_x);
+    let max_y = (bottom - WORK_AREA_MARGIN - outer_size[1]).max(min_y);
+    let clamped = [pos[0].clamp(min_x, max_x), pos[1].clamp(min_y, max_y)];
+    if (clamped[0] - pos[0]).abs() > 0.5 || (clamped[1] - pos[1]).abs() > 0.5 {
+        Some(clamped)
+    } else {
+        None
+    }
 }
 
 fn observation_work_area(obs: &GeomObservation) -> Option<[f32; 4]> {
