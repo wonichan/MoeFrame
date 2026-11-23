@@ -257,6 +257,8 @@ pub struct FrameCore {
     last_animation: Option<ConcreteAnimation>,
     /// 下一次自动切换的触发时刻；暂停或无图时为 None。
     deadline_ms: Option<u64>,
+    /// 宿主正原生缩放；只暂缓可见相框的自动切换，不改截止时刻。
+    autoplay_deferred: bool,
     pending: Option<Pending>,
     /// 进行中的滑动转场；转场期间不提交显示、不触发自动轮播。
     transition: Option<Transition>,
@@ -302,6 +304,7 @@ impl FrameCore {
             animation_random,
             last_animation: None,
             deadline_ms: None,
+            autoplay_deferred: false,
             pending: None,
             transition: None,
             queued_nav: None,
@@ -346,9 +349,24 @@ impl FrameCore {
         self.animation
     }
 
+    /// 宿主缩放期间暂缓自动轮播，不修改播放设置或截止时刻。
+    pub fn set_autoplay_deferred(&mut self, deferred: bool) {
+        self.autoplay_deferred = deferred;
+    }
+
+    fn autoplay_is_deferred(&self) -> bool {
+        self.autoplay_deferred && self.frame_visible
+    }
+
+    /// 当前在飞的是自动轮播，宿主可将回送与窗口尺寸一起交接。
+    pub fn autoplay_load_in_flight(&self) -> bool {
+        matches!(self.pending, Some(Pending::Navigate { auto: true, .. }))
+    }
+
     /// 下一次需要唤醒的时刻（自动切换或等待单击结算），供宿主安排重绘唤醒。
     pub fn next_deadline_ms(&self) -> Option<u64> {
-        match (self.deadline_ms, self.gesture.settle_deadline()) {
+        let autoplay_deadline = self.deadline_ms.filter(|_| !self.autoplay_is_deferred());
+        match (autoplay_deadline, self.gesture.settle_deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (Some(a), None) => Some(a),
             (None, Some(b)) => Some(b),
@@ -722,6 +740,7 @@ impl FrameCore {
                     effects.extend(self.apply_gesture(vec![GestureOutcome::Click(zone)]));
                 }
                 if self.playing
+                    && !self.autoplay_is_deferred()
                     && self.pending.is_none()
                     && self.transition.is_none()
                     && self.playlist.len() >= 2

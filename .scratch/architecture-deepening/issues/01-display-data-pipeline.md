@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -31,3 +31,8 @@
 - 结构决定：管线只记账与裁决，纹理句柄按当前/传入槽位归宿主；刷新失败同键压制是与旧实现唯一的有意行为变化（旧为帧驱动重试，可见结果相同），已在模块头与笔记中明文。
 - 双轴审查（基线 8a2ead2）：Standards 无硬违规，判断项三条全采纳（重载/刷新用词统一、删 DisplayKey::new、字段注释对齐术语界线，另修正 Debounce 过期注释）；Spec 十条全满足，行为等价 (a)–(e) 成立，(f) invalidate 连带清理的边角时序差异已记入笔记 Consequences。
 - 2026-11-22 对齐（提交 `7861e5f`，决定见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`）：显示口径已固定为完整显示，适应/填充切换不再存在；管线与内部 `DisplayMode` 暂时保留，填充路径处于闲置，删除与否另行决定（不属深挖 07 原范围）。深挖实机清单工单 01 节涉及模式切换的两项已作废。
+
+- Windows 补测：`v0.1.3` 放大后松手能自行变清晰；混合 DPI（125% → 100%）停稳清晰，坏图刷新旧图保留、无弹窗且仍可切下一张（[W1b、W1d、W2a](../../../real-machine-check-closeout.md)）。
+- [W1c](../../../real-machine-check-closeout.md) 未通过：同一 exe 在原生缩放中连续两次复现 2:1 宽图被完整画进约 200×550 的窗口，松手才恢复正确比例。无动画路径在宿主 `drain_replies` 转正新纹理；`WindowGeom::observe` 在原生手势中暂不改尺寸，`paint_stage` 无动画时满幅绘制。窗口几何与画面切换不同步，不能用刷新重试修正。
+
+- 用户选定松手再切；修复等待新尺寸后再显示自动加载的新图，不改播放间隔。`scripts/check.sh` 全过（342 项）；Windows 上拖角切图两次通过，坏图刷新和不拖动切图对照通过。见[补测 W1c/W1d](../../../real-machine-check-closeout.md)和[实施笔记](../../../.agents/notes/implemented/bug-fix/2026-11-23-autoplay-during-resize.md)。关闭本票；修复未发新包。

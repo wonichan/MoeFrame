@@ -113,7 +113,7 @@ impl FrameApp {
                                 &format!("direction={direction:?} pos={pos:?} rect={rect:?}"),
                             );
                             ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
-                            self.native_gesture_active = true;
+                            self.native_gesture = Some(NativeGesture::Resize);
                         } else {
                             resize_debug_record(
                                 "resize_blocked",
@@ -133,7 +133,7 @@ impl FrameApp {
                     self.dispatch(ctx, effects);
                     if !maximized_or_fullscreen {
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                        self.native_gesture_active = true;
+                        self.native_gesture = Some(NativeGesture::Move);
                     }
                 }
                 egui::Event::PointerButton {
@@ -147,7 +147,7 @@ impl FrameApp {
                         now_ms: now,
                     });
                     self.dispatch(ctx, effects);
-                    self.native_gesture_active = false;
+                    self.native_gesture = None;
                 }
                 egui::Event::PointerButton {
                     button: egui::PointerButton::Secondary,

@@ -11,8 +11,11 @@ impl eframe::App for FrameApp {
             let effects = self.core.handle(Intent::Started);
             self.dispatch(&ctx, effects);
         }
+        // 几何会在松手帧接收最后一份用户尺寸；下一帧再执行到期的轮播。
+        let resizing = self.native_gesture == Some(NativeGesture::Resize);
+        self.core.set_autoplay_deferred(resizing);
         self.drain_replies(&ctx);
-        self.update_window_geometry(&ctx);
+        self.update_geometry_and_autoplay(&ctx, resizing);
         let now = now_ms(&ctx);
         let tick_effects = self.core.handle(Intent::Tick { now_ms: now });
         self.dispatch(&ctx, tick_effects);
@@ -266,6 +269,10 @@ impl eframe::App for FrameApp {
                 tray.play_pause
                     .set_text(if state.1 { "暂停" } else { "播放" });
             }
+        }
+        // 原生缩放期间 egui 不一定收到松手事件，短间隔低频确认手势结束。
+        if resizing || self.native_gesture == Some(NativeGesture::Resize) {
+            ctx.request_repaint_after(Duration::from_millis(50));
         }
         if let Some(delay) = next_frame_delay(
             self.core.frame_visible(),
