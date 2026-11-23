@@ -168,6 +168,11 @@ impl GeometryMachine {
         }
     }
 
+    /// 当前用于推导窗口尺寸的图像比例。
+    pub fn image_aspect(&self) -> Option<f32> {
+        self.image_aspect
+    }
+
     /// 新图到达时更新比例；比例变化后下一帧按当前高度调整窗口。
     pub fn set_image_aspect(&mut self, aspect: Option<f32>) {
         let aspect = valid_aspect(aspect);

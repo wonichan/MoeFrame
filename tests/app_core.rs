@@ -258,6 +258,59 @@ fn auto_advance_fires_exactly_at_the_deadline() {
 }
 
 #[test]
+fn due_autoplay_waits_for_release_then_switches_once() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 5);
+    core.set_autoplay_deferred(true);
+    assert_eq!(core.handle(Intent::Tick { now_ms: 5_000 }), vec![]);
+    assert_eq!(core.handle(Intent::Tick { now_ms: 16_000 }), vec![]);
+    assert_eq!(core.view(), View::Showing(img("a.png")));
+    assert!(core.is_playing());
+    assert_eq!(core.next_deadline_ms(), None);
+
+    core.set_autoplay_deferred(false);
+    assert_eq!(core.next_deadline_ms(), Some(5_000));
+    assert_eq!(
+        core.handle(Intent::Tick { now_ms: 16_050 }),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("c.png")],
+        }]
+    );
+    assert_eq!(core.handle(Intent::Tick { now_ms: 16_100 }), vec![]);
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 16_100,
+    });
+    settle_transition(&mut core, 17_000);
+    assert_eq!(core.view(), View::Showing(img("b.png")));
+    assert_eq!(core.next_deadline_ms(), Some(22_000));
+}
+
+#[test]
+fn resize_defers_autoplay_but_not_manual_or_hidden_navigation() {
+    let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 5);
+    core.set_autoplay_deferred(true);
+    assert_eq!(
+        core.handle(Intent::NextRequested),
+        vec![Effect::Load {
+            candidates: vec![img("b.png"), img("c.png")],
+        }]
+    );
+    assert!(!core.autoplay_load_in_flight());
+    core.handle(Intent::LoadCompleted {
+        shown: Some(img("b.png")),
+        now_ms: 5_000,
+    });
+    settle_transition(&mut core, 5_600);
+    assert_eq!(core.handle(Intent::CloseRequested), vec![Effect::HideFrame]);
+    assert_eq!(
+        core.handle(Intent::Tick { now_ms: 10_600 }),
+        vec![Effect::Load {
+            candidates: vec![img("c.png"), img("a.png")],
+        }]
+    );
+    assert!(core.autoplay_load_in_flight());
+}
+#[test]
 fn manual_next_recounts_a_full_interval_from_the_successful_switch() {
     let (mut core, _) = showing_core(&["a.png", "b.png", "c.png"], 30);
     assert_eq!(

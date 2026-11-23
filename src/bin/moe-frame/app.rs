@@ -1,7 +1,28 @@
 //! 宿主状态与效果执行：FrameApp 字段、核心效果分发、回复与自启落地。
 
 use super::*;
+use moe_frame::loading::DisplayImage;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeGesture {
+    Move,
+    Resize,
+}
+/// 一张还没上屏的轮播图，复用管线的传入槽。
+pub(crate) struct HeldAutoplay {
+    image: DisplayImage,
+    viewport: Option<PendingViewportSize>,
+}
+
+struct PendingViewportSize {
+    expected: [f32; 2],
+    deadline_ms: u64,
+    previous_aspect: Option<f32>,
+}
+
+fn display_image_aspect(image: &DisplayImage) -> f32 {
+    image.source_pixels[0] as f32 / image.source_pixels[1] as f32
+}
 pub(crate) struct FrameApp {
     pub(crate) core: FrameCore,
     pub(crate) sync: ConfigSync,
@@ -15,6 +36,8 @@ pub(crate) struct FrameApp {
     pub(crate) texture: Option<egui::TextureHandle>,
     /// 加载完成、等待核心完成显示提交的目标纹理。
     pub(crate) incoming: Option<egui::TextureHandle>,
+    /// 窗口尺寸未就绪时暂存自动加载的图，尚未上传或提交显示。
+    pub(crate) held_autoplay: Option<HeldAutoplay>,
     /// 在飞的宿主转场（切换动画专题工单 02）：核心发出
     /// `StartTransition` 时置位，宿主按墙钟绘制新旧两图，到期
     /// 回送完成时才把 `incoming` 转正；None 表示无转场。
@@ -25,7 +48,7 @@ pub(crate) struct FrameApp {
     pub(crate) press_window_pos: Option<egui::Pos2>,
     /// 原生拖动/缩放已开始：Windows 的模态移动循环里 egui 收不到指针状态，
     /// 用它把循环结束后的最终位置/尺寸当作一次用户操作交给几何机。
-    pub(crate) native_gesture_active: bool,
+    pub(crate) native_gesture: Option<NativeGesture>,
     /// 托盘（工单 17）：首帧懒建（须在事件循环内建）；建失败为 None，相框照常。
     pub(crate) tray: Option<TrayHandles>,
     pub(crate) tray_tried: bool,
@@ -103,6 +126,11 @@ impl FrameApp {
                     self.pipeline.invalidate();
                     // 新一轮扫描开始：作废在飞加载，画面回到核心仍在显示的源图。
                     self.incoming = None;
+                    if let Some(viewport) = self.held_autoplay.take().and_then(|held| held.viewport)
+                    {
+                        self.geometry.set_image_aspect(viewport.previous_aspect);
+                    }
+                    self.pipeline.drop_incoming();
                     // 在飞转场随之取消（核心在 ScanCompleted 同步清
                     // 掉其转场状态）：新图已作废，旧图继续显示。
                     self.transition = None;
@@ -308,28 +336,16 @@ impl FrameApp {
                     if decision == NavDecision::Stale {
                         continue;
                     }
-                    let shown = image.as_ref().map(|image| image.path.clone());
-                    if let Some(image) = image {
-                        self.geometry.set_image_aspect(Some(
-                            image.source_pixels[0] as f32 / image.source_pixels[1] as f32,
-                        ));
-                        self.upload(ctx, image);
-                    }
-                    let effects = self.core.handle(Intent::LoadCompleted {
-                        shown,
-                        now_ms: now_ms(ctx),
-                    });
-                    self.dispatch(ctx, effects);
-                    // 转场已起时不转正：incoming 留置与旧图跨帧共存，
-                    // 转正搬到 advance_transition 的完成时刻（工单 02）。
-                    if self.transition.is_none() && self.incoming.is_some() {
-                        self.texture = self.incoming.take();
-                        self.pipeline.promote_incoming();
-                    }
-                    // 导航全失败时核心保留当前图，纹理不动；只有核心回到无图状态才清纹理。
-                    if self.core.view() == View::Empty {
-                        self.texture = None;
-                        self.pipeline.clear_current();
+                    match image {
+                        Some(image)
+                            if self.core.autoplay_load_in_flight() && self.core.frame_visible() =>
+                        {
+                            self.held_autoplay = Some(HeldAutoplay {
+                                image,
+                                viewport: None,
+                            });
+                        }
+                        image => self.finish_navigation_load(ctx, image),
                     }
                 }
                 Reply::Refreshed { image } => {
@@ -347,9 +363,8 @@ impl FrameApp {
                     );
                     if decision == RefreshDecision::Swap {
                         if let Some(image) = image {
-                            self.geometry.set_image_aspect(Some(
-                                image.source_pixels[0] as f32 / image.source_pixels[1] as f32,
-                            ));
+                            self.geometry
+                                .set_image_aspect(Some(display_image_aspect(&image)));
                             self.upload(ctx, image);
                             self.texture = self.incoming.take();
                         }
@@ -358,5 +373,72 @@ impl FrameApp {
             }
         }
         self.refresh_display_data(ctx);
+    }
+
+    pub(crate) fn update_geometry_and_autoplay(&mut self, ctx: &egui::Context, resizing: bool) {
+        let Some(mut held) = self.held_autoplay.take() else {
+            self.update_window_geometry(ctx);
+            return;
+        };
+        if !self.core.frame_visible() {
+            self.finish_navigation_load(ctx, Some(held.image));
+            self.update_window_geometry(ctx);
+            return;
+        }
+        if resizing {
+            self.held_autoplay = Some(held);
+            self.update_window_geometry(ctx);
+            return;
+        }
+
+        let previous_aspect = self.geometry.image_aspect();
+        self.geometry
+            .set_image_aspect(Some(display_image_aspect(&held.image)));
+        let now = now_ms(ctx);
+        if let Some(expected) = self.update_window_geometry(ctx) {
+            let viewport = held.viewport.get_or_insert(PendingViewportSize {
+                expected,
+                deadline_ms: now + 250,
+                previous_aspect,
+            });
+            viewport.expected = expected;
+        }
+        let actual = ctx.viewport_rect().size();
+        let ready = held.viewport.as_ref().is_none_or(|viewport| {
+            let [w, h] = viewport.expected;
+            (actual.x - w).abs() <= 1.0 && (actual.y - h).abs() <= 1.0
+                // OS 未接受尺寸时不冻结轮播（例如已经最大化）。
+                || now >= viewport.deadline_ms
+        });
+        if ready {
+            self.finish_navigation_load(ctx, Some(held.image));
+        } else {
+            self.held_autoplay = Some(held);
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
+    }
+
+    fn finish_navigation_load(&mut self, ctx: &egui::Context, image: Option<DisplayImage>) {
+        let shown = image.as_ref().map(|image| image.path.clone());
+        if let Some(image) = image {
+            self.geometry
+                .set_image_aspect(Some(display_image_aspect(&image)));
+            self.upload(ctx, image);
+        }
+        let effects = self.core.handle(Intent::LoadCompleted {
+            shown,
+            now_ms: now_ms(ctx),
+        });
+        self.dispatch(ctx, effects);
+        // 动画已起时由 advance_transition 在完成时转正。
+        if self.transition.is_none() && self.incoming.is_some() {
+            self.texture = self.incoming.take();
+            self.pipeline.promote_incoming();
+        }
+        // 导航全失败时核心保留当前图；只有回到无图状态才清纹理。
+        if self.core.view() == View::Empty {
+            self.texture = None;
+            self.pipeline.clear_current();
+        }
     }
 }

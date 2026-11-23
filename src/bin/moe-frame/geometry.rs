@@ -3,9 +3,10 @@
 use super::*;
 
 impl FrameApp {
-    pub(crate) fn update_window_geometry(&mut self, ctx: &egui::Context) {
+    /// 返回本帧发出的内尺寸请求；调用者不能把请求视为已经落地。
+    pub(crate) fn update_window_geometry(&mut self, ctx: &egui::Context) -> Option<[f32; 2]> {
         let pixels_per_point = ctx.pixels_per_point();
-        let native_gesture = self.native_gesture_active;
+        let native_gesture = self.native_gesture.is_some();
         let (observation, focused) = ctx.input(|input| {
             let viewport = input.viewport();
             (
@@ -49,11 +50,13 @@ impl FrameApp {
             }
         }
         let commands = self.geometry.observe(&observation);
-        if self.native_gesture_active && !primary_button_down() {
-            self.native_gesture_active = false;
+        if native_gesture && !primary_button_down() {
+            self.native_gesture = None;
         }
+        let mut requested_size = None;
         for command in &commands {
             if let GeomCommand::SetInnerSize(requested) = command {
+                requested_size = Some(*requested);
                 resize_debug_record(
                         "inner_size_command",
                         &format!(
@@ -66,6 +69,7 @@ impl FrameApp {
             }
         }
         self.execute_geometry_commands(ctx, commands);
+        requested_size
     }
     pub(crate) fn execute_geometry_commands(
         &mut self,
