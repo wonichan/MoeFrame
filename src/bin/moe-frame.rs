@@ -13,6 +13,9 @@ use raw_window_handle::HasWindowHandle;
 mod worker;
 
 #[cfg(windows)]
+#[path = "moe-frame/ambient_paint.rs"]
+mod ambient_paint;
+#[cfg(windows)]
 #[path = "moe-frame/app.rs"]
 mod app;
 #[cfg(windows)]
@@ -37,6 +40,9 @@ mod settings_ui;
 #[path = "moe-frame/texture.rs"]
 mod texture;
 #[cfg(windows)]
+#[path = "moe-frame/transition.rs"]
+mod transition;
+#[cfg(windows)]
 #[path = "moe-frame/tray.rs"]
 mod tray;
 #[cfg(test)]
@@ -47,7 +53,7 @@ mod ui_regressions;
 use eframe::egui;
 #[cfg(windows)]
 use moe_frame::{
-    app_core::{Effect, FrameCore, Intent, View},
+    app_core::{ConcreteAnimation, Effect, FrameCore, Intent, View},
     autostart::{autostart_command, AutostartStore, AutostartSync, RUN_KEY_PATH, RUN_VALUE_NAME},
     config::{Animation, AppearanceMode, BuiltinFrame, FramePreset, PlaybackMode, MAX_LAYER_WIDTH},
     config_sync::ConfigSync,
@@ -60,6 +66,7 @@ use moe_frame::{
     },
     gesture::GestureThresholds,
     loading::LoadRequest,
+    playlist::Direction,
     resize_cursor, resize_direction,
     settings_session::{
         EffectiveValues, Field, OpenDecision, Picks, SessionAction, SettingsSession,
@@ -80,6 +87,8 @@ use winit::platform::windows::WindowExtWindows;
 #[cfg(windows)]
 use worker::{Command, Reply};
 
+#[cfg(windows)]
+use ambient_paint::*;
 #[cfg(windows)]
 use app::*;
 #[cfg(windows)]
@@ -307,9 +316,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 first_image_marked: false,
                 texture: None,
                 incoming: None,
-                pending_aspect: None,
-                crossfade: None,
-                animation: host_init.animation,
+                transition: None,
                 hwnd,
                 press_window_pos: None,
                 native_gesture_active: false,

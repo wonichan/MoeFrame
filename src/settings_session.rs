@@ -28,9 +28,10 @@ pub struct EffectiveValues {
     pub folder_text: String,
     pub interval_secs: i64,
     pub mode: PlaybackMode,
-    pub appearance: AppearanceMode,
-    /// 切换动画：`slide` 在设置窗按交叉淡化显示。
+    /// 切换动画档位（切换动画专题工单 04）：点选同值守卫以它为准，
+    /// 生效值归核心持有，宿主快照自 `core.animation()` 取。
     pub animation: Animation,
+    pub appearance: AppearanceMode,
     /// 内置画框参数（工单 02）：预设与双滑杆的同值守卫以它为准。
     pub frame: BuiltinFrame,
 }
@@ -48,8 +49,8 @@ pub enum OpenDecision {
 #[derive(Clone, Debug, Default)]
 pub struct Picks {
     pub mode: Option<PlaybackMode>,
-    pub appearance: Option<AppearanceMode>,
     pub animation: Option<Animation>,
+    pub appearance: Option<AppearanceMode>,
     pub interval: Option<i64>,
     pub restore_default: bool,
     pub autostart: Option<bool>,
@@ -67,7 +68,7 @@ pub struct Picks {
 }
 
 /// 本帧要由宿主执行的动作，按返回顺序执行。顺序即定案的应用顺序：
-/// 回车结算 → 模式 → 外观 → 切换动画 → 内置画框参数（预设 → 框宽 → 卡纸宽）→
+/// 回车结算 → 模式 → 切换动画 → 外观 → 内置画框参数（预设 → 框宽 → 卡纸宽）→
 /// 间隔预设 → 恢复默认 → 自启 → 当前图三项 →
 /// 关闭/重扫/选文件夹/选相框图（后四者否决待结算）→ 帧尾待结算结算。
 #[derive(Clone, Debug, PartialEq)]
@@ -75,8 +76,8 @@ pub enum SessionAction {
     CommitFolder(String),
     CommitInterval(i64),
     ApplyMode(PlaybackMode),
-    ApplyAppearance(AppearanceMode),
     ApplyAnimation(Animation),
+    ApplyAppearance(AppearanceMode),
     ApplyIntervalPreset(i64),
     RestoreDefaultGeometry,
     ApplyAutostart(bool),
@@ -117,10 +118,10 @@ pub struct SettingsSession {
     viewport_focused: bool,
     /// 帧首快照的播放模式：模式点选的同值守卫用（点选应用后随之推进）。
     mode_now: Option<PlaybackMode>,
+    /// 帧首快照的切换动画档位：动画点选的同值守卫用（与 mode_now 同规）。
+    animation_now: Option<Animation>,
     /// 帧首快照的外观模式：外观点选的同值守卫用（与 mode_now 同规）。
     appearance_now: Option<AppearanceMode>,
-    /// 帧首快照的切换动画：设置窗两档单选同值守卫用。
-    animation_now: Option<Animation>,
     /// 帧首快照的内置画框参数：预设与滑杆点选的同值守卫用（同规）。
     frame_now: Option<BuiltinFrame>,
 }
@@ -156,8 +157,8 @@ impl SettingsSession {
         self.seconds_focused = false;
         self.viewport_focused = false;
         self.mode_now = Some(effective.mode);
-        self.appearance_now = Some(effective.appearance);
         self.animation_now = Some(effective.animation);
+        self.appearance_now = Some(effective.appearance);
         self.frame_now = Some(effective.frame);
         OpenDecision::Opened
     }
@@ -167,8 +168,8 @@ impl SettingsSession {
     /// 其待结算一并取消。
     pub fn begin_frame(&mut self, effective: &EffectiveValues) {
         self.mode_now = Some(effective.mode);
-        self.appearance_now = Some(effective.appearance);
         self.animation_now = Some(effective.animation);
+        self.appearance_now = Some(effective.appearance);
         self.frame_now = Some(effective.frame);
         if self.path.base != effective.folder_text {
             self.path.base = effective.folder_text.clone();
@@ -265,17 +266,19 @@ impl SettingsSession {
                 actions.push(SessionAction::ApplyMode(mode));
             }
         }
+        if let Some(animation) = picks.animation {
+            // 切换动画点选与播放模式同规：同值守卫，点选后内部推进。
+            // 档位只在核心起转场时读取，动画中改档天然下一次生效。
+            if self.animation_now != Some(animation) {
+                self.animation_now = Some(animation);
+                actions.push(SessionAction::ApplyAnimation(animation));
+            }
+        }
         if let Some(appearance) = picks.appearance {
             // 外观点选与播放模式同规：同值守卫，点选后内部推进。
             if self.appearance_now != Some(appearance) {
                 self.appearance_now = Some(appearance);
                 actions.push(SessionAction::ApplyAppearance(appearance));
-            }
-        }
-        if let Some(animation) = picks.animation {
-            if self.animation_now != Some(animation) {
-                self.animation_now = Some(animation);
-                actions.push(SessionAction::ApplyAnimation(animation));
             }
         }
         // 内置画框参数与外观点选同规：逐项同值守卫、点选后内部

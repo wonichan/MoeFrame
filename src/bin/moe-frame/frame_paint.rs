@@ -567,9 +567,9 @@ impl FrameApp {
         // 提示文字居中于画面区域——卡纸在场用深色字，否则沿用
         // 浅色字。
         let image_rect = to_egui_rect(layers.image);
-        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-        if self.texture.is_some() {
-            self.paint_crossfade(painter, image_rect, uv);
+        if self.paint_stage(painter, image_rect) {
+            // 舞台已画（当前图或转场中的新旧两图，工单 02）；卡纸
+            // 影与内沿线照常压在画面边缘，转场只动图片本身。
         } else {
             let color = if frame.mat_width > 0.0 {
                 egui::Color32::from_rgb(105, 95, 80)

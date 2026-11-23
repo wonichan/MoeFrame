@@ -60,3 +60,6 @@ V2 相框自动定宽见 [V2 规格](../../v2-frame/spec.md) 用户故事 9。
   `target/release/MoeFrame.exe` 重建成功，SHA-256
   `fe42b210b6094767c0a6908bab3f56f0e25449d5b6c27407b730415cd9de5a85`。
   用户确认可用，状态置 done。
+## 2026-11-23 收编注记
+
+本工单的专题已被 `.scratch/transition-animation` 专题收编取代（用户拍板以 PR #4 为准）：交叉淡化收编为「淡化」档保留；几何平滑动画与名义中心锚定撤除；回弹修复、名义高度/临时缩高不落盘、工作区观察通路保留。逐项清单见 transition-animation 工单 05。本工单保留为历史记录，状态不再单独推进。

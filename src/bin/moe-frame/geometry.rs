@@ -4,11 +4,6 @@ use super::*;
 
 impl FrameApp {
     pub(crate) fn update_window_geometry(&mut self, ctx: &egui::Context) {
-        // 转场帧先推进淡化；到点会提交切换并可能顺带起下一段。
-        self.advance_crossfade(ctx);
-        if self.crossfade.is_some() {
-            ctx.request_repaint();
-        }
         let pixels_per_point = ctx.pixels_per_point();
         let native_gesture = self.native_gesture_active;
         let (observation, focused) = ctx.input(|input| {
@@ -70,10 +65,6 @@ impl FrameApp {
                     );
             }
         }
-        if let Some(deadline) = self.geometry.transition_deadline_secs() {
-            let remaining = (deadline - observation.now_secs).max(0.0);
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(remaining));
-        }
         self.execute_geometry_commands(ctx, commands);
     }
     pub(crate) fn execute_geometry_commands(
@@ -103,10 +94,6 @@ impl FrameApp {
                         focused: frame_focused(ctx),
                     });
                     self.dispatch(ctx, effects);
-                }
-                GeomCommand::TransitionInterrupted => {
-                    // 用户接管：立即提交切换，不让核心等动画回执。
-                    self.finish_crossfade(ctx);
                 }
             }
         }

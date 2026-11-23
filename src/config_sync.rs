@@ -8,7 +8,7 @@
 //!
 //! 三种镜像模式在本 module 内显式成文，写回口径一致：
 //! - 核心状态镜像：核心是准，Save 系列效果是把核心状态写穿到配置
-//!   （文件夹、间隔、播放模式、续播状态）；
+//!   （文件夹、间隔、播放模式、切换动画、续播状态）；
 //! - 宿主状态镜像：宿主状态为准，写回只记录窗口当前几何与外观模式；
 //! - 注册表反向对齐：系统注册表是准，配置里的 autostart 只是镜像，
 //!   启动时对账，不一致就把镜像改写为实际值（决策仍归 autostart
@@ -50,8 +50,6 @@ pub struct HostInit {
     /// 自定义相框图的路径（V2 相框外观专题工单 03）：宿主持有，
     /// 启动时据此分析一次；设置窗选新图经 save_frame_art_path 写回。
     pub frame_art: Option<PathBuf>,
-    /// 切换动画配置（P1 键）：宿主只用它决定交叉淡化与几何动画时长。
-    pub animation: Animation,
 }
 
 /// 启动包：run() 拿到后只分发，不再逐字段翻译配置。
@@ -92,6 +90,7 @@ impl ConfigSync {
             saved_folder: config.image_folder.as_ref().map(PathBuf::from),
             interval_secs: config.playback.interval_secs,
             mode: config.playback.mode,
+            animation: config.playback.animation,
             resume: resume_data(config),
         };
         let window = config.window.clone();
@@ -104,7 +103,6 @@ impl ConfigSync {
             appearance: config.display.appearance,
             frame: config.display.frame,
             frame_art: config.display.frame_art.as_ref().map(PathBuf::from),
-            animation: config.playback.animation,
             window,
         };
         (
@@ -135,7 +133,7 @@ impl ConfigSync {
         self.note_write_result("playback_mode", result);
     }
 
-    /// 切换动画写回（P1）：设置窗选择即落盘。
+    /// 切换动画档位写回（切换动画专题工单 01）：核心改档即落盘。
     pub fn save_animation(&mut self, animation: Animation) {
         let result = self.store.set_animation(animation);
         self.note_write_result("animation", result);

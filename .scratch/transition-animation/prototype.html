@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PROTOTYPE — MoeFrame 切换动画 · 5 变体</title>
+<!--
+  PROTOTYPE, throwaway. Question: "MoeFrame 切图时用什么有個性的动画才像它自己？"
+  Five variants switchable via ?variant=A..E and the floating bottom bar.
+  Left/Right arrow keys cycle VARIANTS (per prototype convention).
+  Image navigation: on-screen ‹ › buttons, A/D keys, space = autoplay toggle.
+  No persistence, no production code. Winner gets rewritten in Rust/egui.
+-->
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,"Microsoft YaHei",sans-serif;background:#1b2030 radial-gradient(900px 500px at 20% 0%,#2c3a5e,transparent),radial-gradient(800px 500px at 90% 100%,#3a2c4e,transparent);color:#eef;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:28px 16px 110px}
+  h1{font-size:19px;margin:0 0 4px} .sub{opacity:.75;font-size:13px;margin-bottom:18px;text-align:center;max-width:720px;line-height:1.6}
+  /* ---- walnut frame, mimicking MoeFrame V2 built-in frame ---- */
+  .frame{background:linear-gradient(135deg,#6b4630,#4a2e1e 40%,#5d3a26 70%,#3c2517);padding:16px;border-radius:20px;box-shadow:0 24px 60px rgba(0,0,0,.55),inset 0 2px 3px rgba(255,220,180,.5),inset 0 -3px 6px rgba(0,0,0,.6)}
+  .mat{background:#f6f1e7;padding:22px;border-radius:10px;box-shadow:inset 0 0 0 1px #ddd3bf,inset 0 4px 10px rgba(0,0,0,.18)}
+  .stage{position:relative;width:min(640px,86vw);aspect-ratio:4/3;overflow:hidden;background:#111;border-radius:4px;perspective:1100px}
+  .layer{position:absolute;inset:0} .layer img{width:100%;height:100%;object-fit:cover;display:block}
+  .caption{position:absolute;left:10px;bottom:10px;background:rgba(0,0,0,.55);color:#fff;padding:4px 10px;border-radius:999px;font-size:12px;backdrop-filter:blur(4px);z-index:50}
+  /* controls */
+  .controls{display:flex;gap:8px;align-items:center;margin-top:18px;flex-wrap:wrap;justify-content:center}
+  button,.sel{background:#2a3048;color:#eef;border:1px solid #4a5478;border-radius:999px;padding:8px 16px;font-size:14px;cursor:pointer}
+  button:hover{background:#394264} button.on{background:#e88bb0;border-color:#e88bb0;color:#20101a;font-weight:700}
+  .state{margin-top:14px;font:12px/1.7 ui-monospace,Consolas,monospace;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.14);border-radius:10px;padding:10px 14px;max-width:720px;width:100%;white-space:pre-wrap}
+  .desc{margin-top:12px;max-width:720px;background:rgba(255,255,255,.07);border-left:4px solid #e88bb0;border-radius:8px;padding:10px 14px;font-size:14px;line-height:1.7}
+  /* floating prototype switcher */
+  .switcher{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;background:#0c0e16;color:#fff;border:1px solid #555;border-radius:999px;display:flex;align-items:center;gap:14px;padding:8px 14px;box-shadow:0 10px 30px rgba(0,0,0,.6);z-index:99;font-size:14px}
+  .switcher button{background:#fff;color:#111;border:none;width:34px;height:34px;border-radius:50%;font-size:17px;padding:0}
+  /* variant B strips / E blocks */
+  .strip,.block{position:absolute;overflow:hidden}
+  .glitch{animation:gl .12s steps(2) 5}
+  @keyframes gl{0%{transform:translate(0)}25%{transform:translate(-6px,2px)}50%{transform:translate(5px,-2px)}75%{transform:translate(-3px,-3px)}100%{transform:translate(0)}}
+</style>
+</head>
+<body>
+<h1>🖼️ MoeFrame 切换动画原型 <span style="opacity:.6;font-size:13px">PROTOTYPE · 用完即扔</span></h1>
+<div class="sub">点「下一张」反复切图感受当前变体；底部黑条（或键盘 ← →）换动画变体。<br>图是内嵌 SVG 示意插画（樱 / 海 / 夜市 / 雪），只为看清动画，正式版换成你的真插画。</div>
+
+<div class="frame"><div class="mat"><div class="stage" id="stage">
+  <div class="layer" id="base"></div>
+  <div class="caption" id="caption"></div>
+</div></div></div>
+
+<div class="controls">
+  <button id="prev">‹ 上一张</button>
+  <button id="next">下一张 ›</button>
+  <button id="auto">▶ 自动轮播</button>
+  <select class="sel" id="speed"><option value="380">快 · 380ms</option><option value="650" selected>中 · 650ms</option><option value="950">慢 · 950ms</option></select>
+</div>
+
+<div class="desc" id="desc"></div>
+<div class="state" id="state"></div>
+
+<div class="switcher"><button id="vPrev">←</button><span id="vLabel"></span><button id="vNext">→</button></div>
+
+<script>
+// ---------- illustrations: inline SVG scenes -> data URI <img> ----------
+function scene(c1,c2,extra,title){const s=`<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600'><defs><linearGradient id='g' x1='0' y1='0' x2='0' y2='1'><stop offset='0' stop-color='${c1}'/><stop offset='1' stop-color='${c2}'/></linearGradient></defs><rect width='800' height='600' fill='url(#g)'/>${extra}<text x='40' y='560' font-size='44' fill='white' font-family='sans-serif' font-weight='bold'>${title}</text></svg>`;return "data:image/svg+xml,"+encodeURIComponent(s)}
+const girl=(x,scale,color)=>`<g transform='translate(${x},300) scale(${scale})'><circle cx='0' cy='-90' r='42' fill='#ffe3d0'/><path d='M-48,-95 Q0,-150 48,-95 L58,30 Q0,55 -58,30 Z' fill='${color}'/><path d='M-28,40 L-20,150 L-6,150 L0,60 L8,150 L22,150 L30,40 Z' fill='#334'/></g>`;
+const IMGS=[
+ {name:"① 樱花庭院",src:scene("#ffd7e8","#ff9ec4",`<circle cx='650' cy='100' r='55' fill='#fff3'/>${girl(400,1.15,"#e75480")}<circle cx='150' cy='140' r='10' fill='#fff'/><circle cx='600' cy='220' r='8' fill='#fff'/><circle cx='300' cy='90' r='7' fill='#fff'/>`,"SAKURA")},
+ {name:"② 夏日海边",src:scene("#7ed6ff","#1e7fc4",`<rect y='400' width='800' height='200' fill='#ffe9a8'/>${girl(380,1.15,"#2299dd")}<circle cx='680' cy='90' r='48' fill='#fff59d'/>`,"UMI")},
+ {name:"③ 夜市灯会",src:scene("#2b2350","#7a2d6b",`<circle cx='120' cy='110' r='26' fill='#ff7676'/><circle cx='300' cy='80' r='20' fill='#ffb84d'/><circle cx='520' cy='115' r='26' fill='#ff7676'/><circle cx='680' cy='75' r='20' fill='#ffd24d'/>${girl(400,1.15,"#8e5bd6")}`,"MATSURI")},
+ {name:"④ 初雪车站",src:scene("#cfe8ff","#7fa8cf",`<rect y='430' width='800' height='170' fill='white'/>${girl(400,1.15,"#4466aa")}<circle cx='150' cy='120' r='7' fill='white'/><circle cx='350' cy='70' r='9' fill='white'/><circle cx='620' cy='150' r='7' fill='white'/><circle cx='700' cy='60' r='6' fill='white'/>`,"YUKI")},
+];
+// ---------- variants ----------
+const VARIANTS=[
+ {key:"A",name:"卷页翻书",desc:"<b>A · 卷页翻书 Page Curl</b> —— 新图像书页一样从右侧卷进来，边缘带一道卷影，旧图微微变暗。像在翻一本自己的插画集，文艺、最贴「相框/画集」气质。方向感强：上一张会从左侧反向卷回。"},
+ {key:"B",name:"百叶帘",desc:"<b>B · 百叶帘 Shutter</b> —— 新图被切成 8 条竖帘，依次翻开落下，带错峰的哒哒节奏感。利落、现代，切换「有机械感」，适合轮播间隔短、切得勤的场景。"},
+ {key:"C",name:"墨晕扩散",desc:"<b>C · 墨晕扩散 Ink Wash</b> —— 新图从中心像墨滴入水一样晕开，边缘柔和扩散，旧图在晕开前轻轻去色。最有「个性」、最不像系统默认动画，慢速时尤其治愈；代价是方向感最弱（上一张/下一张长得一样）。"},
+ {key:"D",name:"抽卡翻转",desc:"<b>D · 抽卡翻转 Card Shuffle</b> —— 旧图像卡牌一样翻转抽走，新图从牌堆里翻到正面。游戏感拉满，二次元味最浓；但桌面常驻小窗里动作幅度最大，可能有点闹。"},
+ {key:"E",name:"像素故障",desc:"<b>E · 像素故障 Pixel Glitch</b> —— 旧图先错位抖动一下，新图以像素块随机拼齐浮现。赛博/电子感，和纯手绘插画气质反差最大，适合当「彩蛋模式」而不是默认。"},
+];
+const stage=document.getElementById('stage'),base=document.getElementById('base');
+let idx=0,variant=new URLSearchParams(location.search).get('variant')||'A';
+if(!VARIANTS.some(v=>v.key===variant))variant='A';
+let animating=false,auto=false,timer=null,lastDir=1;
+const dur=()=>+document.getElementById('speed').value;
+function imgEl(i){const d=document.createElement('div');d.className='layer';d.innerHTML=`<img src="${IMGS[i].src}">`;return d}
+function render(){base.innerHTML=`<img src="${IMGS[idx].src}">`;document.getElementById('caption').textContent=IMGS[idx].name;log()}
+function log(){const v=VARIANTS.find(x=>x.key===variant);document.getElementById('vLabel').textContent=`变体 ${v.key} · ${v.name}`;document.getElementById('desc').innerHTML=v.desc;document.getElementById('state').textContent=`state: variant=${variant} (${v.name}) | image=${idx+1}/4 ${IMGS[idx].name} | direction=${lastDir>0?'next':'prev'} | animating=${animating} | duration=${dur()}ms | autoplay=${auto}`}
+function setVariant(k){variant=k;const u=new URL(location);u.searchParams.set('variant',k);history.replaceState(null,'',u);log()}
+function animateTo(next,dir){ // returns via variant impls
+  const D=dur(),old=idx;idx=next;lastDir=dir;
+  const done=()=>{stage.querySelectorAll('.fx').forEach(e=>e.remove());animating=false;render()};
+  animating=true;log();
+  if(variant==='A'){ // curl: new layer clipped by animating inset, shadow edge
+    const n=imgEl(next);n.classList.add('fx');n.style.zIndex=5;stage.appendChild(n);
+    const sh=document.createElement('div');sh.classList.add('fx');sh.style.cssText='position:absolute;top:0;bottom:0;width:70px;z-index:6;background:linear-gradient(90deg,transparent,rgba(0,0,0,.45),rgba(255,255,255,.35))';stage.appendChild(sh);
+    base.style.filter='brightness(.75)';const t0=performance.now();
+    (function f(t){const p=Math.min(1,(t-t0)/D),e=1-Math.pow(1-p,3);const pct=dir>0?(1-e)*100:0;const pctR=dir>0?0:(1-e)*100;n.style.clipPath=`inset(0 ${dir>0?pct:0}% 0 ${dir>0?0:pctR}%)`;sh.style.left=dir>0?`calc(${e*100}% - 35px)`:`calc(${(1-e)*100}% - 35px)`;p<1?requestAnimationFrame(f):(base.style.filter='',done())})(t0);
+  }else if(variant==='B'){ // blinds: 8 strips staggered rotateX reveal
+    const N=8;for(let i=0;i<N;i++){const s=document.createElement('div');s.className='strip fx';s.style.cssText=`left:${i*100/N}%;width:${100/N}%;top:0;height:100%;z-index:5;background-image:url("${IMGS[next].src}");background-size:${stage.clientWidth}px ${stage.clientHeight}px;background-position:-${i*stage.clientWidth/N}px 0;transform:rotateX(90deg);transform-origin:top;transition:transform ${D*0.55}ms ease ${i*D*0.05}ms`;stage.appendChild(s);requestAnimationFrame(()=>s.style.transform='rotateX(0)')}
+    setTimeout(done,D);
+  }else if(variant==='C'){ // ink: circular clip expand + old desaturate
+    const n=imgEl(next);n.classList.add('fx');n.style.zIndex=5;n.style.clipPath='circle(0% at 50% 45%)';stage.appendChild(n);base.style.filter='saturate(.25)';const t0=performance.now();
+    (function f(t){const p=Math.min(1,(t-t0)/D),e=1-Math.pow(1-p,2);n.style.clipPath=`circle(${e*75}% at 50% 45%)`;n.style.filter=`blur(${(1-e)*6}px)`;p<1?requestAnimationFrame(f):(base.style.filter='',done())})(t0);
+  }else if(variant==='D'){ // card flip/shuffle
+    const n=imgEl(next);n.classList.add('fx');n.style.zIndex=4;n.style.transform=`rotateY(${-dir*55}deg) scale(.88)`;n.style.opacity=0;stage.appendChild(n);
+    base.style.transition=`transform ${D}ms ease,opacity ${D}ms ease`;base.style.transform=`rotateY(${dir*65}deg) translateX(${dir*-45}%)`;base.style.opacity=.15;
+    requestAnimationFrame(()=>{n.style.transition=`transform ${D}ms cubic-bezier(.2,.8,.3,1.15),opacity ${D*0.7}ms`;n.style.transform='rotateY(0) scale(1)';n.style.opacity=1});
+    setTimeout(()=>{base.style.transition='';base.style.transform='';base.style.opacity='';done()},D);
+  }else{ // E pixel glitch blocks
+    base.classList.add('glitch');const cols=12,rows=8,blocks=[];
+    for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){const b=document.createElement('div');b.className='block fx';b.style.cssText=`left:${x*100/cols}%;top:${y*100/rows}%;width:${100/cols}%;height:${100/rows}%;z-index:5;background-image:url("${IMGS[next].src}");background-size:${stage.clientWidth}px ${stage.clientHeight}px;background-position:-${x*stage.clientWidth/cols}px -${y*stage.clientHeight/rows}px;opacity:0`;stage.appendChild(b);blocks.push(b)}
+    blocks.sort(()=>Math.random()-.5).forEach((b,i)=>setTimeout(()=>b.style.opacity=1,i*(D/blocks.length)*1.6));
+    setTimeout(()=>{base.classList.remove('glitch');done()},D);
+  }
+}
+function go(dir){if(animating)return;animateTo((idx+dir+IMGS.length)%IMGS.length,dir)}
+document.getElementById('next').onclick=()=>go(1);
+document.getElementById('prev').onclick=()=>go(-1);
+document.getElementById('auto').onclick=e=>{auto=!auto;e.target.classList.toggle('on',auto);e.target.textContent=auto?'⏸ 自动轮播中':'▶ 自动轮播';clearInterval(timer);if(auto)timer=setInterval(()=>go(1),2600);log()};
+document.getElementById('speed').onchange=log;
+function cycleV(d){const i=VARIANTS.findIndex(v=>v.key===variant);setVariant(VARIANTS[(i+d+VARIANTS.length)%VARIANTS.length].key)}
+document.getElementById('vNext').onclick=()=>cycleV(1);
+document.getElementById('vPrev').onclick=()=>cycleV(-1);
+addEventListener('keydown',e=>{if(/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))return;if(e.key==='ArrowRight')cycleV(1);else if(e.key==='ArrowLeft')cycleV(-1);else if(e.key==='d'||e.key==='D')go(1);else if(e.key==='a'||e.key==='A')go(-1)});
+render();
+</script>
+</body>
+</html>

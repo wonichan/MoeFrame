@@ -7,10 +7,12 @@
 //!
 //! 本状态机只产出要保存的几何值；落盘与退出收尾归 config_sync。启动初值来自配置；图像比例由宿主在新图到达时更新。
 //!
-//! 切图动画由宿主给时间戳驱动：`begin_image_transition` 记录新旧几何，
-//! 每帧 `observe` 按三次缓出插值并逐帧钳制在工作区内；动画只改显示，
-//! 不改“名义高度”，所以超宽图临时缩高不会写回配置。窗口几何中心是
-//! 切图时唯一锚点：尺寸变化围绕旧中心展开，只有越界才平移到 6px 边距。
+//! 切图几何口径（2026-11-23 收编合并定案）：切图时尺寸瞬间变到新图
+//! 比例（切换动画专题 spec §7），不做尺寸/位置平滑动画，也不移动
+//! 窗口位置（锚点沿用普通切图的既有规则）；对方专题的几何平滑动画
+//! 与名义中心锚定已撤除。保留的名义量只有“名义高度”：目标尺寸按
+//! 它推导并按工作区等比适配（超宽临时缩高），临时值不落盘。原生
+//! 拖动后的回弹修复保留：指针按下期间只更新名义量、松手后重校正。
 //!
 //! 已知限制：启动离屏判定把主屏当作原点 (0,0) 的矩形。egui 只提供
 //! 相框所在屏尺寸，不提供屏幕原点与屏幕枚举；正式宿主会另外从
@@ -22,7 +24,7 @@ use crate::config_sync::GeometryRecord;
 pub const MIN_WINDOW_SIDE: f32 = 120.0;
 /// 默认窗口尺寸（逻辑）：无图时使用此尺寸，有图时高度作为缩放基准。
 pub const DEFAULT_FRAME_SIZE: [f32; 2] = [480.0, 320.0];
-/// 切图动画时窗口与工作区的边距（逻辑像素）：四边都至少留这么多。
+/// 切图尺寸适配工作区时四边预留的边距（逻辑像素）。
 pub const WORK_AREA_MARGIN: f32 = 6.0;
 
 /// 四边内距（逻辑像素）：画框在每一边占的厚度，左/右/上/下各自
@@ -73,13 +75,13 @@ pub struct GeomObservation {
     /// 工作区（原点 0,0）使用，兼容既有启动钳制口径。
     pub monitor: Option<[f32; 2]>,
     /// 相框所在屏的工作区 [left, top, right, bottom]（逻辑坐标）：
-    /// 切图动画的钳制边界；取不到时为 None。
+    /// 切图尺寸适配的边界；取不到时为 None。
     pub work_area: Option<[f32; 4]>,
     /// 指针是否按下（拖动/缩放进行中）：按下时不做锁定修正。
     pub pointer_down: bool,
     /// 相框是否可见：隐藏时不观察待落盘几何（工单 20）。
     pub frame_visible: bool,
-    /// UI 时钟（秒）：防抖与切图动画计时用。
+    /// UI 时钟（秒）：防抖计时用。
     pub now_secs: f64,
     /// 当前外观的四边内距（逻辑像素）：外框尺寸推导的输入，
     /// 变化本身也会触发一次比例校正。
@@ -98,22 +100,6 @@ pub enum GeomCommand {
     SaveGeometry(GeometryRecord),
     /// 恢复默认时相框处于隐藏：宿主经行为核心显示相框。
     ShowFrame,
-    /// 用户在切图动画中拖动/缩放窗口：宿主应立刻结束本次转场，
-    /// 以用户操作结果为新基准，不再回弹。
-    TransitionInterrupted,
-}
-
-/// 一段窗口几何动画：旧几何到按新图像比例算出的目标几何。
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct GeomAnimation {
-    from_size: [f32; 2],
-    from_pos: [f32; 2],
-    to_size: [f32; 2],
-    to_pos: [f32; 2],
-    /// 动画开始时的显示器工作区：整段动画用同一块边界，避免跨屏抖动。
-    work_area: Option<[f32; 4]>,
-    started_secs: f64,
-    duration_secs: f64,
 }
 
 /// 持有当前图像比例、最近稳定内尺寸、落盘基准、待落盘几何与一次性的启动钳制/首次放置标记。
@@ -123,14 +109,14 @@ pub struct GeometryMachine {
     /// 最近一帧已结算的外框内尺寸：指针按下期间不推进，释放后据此
     /// 触发一次比例校正。
     last_inner: [f32; 2],
-    /// 最近一帧实际观察到的几何：动画中用于识别用户接管。
+    /// 最近一帧实际观察到的几何：识别用户改动与程序化落地用。
     last_observed_inner: [f32; 2],
     last_observed_pos: Option<[f32; 2]>,
     last_insets: Insets,
     last_work_area: Option<[f32; 4]>,
     pointer_was_down: bool,
-    /// 名义中心：自动换图时唯一锚点；临时越界钳制不改它，
-    /// 只有用户拖动/缩放或恢复默认才更新。
+    /// 名义中心：落盘位置的推导基准；只有用户拖动/缩放、首次
+    /// 放置、启动钳制或恢复默认才更新（切图本身不改位置）。
     nominal_center: Option<[f32; 2]>,
     /// 名义外框高度：用户设置的高度，超宽图临时缩高不修改它。
     nominal_height: f32,
@@ -139,7 +125,6 @@ pub struct GeometryMachine {
     candidate: Option<(GeometryRecord, f64)>,
     startup_clamp_done: bool,
     placed: bool,
-    animation: Option<GeomAnimation>,
 }
 
 impl GeometryMachine {
@@ -180,7 +165,6 @@ impl GeometryMachine {
             candidate: None,
             startup_clamp_done: false,
             placed: has_saved_position,
-            animation: None,
         }
     }
 
@@ -193,58 +177,7 @@ impl GeometryMachine {
         }
     }
 
-    /// 开始一段切图几何动画：以最近观察到的外框中心为锚点，按名义
-    /// 高度推出目标尺寸，再把目标整体钳制到工作区 6px 边距内。
-    /// 动画期间不落盘中间尺寸。
-    pub fn begin_image_transition(
-        &mut self,
-        aspect: Option<f32>,
-        now_secs: f64,
-        duration_secs: f64,
-    ) {
-        let aspect = valid_aspect(aspect);
-        self.image_aspect = aspect;
-        self.aspect_applied = true;
-        let Some(aspect) = aspect else {
-            self.animation = None;
-            return;
-        };
-        let from_size = self.last_inner;
-        let from_pos =
-            self.last_observed_pos
-                .unwrap_or(match (self.saved_geom.0, self.saved_geom.1) {
-                    (Some(x), Some(y)) => [x as f32, y as f32],
-                    _ => [0.0, 0.0],
-                });
-        let anchor_center = self.nominal_center.unwrap_or([
-            from_pos[0] + from_size[0] * 0.5,
-            from_pos[1] + from_size[1] * 0.5,
-        ]);
-        let desired = self.size_from_nominal_height(aspect, self.last_insets);
-        let (to_size, to_pos) = centered_target(anchor_center, desired, self.last_work_area);
-        self.animation = Some(GeomAnimation {
-            from_size,
-            from_pos,
-            to_size,
-            to_pos,
-            work_area: self.last_work_area,
-            started_secs: now_secs,
-            duration_secs: duration_secs.max(0.0),
-        });
-    }
-
-    /// 当前是否有切图几何动画在飞。
-    pub fn transition_active(&self) -> bool {
-        self.animation.is_some()
-    }
-
-    /// 取消带几何动画的转场（重扫/清空）：保持当前尺寸，不再往目标推。
-    pub fn cancel_image_transition(&mut self) {
-        self.animation = None;
-        self.aspect_applied = false;
-    }
-
-    /// 喂一帧观察，返回本帧命令：启动钳制 → 切图动画 → 图像比例校正
+    /// 喂一帧观察，返回本帧命令：启动钳制 → 图像比例校正
     /// → 落盘观察 → 首次放置。
     pub fn observe(&mut self, obs: &GeomObservation) -> Vec<GeomCommand> {
         let mut commands = Vec::new();
@@ -273,50 +206,8 @@ impl GeometryMachine {
         self.last_insets = obs.insets;
         let cur_changed = cur != self.last_observed_inner;
 
-        if let Some(animation) = self.animation {
-            // 指针一按下就交还控制权：相框内容/边缘在按下时就开始拖拽或缩放，
-            // 不能等动画推动的尺寸变化被误当成用户操作。
-            let user_took_over = obs.pointer_down;
-            self.last_observed_inner = cur;
-            self.last_observed_pos = cur_pos;
-            if user_took_over {
-                self.animation = None;
-                self.aspect_applied = false;
-                self.pointer_was_down = true;
-                commands.push(GeomCommand::TransitionInterrupted);
-                return commands;
-            }
-
-            let elapsed = (obs.now_secs - animation.started_secs).max(0.0);
-            let progress = if animation.duration_secs <= 0.0 {
-                1.0
-            } else {
-                (elapsed / animation.duration_secs).min(1.0)
-            };
-            let eased = cubic_out(progress as f32);
-            let raw_size = lerp_size(animation.from_size, animation.to_size, eased);
-            let raw_pos = lerp_pos(animation.from_pos, animation.to_pos, eased);
-            let (size, pos) =
-                fit_and_clamp(raw_size, raw_pos, animation.work_area, animation.work_area);
-            if size_differs(cur, size) {
-                commands.push(GeomCommand::SetInnerSize(size));
-            }
-            if let Some(current) = cur_pos {
-                if pos_differs(current, pos) {
-                    commands.push(GeomCommand::SetOuterPosition(pos));
-                }
-            }
-            self.observed_geom = Some(self.nominal_record(cur_pos.map(|_| pos), cur));
-            if progress >= 1.0 {
-                self.animation = None;
-                self.aspect_applied = true;
-                self.last_inner = size;
-            }
-            return commands;
-        }
-
         let mut effective_inner = cur;
-        let mut effective_pos = cur_pos;
+        let effective_pos = cur_pos;
         if obs.pointer_down {
             // 拖动/缩放中用户最大：只记名义高度，不抢方向盘。
             if cur_changed {
@@ -343,23 +234,15 @@ impl GeometryMachine {
             }
             if let Some(aspect) = self.image_aspect {
                 if !self.aspect_applied || cur_changed || insets_changed {
+                    // 瞬时校正（收编定案）：按名义高度推导，再按工作区
+                    // 等比适配（超宽临时缩高，只改显示不落盘）；只发
+                    // 尺寸命令，不移动窗口位置。
                     let desired = self.size_from_nominal_height(aspect, obs.insets);
-                    let observed_center = cur_pos
-                        .map(|pos| [pos[0] + cur[0] * 0.5, pos[1] + cur[1] * 0.5])
-                        .unwrap_or([0.0, 0.0]);
-                    let anchor_center = self.nominal_center.unwrap_or(observed_center);
-                    let (target_size, target_pos) =
-                        centered_target(anchor_center, desired, work_area);
+                    let target_size = fit_size_to_work_area(desired, work_area);
                     if size_differs(cur, target_size) {
                         commands.push(GeomCommand::SetInnerSize(target_size));
                     }
-                    if cur_pos.is_some_and(|pos| pos_differs(pos, target_pos)) {
-                        commands.push(GeomCommand::SetOuterPosition(target_pos));
-                    }
                     effective_inner = target_size;
-                    if cur_pos.is_some() {
-                        effective_pos = Some(target_pos);
-                    }
                     self.aspect_applied = true;
                 }
             }
@@ -429,7 +312,6 @@ impl GeometryMachine {
             .unwrap_or(DEFAULT_FRAME_SIZE);
         self.last_inner = size;
         self.aspect_applied = true;
-        self.animation = None;
         let mut commands = vec![GeomCommand::SetInnerSize(size)];
         let pos = monitor.map(|m| bottom_right_position(size, m));
         if let Some(pos) = pos {
@@ -461,12 +343,6 @@ impl GeometryMachine {
         self.candidate.map(|(_, since)| since + SAVE_SETTLE_SECS)
     }
 
-    /// 切图动画的结束时刻（UI 时钟秒）：宿主据此安排帧尾唤醒。
-    pub fn transition_deadline_secs(&self) -> Option<f64> {
-        self.animation
-            .map(|animation| animation.started_secs + animation.duration_secs)
-    }
-
     pub fn exit_settle(&self) -> (Option<GeometryRecord>, GeometryRecord) {
         (self.observed_geom, self.saved_geom)
     }
@@ -481,10 +357,13 @@ impl GeometryMachine {
             .image_aspect
             .map(|aspect| self.size_from_nominal_height(aspect, self.last_insets))
             .unwrap_or(fallback_inner);
+        // 位置以实际观察为准（收编定案：切图不移动窗口，名义中心
+        // 反推的位置会把没动过的位置写错）；名义中心只在观察不到
+        // 位置时兜底。尺寸仍按名义量（临时缩高不落盘）。
         let nominal_pos = self
             .nominal_center
             .map(|center| [center[0] - size[0] * 0.5, center[1] - size[1] * 0.5]);
-        let (x, y) = match nominal_pos.or(pos) {
+        let (x, y) = match pos.or(nominal_pos) {
             Some(p) => (Some(p[0].round() as i64), Some(p[1].round() as i64)),
             None => (self.saved_geom.0, self.saved_geom.1),
         };
@@ -528,29 +407,6 @@ fn outer_size_from_height(current: [f32; 2], aspect: f32, insets: Insets) -> [f3
     ]
 }
 
-/// 以旧中心为锚点推出目标：尺寸先按工作区（扣除 6px 四边）等比缩到
-/// 能放下，再围绕旧中心摆放；只有越界才平移到边距上。
-fn centered_target(
-    center: [f32; 2],
-    desired: [f32; 2],
-    work_area: Option<[f32; 4]>,
-) -> ([f32; 2], [f32; 2]) {
-    let size = fit_size_to_work_area(desired, work_area);
-    let pos = [center[0] - size[0] * 0.5, center[1] - size[1] * 0.5];
-    (size, clamp_position(pos, size, work_area))
-}
-
-/// 动画中间帧也逐帧钳制：避免 OS 缩放尚未落地时窗口先露到屏外。
-fn fit_and_clamp(
-    size: [f32; 2],
-    pos: [f32; 2],
-    work_area: Option<[f32; 4]>,
-    clamp_area: Option<[f32; 4]>,
-) -> ([f32; 2], [f32; 2]) {
-    let size = fit_size_to_work_area(size, work_area);
-    (size, clamp_position(pos, size, clamp_area))
-}
-
 fn fit_size_to_work_area(size: [f32; 2], work_area: Option<[f32; 4]>) -> [f32; 2] {
     let Some([left, top, right, bottom]) = work_area else {
         return size;
@@ -563,17 +419,6 @@ fn fit_size_to_work_area(size: [f32; 2], work_area: Option<[f32; 4]>) -> [f32; 2
     [size[0] * scale, size[1] * scale]
 }
 
-fn clamp_position(pos: [f32; 2], size: [f32; 2], work_area: Option<[f32; 4]>) -> [f32; 2] {
-    let Some([left, top, right, bottom]) = work_area else {
-        return pos;
-    };
-    let min_x = left + WORK_AREA_MARGIN;
-    let min_y = top + WORK_AREA_MARGIN;
-    let max_x = (right - WORK_AREA_MARGIN - size[0]).max(min_x);
-    let max_y = (bottom - WORK_AREA_MARGIN - size[1]).max(min_y);
-    [pos[0].clamp(min_x, max_x), pos[1].clamp(min_y, max_y)]
-}
-
 fn observation_work_area(obs: &GeomObservation) -> Option<[f32; 4]> {
     obs.work_area.or_else(|| {
         obs.monitor
@@ -581,30 +426,7 @@ fn observation_work_area(obs: &GeomObservation) -> Option<[f32; 4]> {
     })
 }
 
-fn lerp_size(from: [f32; 2], to: [f32; 2], t: f32) -> [f32; 2] {
-    [
-        from[0] + (to[0] - from[0]) * t,
-        from[1] + (to[1] - from[1]) * t,
-    ]
-}
-
-fn lerp_pos(from: [f32; 2], to: [f32; 2], t: f32) -> [f32; 2] {
-    [
-        from[0] + (to[0] - from[0]) * t,
-        from[1] + (to[1] - from[1]) * t,
-    ]
-}
-
-fn cubic_out(t: f32) -> f32 {
-    let inverse = 1.0 - t.clamp(0.0, 1.0);
-    1.0 - inverse * inverse * inverse
-}
-
 fn size_differs(current: [f32; 2], target: [f32; 2]) -> bool {
-    (current[0] - target[0]).abs() > 0.5 || (current[1] - target[1]).abs() > 0.5
-}
-
-fn pos_differs(current: [f32; 2], target: [f32; 2]) -> bool {
     (current[0] - target[0]).abs() > 0.5 || (current[1] - target[1]).abs() > 0.5
 }
 

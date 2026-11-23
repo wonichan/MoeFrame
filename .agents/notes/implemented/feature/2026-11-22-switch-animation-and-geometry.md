@@ -63,3 +63,6 @@ Status: implemented
 - [窗口几何生命周期](2026-11-21-window-geometry.md)：保留停稳落盘与启动离屏钳制；本决定修正「位置只保左上角」带来的中心漂移，并把工作区边界从显示器尺寸细化到 Win32 可用区。
 - [内置画框](2026-11-22-builtin-frame.md)、[自定义相框图](2026-11-22-custom-frame-image.md)：画面层矩形由当前窗口内距推导，动画逐帧重绘时沿用同一布局接缝，不新增第二套几何口径。
 - [ADR-0003](../../../../docs/adr/0003-settings-window-boundary.md) 的「设置窗不出现动画类型控件」已被本专题修订（2026-11-22 Amendment）：设置窗提供「无 / 交叉淡化」两档；`pause_on_hover` 与 `show_filename` 仍只保存不驱动行为。
+## 2026-11-23 收编合并后续
+
+本决定已被收编合并部分取代（用户拍板以切换动画专题 PR #4 为准，见 `.scratch/transition-animation/issues/05-main-crossfade-merge.md`）：交叉淡化收编为「淡化」档（240ms）保留；几何动画、名义中心锚定与切图位置钳制撤除，切图几何回到瞬时变尺寸、不移动位置；名义高度/临时缩高不落盘以瞬时形式保留；原生拖动回弹修复（含 native_gesture_active 与松手重校正）完整保留。本笔记保留为当时决策的历史记录。

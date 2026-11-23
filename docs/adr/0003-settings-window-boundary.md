@@ -24,3 +24,7 @@ FR-504 把悬停暂停、动画类型和显示文件名列进 P0 设置窗，但
 
 设置窗的动画类型控件已被后续需求推翻：用户明确要求提供「切换动画」两档（无 / 交叉淡化），并已随切图交叉淡化落地。本条只修订「动画类型控件不出现」及 `animation` 只存不用；`pause_on_hover`、`show_filename` 两项仍不升格、不驱动行为。现行行为与验收见
 [切图动画与相框几何稳定规格](../../.scratch/switch-animation-and-geometry/spec.md)。
+
+## Amendment (2026-11-23)
+
+上条 Amendment 的「两档」口径已被收编合并取代：设置窗「切换动画」现为 8 档（无 / 卷页 / 百叶帘 / 墨晕 / 抽卡 / 像素故障 / 淡化 / 随机），归切换动画专题（`.scratch/transition-animation`）所有；交叉淡化作为其中「淡化」一档保留。`pause_on_hover`、`show_filename` 两项仍不升格、不驱动行为。

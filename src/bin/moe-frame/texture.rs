@@ -33,7 +33,8 @@ impl FrameApp {
             showing,
             fit_mode: DisplayMode::Fit,
             target: self.physical_target(ctx),
-            slide_active: self.crossfade.is_some(),
+            // 转场进行中为真：管线不发刷新、回送也丢弃（工单 02）。
+            slide_active: self.transition.is_some(),
             now_secs: ctx.input(|input| input.time),
         };
         let issued = self.pipeline.tick(&observation);
@@ -74,7 +75,8 @@ impl FrameApp {
             startup_marker("first-image", "phase=texture-upload");
         }
         let color = egui::ColorImage::from_rgba_unmultiplied(size, &image.rgba);
-        // 暂存新纹理，待核心提交显示后转正；转场期间它作为新图层叠加。
+        // 暂存新纹理，待核心提交显示后转正；转场期间与旧图共存
+        // 跨帧绘制，完成时刻才转正（工单 02）。
         self.incoming =
             Some(ctx.load_texture("moe-frame-incoming", color, egui::TextureOptions::LINEAR));
     }

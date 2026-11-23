@@ -17,6 +17,7 @@ pub mod library;
 pub mod loading;
 pub mod playlist;
 pub mod settings_session;
+pub mod transition_ambient;
 
 /// 当前 winit 窗口的观测；每帧重新查询，不保存窗口句柄。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

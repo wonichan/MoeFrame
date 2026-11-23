@@ -16,6 +16,9 @@ impl eframe::App for FrameApp {
         let now = now_ms(&ctx);
         let tick_effects = self.core.handle(Intent::Tick { now_ms: now });
         self.dispatch(&ctx, tick_effects);
+        // 转场推进（工单 02）：到期回送完成并在此刻转正纹理；
+        // 在绘制之前跑，本帧画出的就是完成后的状态。
+        self.advance_transition(&ctx);
         // 托盘（工单 17）：首帧在事件循环内建托盘；之后每帧收托盘事件——
         // 左键单击按焦点三分支召回（tray-only 工单 01），菜单项走与相框菜单相同的核心意图，隐藏时同样有效。
         if !self.tray_tried {
@@ -104,7 +107,6 @@ impl eframe::App for FrameApp {
                     self.paint_builtin_frame(painter, rect, frame);
                     return;
                 }
-                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
                 // 画面区域 = 外框减去生效内距：插画只画在这里，
                 // 画框（内置或相框图）占其余部分；内距全 0 时即整窗。
                 let insets = self.effective_insets(rect.width());
@@ -112,8 +114,8 @@ impl eframe::App for FrameApp {
                     rect.min + egui::vec2(insets.left, insets.top),
                     rect.max - egui::vec2(insets.right, insets.bottom),
                 );
-                if self.texture.is_some() {
-                    self.paint_crossfade(painter, image_rect, uv);
+                if self.paint_stage(painter, image_rect) {
+                    // 舞台已画（当前图或转场中的新旧两图）。
                 } else if let moe_frame::frame_layout::HintPaint::Floating { outline } = plan.hint {
                     // 空状态提示浮在画面区域中央：自定义生效时这里
                     // 是相框图的洞，背景是透出的桌面——先衬一层深色
@@ -269,6 +271,7 @@ impl eframe::App for FrameApp {
             self.core.frame_visible(),
             self.pipeline.load_in_flight(),
             self.heal_repaint_until_ms,
+            self.transition.as_ref().map(|t| t.deadline_ms()),
             self.geometry
                 .settle_deadline_secs()
                 .map(|secs| (secs.max(0.0) * 1000.0) as u64),
@@ -281,12 +284,14 @@ impl eframe::App for FrameApp {
 }
 
 /// 帧尾的下一帧唤醒裁决（纯函数，回归测试钉住），优先级从高到低：
-/// 隐藏低频心跳 → 导航加载轮询 → 治愈保活 → 几何落盘结算与轮播截止
-/// 取更早者；都不命中则不唤醒（None），避免空转重绘。
+/// 隐藏低频心跳 → 导航加载轮询 → 转场动画帧（≤16ms，截止已过为
+/// 0）→ 治愈保活 → 几何落盘结算与轮播截止取更早者；都不命中则
+/// 不唤醒（None），避免空转重绘。
 pub(crate) fn next_frame_delay(
     frame_visible: bool,
     load_in_flight: bool,
     heal_repaint_until_ms: u64,
+    transition_deadline_ms: Option<u64>,
     geom_settle_ms: Option<u64>,
     next_deadline_ms: Option<u64>,
     now_ms: u64,
@@ -298,6 +303,12 @@ pub(crate) fn next_frame_delay(
         Some(Duration::from_millis(250))
     } else if load_in_flight {
         Some(Duration::from_millis(50))
+    } else if let Some(deadline) = transition_deadline_ms {
+        // 转场动画（工单 02）：按墙钟连续出帧，单次等待不超过一
+        // 帧（16ms）；截止已过回 0，下一帧立即回送完成。
+        Some(Duration::from_millis(
+            deadline.saturating_sub(now_ms).min(16),
+        ))
     } else if now_ms < heal_repaint_until_ms {
         // 治愈保活（.scratch/blur-heal 工单 01）：当前图口径已过期、刷新
         // 在等停稳计时走完；保活出帧让它不依赖聚焦等外部唤醒。
@@ -324,7 +335,7 @@ mod tests {
     #[test]
     fn hidden_frame_keeps_the_slow_heartbeat_above_all() {
         assert_eq!(
-            next_frame_delay(false, true, u64::MAX, None, Some(0), 1_000),
+            next_frame_delay(false, true, u64::MAX, None, None, Some(0), 1_000),
             Some(Duration::from_millis(250))
         );
     }
@@ -332,8 +343,40 @@ mod tests {
     #[test]
     fn load_in_flight_polls_fast() {
         assert_eq!(
-            next_frame_delay(true, true, 0, None, Some(9_000), 1_000),
+            next_frame_delay(true, true, 0, None, None, Some(9_000), 1_000),
             Some(Duration::from_millis(50))
+        );
+    }
+
+    #[test]
+    fn transition_wakes_per_frame_and_immediately_once_due() {
+        // 转场进行中：距截止还远也只睡一帧（16ms），保证连续绘制。
+        assert_eq!(
+            next_frame_delay(true, false, 0, Some(9_000), None, None, 1_000),
+            Some(Duration::from_millis(16))
+        );
+        // 距截止 5ms：睡 5ms，到期帧不迟到。
+        assert_eq!(
+            next_frame_delay(true, false, 0, Some(1_005), None, None, 1_000),
+            Some(Duration::from_millis(5))
+        );
+        // 截止已过：0ms，下一帧立即回送完成（不漏发、不拖延）。
+        assert_eq!(
+            next_frame_delay(true, false, 0, Some(900), None, None, 1_000),
+            Some(Duration::from_millis(0))
+        );
+        // 转场优先于治愈保活与轮播截止，但低于隐藏心跳与加载轮询。
+        assert_eq!(
+            next_frame_delay(
+                true,
+                false,
+                u64::MAX,
+                Some(9_000),
+                None,
+                Some(60_000),
+                1_000
+            ),
+            Some(Duration::from_millis(16))
         );
     }
 
@@ -341,7 +384,7 @@ mod tests {
     fn heal_keepalive_beats_the_slide_deadline() {
         // 保活窗口内（now < 截止）：50ms 出帧，不睡到轮播截止。
         assert_eq!(
-            next_frame_delay(true, false, 3_000, None, Some(60_000), 1_000),
+            next_frame_delay(true, false, 3_000, None, None, Some(60_000), 1_000),
             Some(Duration::from_millis(50))
         );
     }
@@ -349,30 +392,33 @@ mod tests {
     #[test]
     fn expired_heal_window_falls_back_to_the_slide_deadline() {
         assert_eq!(
-            next_frame_delay(true, false, 3_000, None, Some(60_000), 3_000),
+            next_frame_delay(true, false, 3_000, None, None, Some(60_000), 3_000),
             Some(Duration::from_millis(57_000))
         );
         // 截止已过按 0 处理，不欠账。
         assert_eq!(
-            next_frame_delay(true, false, 0, None, Some(500), 1_000),
+            next_frame_delay(true, false, 0, None, None, Some(500), 1_000),
             Some(Duration::from_millis(0))
         );
     }
 
     #[test]
     fn idle_without_deadline_requests_nothing() {
-        assert_eq!(next_frame_delay(true, false, 0, None, None, 1_000), None);
+        assert_eq!(
+            next_frame_delay(true, false, 0, None, None, None, 1_000),
+            None
+        );
     }
     #[test]
     fn geometry_settle_wakes_earlier_than_the_slide_deadline() {
         // 轮播还剩 10 秒，但几何 0.4 秒后结算：先出帧把位置写盘。
         assert_eq!(
-            next_frame_delay(true, false, 0, Some(1_400), Some(11_000), 1_000),
+            next_frame_delay(true, false, 0, None, Some(1_400), Some(11_000), 1_000),
             Some(Duration::from_millis(400))
         );
         // 轮播比结算更早时按轮播走。
         assert_eq!(
-            next_frame_delay(true, false, 0, Some(11_000), Some(1_500), 1_000),
+            next_frame_delay(true, false, 0, None, Some(11_000), Some(1_500), 1_000),
             Some(Duration::from_millis(500))
         );
     }

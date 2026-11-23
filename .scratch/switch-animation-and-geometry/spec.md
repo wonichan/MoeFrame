@@ -91,3 +91,13 @@
   [V1 工单 14 滑动切换](../v1-exe/issues/14-slide-transitions.md)。
 - `docs/adr/0003-settings-window-boundary.md` 的「设置窗不出现动画类型
   控件」已被本专题修订；`pause_on_hover` 与 `show_filename` 的边界不变。
+## 2026-11-23 收编注记（本专题已被取代）
+
+本专题与 `.scratch/transition-animation` 专题（PR #4）在同一时段并行落地、正面冲突。用户 2026-11-23 拍板「以 PR #4 为准」收编，本专题自此被取代，逐项去向：
+
+- **交叉淡化保留**：收编为切换动画体系的新档「淡化」（`fade`，240ms，随机池 6 种之一），存量 `fade` 配置值映射到新档。
+- **几何平滑动画被定案否决**：切图尺寸/位置插值、名义中心锚定、切图位置钳制、动画中断命令已撤除；切图几何回到「瞬间变到新图比例、不移动窗口位置」（transition-animation spec §7）。
+- **设置两档撤除**：设置窗改用 transition-animation 的播放组 8 档。
+- **保留的独立成果**：原生拖动后窗口回弹修复（原生手势旗标 + 指针名义更新与松手重校正）、名义高度与超宽临时缩高不落盘（改为瞬时尺寸适配）、工作区观察通路。
+
+现行口径以 [transition-animation spec](../transition-animation/spec.md) 与其工单 05 为准；本文件与下方工单保留为历史记录，不再驱动实现。

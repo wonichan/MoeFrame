@@ -15,8 +15,8 @@ fn effective() -> EffectiveValues {
         folder_text: r"D:\图库".to_owned(),
         interval_secs: 30,
         mode: PlaybackMode::Random,
+        animation: Animation::Curl,
         appearance: AppearanceMode::Builtin,
-        animation: Animation::Fade,
         frame: BuiltinFrame::default(),
     }
 }
@@ -330,22 +330,6 @@ fn an_appearance_pick_applies_and_the_same_value_is_guarded() {
 }
 
 #[test]
-fn an_animation_pick_applies_and_the_same_value_is_guarded() {
-    let mut session = opened();
-    // 点当前生效值（交叉淡化）：同值守卫，不产生动作。
-    let mut picks = no_picks();
-    picks.animation = Some(Animation::Fade);
-    assert_eq!(frame(&mut session, picks), vec![]);
-    // 点无动画：产生一次应用动作。
-    let mut picks = no_picks();
-    picks.animation = Some(Animation::None);
-    assert_eq!(
-        frame(&mut session, picks),
-        vec![SessionAction::ApplyAnimation(Animation::None)]
-    );
-}
-
-#[test]
 fn appearance_pick_orders_after_mode_and_before_interval_preset() {
     let mut session = opened();
     let mut picks = no_picks();
@@ -437,4 +421,41 @@ fn frame_art_pick_in_the_same_frame_as_blur_drops_the_blur() {
         vec![SessionAction::PickFrameArt]
     );
     assert_eq!(frame(&mut session, no_picks()), vec![]);
+}
+
+// ---------- 切换动画点选（切换动画专题工单 04） ----------
+
+#[test]
+fn an_animation_pick_applies_and_the_same_value_is_guarded() {
+    let mut session = opened();
+    // 点当前生效值（卷页，默认档）：同值守卫，不产生动作。
+    let mut picks = no_picks();
+    picks.animation = Some(Animation::Curl);
+    assert_eq!(frame(&mut session, picks), vec![]);
+    // 点墨晕：产生一次应用动作。
+    let mut picks = no_picks();
+    picks.animation = Some(Animation::Ink);
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![SessionAction::ApplyAnimation(Animation::Ink)]
+    );
+}
+
+#[test]
+fn animation_pick_orders_after_mode_and_before_appearance() {
+    let mut session = opened();
+    let mut picks = no_picks();
+    picks.mode = Some(PlaybackMode::Sequential);
+    picks.animation = Some(Animation::Random);
+    picks.appearance = Some(AppearanceMode::Custom);
+    picks.interval = Some(60);
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![
+            SessionAction::ApplyMode(PlaybackMode::Sequential),
+            SessionAction::ApplyAnimation(Animation::Random),
+            SessionAction::ApplyAppearance(AppearanceMode::Custom),
+            SessionAction::ApplyIntervalPreset(60),
+        ]
+    );
 }
