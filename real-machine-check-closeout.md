@@ -7,6 +7,11 @@
 - 构建：[GitHub Releases v0.1.3](https://github.com/wonichan/MoeFrame/releases/tag/v0.1.3) 的 `MoeFrame.exe`，下载后核对 SHA-256 `67bdb83ddb2700812adfb6e9311e235c120832f3bc64f79e18b7aa6a5e9bbfe8`；本地 tag 指向 `dc029a9`。环境：Windows 11 x64 Build 26100、双屏（主屏 125%，副屏 100%）。
 - **通过（启动与轮播冒烟）：**临时 `APPDATA`、5 秒顺序播放、禁用切换动画；日志有首图标记，从竖图自动切到宽图，配置记录了新当前图。没有目测切后清晰度，不据此关闭模糊修复票。
 - **通过（深挖 04，Run 项不存在这一侧）：**真实 HKCU 的 MoeFrame Run 值不存在；隔离配置故意写 `autostart = true`，启动后回写 `false`。只读注册表，未改自启项，未验证存在这一侧和设置窗读数。
+- **失败（应用图标 01，旧发布包）：**`v0.1.3` 的 PE Resource Directory 地址和大小均为 0；Shell 和资源管理器都显示通用程序图标。[发布说明](https://github.com/wonichan/MoeFrame/releases/tag/v0.1.3)确认该 exe 走 Linux/MinGW-w64 交叉构建，未执行仅 Windows 宿主启用的嵌入步骤。
+- **通过（应用图标 01，未发布候选）：**干净的 `166de3e`，Windows x64 MSVC release；`MoeFrame.exe` SHA-256 `4bcc9d5f47c38af4b12f04a36f1f5800dbd9d1044062671ebce4d9caee8be104`。PE 含 1 个图标组和 9 帧；内嵌与 Shell 提取的图标均匹配 `assets/icon.ico`，资源管理器并排显示时，候选是粉色 K6 图标，旧包是通用图标。见[图标工单](.scratch/app-icon/issues/01-app-icon.md)。
+- **通过（W1c，同一未发布候选）：**5 秒顺序轮播、无动画，原生拖角期间到期仍显示旧图；松手后首次采到宽图时窗口分别为 958×479、952×476，两次均为 2:1，未采到露底。
+- **通过（应用图标 01，[v0.1.4 正式发布](https://github.com/wonichan/MoeFrame/releases/tag/v0.1.4)）：**干净的 `8a192dc`，Windows x64 MSVC，命令 `cargo build --release --bin MoeFrame --locked`。Windows 11 x64 Build 26100 上，正式 exe 有 1 个图标组和 9 帧，内嵌与 Shell 图标匹配 `assets/icon.ico`，资源管理器实际显示粉色 K6 图标。公开下载件与验收产物逐字节一致，SHA-256 为 `864cf503eadf184e9ddd880943de60bf2923b0660d782918345eedf007d5ee73`。
+- **通过（W1c，同一 v0.1.4 正式发布 exe）：**5 秒顺序轮播、无动画，持续拖动右下角时保留旧图；松手后首先采到的 2:1 宽图对应窗口为 946×473、940×470，两次均未采到露底。
 
 ## 补测准备
 
