@@ -4,11 +4,11 @@
 
 **Blocked by:** [02: 设置窗会话机 settings_session](02-settings-session.md)（其落盘类动作在本票改道）。
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
-- [ ] 库层新增 module `config_sync`，两头收：(a) 启动翻译：配置 → 一个启动包（FrameCore 构造入参打包 + 宿主初值打包），run() 只做分发，不再逐字段翻译；(b) 全部镜像写回：core 的 Save 系列 Effect 由它执行，宿主直写的显示方式、窗口几何、宽高比锁定、开机自启镜像也经它落盘。
+- [x] 库层 `config_sync` 统一启动装配与镜像写回：[`ConfigSync::startup`](../../../src/config_sync.rs) 返回启动包，[`run`](../../../src/bin/moe-frame.rs) 分发核心和宿主初值；核心的 Save 系列 Effect 与宿主几何、外观、自启镜像均经该模块落盘。显示方式、宽高比锁定已按后续决定移除；此项只证明代码接线，Windows 专项复测另记。
 - [x] 宿主不再直接调用 ConfigStore 的 setter；ConfigStore 不合并、不改其字段级修复语义，降为 config_sync 背后的文件 adapter；三种镜像模式（核心状态镜像、宿主状态镜像、注册表反向对齐）在 config_sync 内显式成文。（ConfigSync::startup 产出 StartupPackage{core: CoreArgs, host: HostInit, autostart}，run() 只分发；save_* 覆盖核心 Save 系列与宿主直写四项）
 - [x] 开机自启只收两环：AutostartSync 的镜像写回改经 config_sync 落配置，启动时注册表↔镜像对账的装配归启动翻译；AutostartSync 的决策与 RegAutostartStore 不搬家。（全仓 grep 核过宿主 setter 直呼为零、FrameApp.store 字段整体移除；config.rs 未改；三种镜像模式在模块头成文并按三组分区组织）
 - [x] 写回失败统一口径（三种镜像一致，明文成文）：不阻塞行为、不弹窗、不重试，记一行到现有日志文件；镜像偏差靠下一次启动的对账/字段修复收敛。（save_autostart_mirror 改道 + startup 内对账装配；src/autostart.rs 与宿主 RegAutostartStore 均未动）
@@ -29,3 +29,5 @@ FrameCore 入参打包在本票兑现（工单 03 只减不打包）；ADR-0002/
 - 口径变化一处（标准 4 的既定结果，非漂移）：开机自启镜像的保存失败此前静默吞掉，现并入统一口径——多记一行日志，行为不变。
 - 双轴审查（基线 2ed5882）：Standards 1 处硬违规已修（删除宿主 paths_to_strings 时文档注释残留到 app_directory 头上并留下重复 cfg 属性——复发模式的删除变体；注释随函数迁入 config_sync），判断项三条全采纳（几何记录统一用 config_sync 的 GeometryRecord 名、宿主 SavedGeom 别名删除；HostInit 字段文档补齐；write 改名 note_write_result）；Spec 八条全满足、行为等价 (a)–(g) 全成立、无范围蔓延。
 - 2026-11-22 对齐（提交 `7861e5f`，决定见 `.agents/notes/implemented/feature/2026-11-22-image-driven-frame.md`）：`save_fit_mode`、`save_lock_aspect` 写回已随功能移除而删除；旧配置的 `display.fit_mode`、`window.lock_aspect` 由文件适配层在读取时清除。深挖实机清单工单 04 节的「宽高比锁定持久化」项已作废、「重启恢复」项已去掉显示方式。
+
+- Windows 补测通过：用户确认启动恢复、未停稳退出的几何保存、恢复默认后的持久化与 Run 键双向对账（[W5、W7](../../../real-machine-check-closeout.md)）。本机日志单独佐证 Run 值不存在时镜像回写，未修改注册表；可选写入失败注入未做。关闭本票。
