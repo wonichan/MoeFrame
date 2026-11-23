@@ -16,7 +16,7 @@
 - [x] 回弹修复无条件保留：宿主 `native_gesture_active` 旗标与 input.rs 原生手势记录、几何机指针名义更新与松手重校正，其测试保持通过
 - [x] 名义高度与超宽临时缩高不落盘保留（瞬时形式：切图时按工作区适配显示尺寸，落盘仍按名义尺寸）；落盘位置改为以实际观察位置为准、名义中心只兜底（中心锚定撤除后的必要修正）
 - [x] 文档留痕：对方专题 spec/工单/实施笔记与 ADR-0003 加收编注记（不删除）；本专题 spec 更新 8 档/池 6/fade 迁移/合并注记；GLOSSARY 与 README 同步；实机清单补工单 05 一节
-- [ ] 全量测试与 Windows 目标 check/clippy/fmt 通过（数字记入实施笔记；check.sh 本体在 VM 跑不了的口径与前票一致）
+- [x] 全量测试与 Windows 目标 check/clippy/fmt 通过（327 通过 / 0 失败，数字记入实施笔记；check.sh 本体在 VM 跑不了的口径与前票一致）
 - [ ] 实机验收并入 `real-machine-check-transition-animation.md` 的工单 05 一节，与 01–04 一并验收
 
 ## 对方 window_geom 测试的逐条处置
