@@ -4,7 +4,7 @@
 
 **Blocked by:** 05（已 resolved；本票是其几何口径的补充条款）
 
-**Status:** ready-for-agent
+**Status:** needs-info
 
 ## Bug 与根因（2026-11-23 晚用户实机发现并附截图）
 
@@ -22,12 +22,13 @@
 
 ## Acceptance criteria
 
-- [ ] `tests/window_geom.rs` 新增断言先行：右溢出左移量精确、下溢出上移、左/上溢出对称、无溢出时绝不发位置命令、平移与尺寸命令同帧成对、带窗口边框差时按外框矩形钳制、平移后落盘位置为平移后的位置
-- [ ] 既有 window_geom 测试不回归：仅两处场景因新口径调整（超宽适配测试的窗口起点移到恰好放得下处、宽图落盘测试的工作区改大到不溢出），各自注明工单 06；工单 05 改写过的瞬时口径断言保持
-- [ ] 全量测试通过；Windows 目标 check/clippy/fmt 通过（`scripts/check.sh` 本体在 VM 跑不了，沿用前票 Linux 测试副本 + Windows 目标替代口径并如实记录，不冒充跑过）
-- [ ] spec §7 后加补充注记（§12）指向本票；实机清单新增「工单 06」一节
-- [ ] 功能分支 `fix/switch-overflow-clamp` + draft PR，不直推 main
+- [x] `tests/window_geom.rs` 新增断言先行：右溢出左移量精确、下溢出上移、左/上溢出对称、无溢出时绝不发位置命令、平移与尺寸命令同帧成对、带窗口边框差时按外框矩形钳制、平移后落盘位置为平移后的位置
+- [x] 既有 window_geom 测试不回归：仅两处场景因新口径调整（超宽适配测试的窗口起点移到恰好放得下处、宽图落盘测试的工作区改大到不溢出），各自注明工单 06；工单 05 改写过的瞬时口径断言保持
+- [x] 全量测试通过；Windows 目标 check/clippy/fmt 通过（`scripts/check.sh` 本体在 VM 跑不了，沿用前票 Linux 测试副本 + Windows 目标替代口径并如实记录，不冒充跑过）
+- [x] spec §7 后加补充注记（§12）指向本票；实机清单新增「工单 06」一节
+- [x] 功能分支 `fix/switch-overflow-clamp` + draft PR，不直推 main
 
 ## Comments
 
 - 2026-11-23 用户拍板按最小平移方案修复并开工；完工后状态置 needs-info，随实机清单工单 06 一节验收。
+- 2026-11-23 实现完成（提交 `b093835`）：`observe()` 比例校正段在发尺寸命令后，按外框矩形（目标内尺寸 + 当前窗口边框差）判溢出，溢出才同帧追加一条 `SetOuterPosition` 并把落盘观察位置同步为平移后位置；纯函数帮手 `clamp_outer_position_into_work_area`（四边各留 6px、每轴只移越界一截、位移 ≤0.5px 不发命令）。本帧启动钳制已发位置命令时不叠加，留待下一帧按新位置再判。TDD 记录：新测试先行时 5 红（恰好放得下一条天然绿），实现后 window_geom 37 全绿；全量 333 通过 / 0 失败（基线 327 + 新增 6）；Windows 目标 `cargo check --all-targets`、`clippy -D warnings`、`fmt --check` 均通过。`scripts/check.sh` 本体未在 VM 运行（Windows 专用），沿用前票 Linux 测试副本 + Windows 目标替代口径，CI/实机以 check.sh 为准。
