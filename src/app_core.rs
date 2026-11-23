@@ -45,19 +45,22 @@ pub enum ConcreteAnimation {
     Ink,
     Card,
     Pixel,
+    /// 淡化（交叉淡化）：2026-11-23 收编合并从对方专题收编（工单 05）。
+    Fade,
 }
 
 impl ConcreteAnimation {
-    /// 随机档的全池（等概率抽取的候选全集）。
-    const ALL: [ConcreteAnimation; 5] = [
+    /// 随机档的全池（等概率抽取的候选全集；收编后 6 种，含淡化）。
+    const ALL: [ConcreteAnimation; 6] = [
         ConcreteAnimation::Curl,
         ConcreteAnimation::Blinds,
         ConcreteAnimation::Ink,
         ConcreteAnimation::Card,
         ConcreteAnimation::Pixel,
+        ConcreteAnimation::Fade,
     ];
 
-    /// 每种动画定死的时长（spec 第 2 节冻结值）。
+    /// 每种动画定死的时长（spec 第 2 节冻结值；淡化 240ms 为对方原值）。
     pub fn duration_ms(self) -> u64 {
         match self {
             ConcreteAnimation::Curl => 550,
@@ -65,6 +68,7 @@ impl ConcreteAnimation {
             ConcreteAnimation::Ink => 750,
             ConcreteAnimation::Card => 600,
             ConcreteAnimation::Pixel => 550,
+            ConcreteAnimation::Fade => 240,
         }
     }
 
@@ -76,6 +80,7 @@ impl ConcreteAnimation {
             Animation::Ink => Some(ConcreteAnimation::Ink),
             Animation::Card => Some(ConcreteAnimation::Card),
             Animation::Pixel => Some(ConcreteAnimation::Pixel),
+            Animation::Fade => Some(ConcreteAnimation::Fade),
             Animation::None | Animation::Random => None,
         }
     }

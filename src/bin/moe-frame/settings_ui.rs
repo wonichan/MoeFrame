@@ -293,6 +293,7 @@ impl FrameApp {
                     for (tier, label) in [
                         (Animation::Card, "抽卡"),
                         (Animation::Pixel, "像素故障"),
+                        (Animation::Fade, "淡化"),
                         (Animation::Random, "随机"),
                     ] {
                         if ui.radio(animation_now == tier, label).clicked() {
@@ -321,7 +322,6 @@ impl FrameApp {
                         session.note_blur(Field::Seconds);
                     }
                 });
-                ui.separator();
                 ui.label("外观");
                 ui.horizontal(|ui| {
                     if ui

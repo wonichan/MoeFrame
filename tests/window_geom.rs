@@ -25,6 +25,7 @@ fn obs_with_insets(pos: [f32; 2], inner: [f32; 2], now: f64, insets: Insets) -> 
         outer_size: Some(inner),
         inner: Some(inner),
         monitor: Some(MONITOR),
+        work_area: None,
         pointer_down: false,
         frame_visible: true,
         now_secs: now,
@@ -42,11 +43,37 @@ fn sizes(commands: &[GeomCommand]) -> Vec<[f32; 2]> {
         .collect()
 }
 
+/// 模拟一次用户拖拽：按下帧不抢尺寸，松手帧按名义高度校正。
+fn drag_then_release(
+    m: &mut GeometryMachine,
+    pos: [f32; 2],
+    inner: [f32; 2],
+    now: f64,
+    insets: Insets,
+) -> Vec<GeomCommand> {
+    let mut dragging = obs_with_insets(pos, inner, now, insets);
+    dragging.pointer_down = true;
+    assert!(sizes(&m.observe(&dragging)).is_empty(), "拖动中不抢尺寸");
+    m.observe(&obs_with_insets(pos, inner, now + 0.01, insets))
+}
+
 fn assert_size(actual: [f32; 2], expected: [f32; 2]) {
     assert!(
         (actual[0] - expected[0]).abs() < 0.51 && (actual[1] - expected[1]).abs() < 0.51,
         "期望 {expected:?}，实际 {actual:?}"
     );
+}
+
+/// 指定工作区的一帧观察（含屏幕原点与任务栏扣除）。
+fn obs_in_work_area(
+    pos: [f32; 2],
+    inner: [f32; 2],
+    now: f64,
+    work_area: [f32; 4],
+) -> GeomObservation {
+    let mut observation = obs(pos, inner, now);
+    observation.work_area = Some(work_area);
+    observation
 }
 
 // ---------- 首次放置 ----------
@@ -121,32 +148,32 @@ fn locked_machine(aspect: f32, base: [f32; 2]) -> GeometryMachine {
 #[test]
 fn a_width_drag_keeps_height_as_the_scale_reference() {
     let mut m = locked_machine(1.5, [480.0, 320.0]);
-    let commands = m.observe(&obs([100.0, 100.0], [600.0, 320.0], 0.1));
+    let commands = drag_then_release(&mut m, [100.0, 100.0], [600.0, 320.0], 0.1, Insets::ZERO);
     assert_size(sizes(&commands)[0], [480.0, 320.0]);
 }
 
 #[test]
 fn a_height_driven_resize_derives_the_width() {
     let mut m = locked_machine(1.5, [480.0, 320.0]);
-    let commands = m.observe(&obs([100.0, 100.0], [480.0, 400.0], 0.1));
+    let commands = drag_then_release(&mut m, [100.0, 100.0], [480.0, 400.0], 0.1, Insets::ZERO);
     assert_size(sizes(&commands)[0], [600.0, 400.0]);
 }
 
 #[test]
 fn a_corner_resize_keeps_height_as_the_scale_reference() {
     let mut m = locked_machine(1.5, [480.0, 320.0]);
-    let commands = m.observe(&obs([100.0, 100.0], [600.0, 500.0], 0.1));
+    let commands = drag_then_release(&mut m, [100.0, 100.0], [600.0, 500.0], 0.1, Insets::ZERO);
     assert_size(sizes(&commands)[0], [750.0, 500.0]);
 }
 
 #[test]
 fn minimum_window_sides_preserve_the_image_ratio() {
     let mut m = locked_machine(1.5, [480.0, 320.0]);
-    let commands = m.observe(&obs([100.0, 100.0], [600.0, 80.0], 0.1));
+    let commands = drag_then_release(&mut m, [100.0, 100.0], [600.0, 80.0], 0.1, Insets::ZERO);
     assert_size(sizes(&commands)[0], [180.0, 120.0]);
 
     let mut m = locked_machine(0.5, [160.0, 320.0]);
-    let commands = m.observe(&obs([100.0, 100.0], [100.0, 80.0], 0.1));
+    let commands = drag_then_release(&mut m, [100.0, 100.0], [100.0, 80.0], 0.1, Insets::ZERO);
     assert_size(sizes(&commands)[0], [120.0, 240.0]);
 }
 
@@ -316,12 +343,7 @@ fn unequal_insets_derive_the_outer_size_from_the_outer_height() {
     )))
     .is_empty());
     // 外框高拉到 440：画面高 380 → 画面宽 760 → 外框 [800, 440]。
-    let commands = m.observe(&obs_with_insets(
-        [100.0, 100.0],
-        [680.0, 440.0],
-        0.1,
-        UNEQUAL_INSETS,
-    ));
+    let commands = drag_then_release(&mut m, [100.0, 100.0], [680.0, 440.0], 0.1, UNEQUAL_INSETS);
     assert_size(sizes(&commands)[0], [800.0, 440.0]);
 }
 
@@ -336,12 +358,7 @@ fn zero_insets_match_the_pre_insets_derivation() {
         0.0,
         Insets::ZERO,
     ));
-    let commands = m.observe(&obs_with_insets(
-        [100.0, 100.0],
-        [480.0, 400.0],
-        0.1,
-        Insets::ZERO,
-    ));
+    let commands = drag_then_release(&mut m, [100.0, 100.0], [480.0, 400.0], 0.1, Insets::ZERO);
     assert_size(sizes(&commands)[0], [600.0, 400.0]);
 }
 
@@ -421,4 +438,121 @@ fn hiding_flushes_the_pending_geometry() {
     assert_eq!(m.settle_deadline_secs(), None);
     // 再出隐藏帧不会重复写盘。
     assert!(saves(&m.observe(&hidden)).is_empty());
+}
+
+// ---------- 切图几何（2026-11-23 收编定案）：瞬时变尺寸、不移动
+// 位置、工作区尺寸适配、名义高度不落盘、原生拖动回弹修复 ----------
+// 对方专题的平滑动画/中心锚定/位置钳制/动画中断测试已按定案改写或
+// 撤除，逐条记录在切换动画专题工单 05。
+
+#[test]
+fn switching_images_resizes_instantly_without_moving_the_window() {
+    let mut m = machine(SAVED, Some(1.5), true);
+    let area = [0.0, 0.0, 1000.0, 800.0];
+    m.observe(&obs_in_work_area([100.0, 100.0], [480.0, 320.0], 0.0, area));
+    m.set_image_aspect(Some(2.0));
+    let commands = m.observe(&obs_in_work_area([100.0, 100.0], [480.0, 320.0], 0.1, area));
+    // 一帧到位：只有一条尺寸命令，没有位置命令、没有中间帧。
+    assert_eq!(sizes(&commands), vec![[640.0, 320.0]]);
+    assert!(!commands
+        .iter()
+        .any(|c| matches!(c, GeomCommand::SetOuterPosition(_))));
+}
+
+#[test]
+fn an_oversized_switch_target_shrinks_to_fit_the_work_area() {
+    let mut m = machine(SAVED, Some(1.5), true);
+    let area = [0.0, 0.0, 1000.0, 800.0];
+    m.observe(&obs_in_work_area([100.0, 100.0], [480.0, 320.0], 0.0, area));
+    m.set_image_aspect(Some(4.0));
+    let commands = m.observe(&obs_in_work_area([100.0, 100.0], [480.0, 320.0], 0.1, area));
+    let shown = sizes(&commands)[0];
+    assert!(
+        (shown[0] - 988.0).abs() < 0.51,
+        "宽度应缩到工作区可用宽：{shown:?}"
+    );
+    assert!(shown[1] < 320.0, "高度应等比缩小：{shown:?}");
+    assert!(!commands
+        .iter()
+        .any(|c| matches!(c, GeomCommand::SetOuterPosition(_))));
+}
+
+#[test]
+fn an_oversized_image_shrinks_for_display_but_keeps_the_nominal_height_on_disk() {
+    let mut m = machine(SAVED, Some(1.5), true);
+    let area = [0.0, 0.0, 1000.0, 800.0];
+    m.observe(&obs_in_work_area([100.0, 100.0], [480.0, 320.0], 0.0, area));
+    m.set_image_aspect(Some(4.0));
+    let commands = m.observe(&obs_in_work_area([100.0, 100.0], [480.0, 320.0], 0.1, area));
+    let shown = sizes(&commands)[0];
+    assert!((shown[0] - 988.0).abs() < 0.51, "临时缩高显示：{shown:?}");
+    // 落盘仍按名义高度 320：名义尺寸不随临时缩高变化。
+    let record = m.exit_settle().0.expect("应有落盘基准");
+    assert_eq!(
+        (record.2, record.3),
+        (1280, 320),
+        "名义尺寸不随临时缩高变化"
+    );
+    // 切回窄图：按名义高度恢复原来的尺寸。
+    m.set_image_aspect(Some(1.5));
+    let back = m.observe(&obs_in_work_area([100.0, 100.0], shown, 0.2, area));
+    assert_eq!(sizes(&back), vec![[480.0, 320.0]]);
+}
+
+#[test]
+fn switching_back_to_a_narrow_image_keeps_the_saved_position() {
+    // 用户把相框放在右侧 x=500；切图从不移动窗口，落盘位置就是
+    // 实际位置，不按任何锚点反推。
+    let saved: GeometryRecord = (Some(500), Some(100), 480, 320);
+    let mut m = machine(saved, Some(1.5), true);
+    let area = [0.0, 0.0, 1000.0, 800.0];
+    m.observe(&obs_in_work_area([500.0, 100.0], [480.0, 320.0], 0.0, area));
+    m.set_image_aspect(Some(2.5));
+    let wide = m.observe(&obs_in_work_area([500.0, 100.0], [480.0, 320.0], 0.1, area));
+    assert_eq!(sizes(&wide), vec![[800.0, 320.0]]);
+    m.observe(&obs_in_work_area([500.0, 100.0], [800.0, 320.0], 0.2, area));
+    let persisted = m.exit_settle().0.expect("应有落盘基准");
+    assert_eq!((persisted.0, persisted.1), (Some(500), Some(100)));
+    m.set_image_aspect(Some(1.5));
+    let narrow = m.observe(&obs_in_work_area([500.0, 100.0], [800.0, 320.0], 0.3, area));
+    assert_eq!(sizes(&narrow), vec![[480.0, 320.0]]);
+    assert!(!narrow
+        .iter()
+        .any(|c| matches!(c, GeomCommand::SetOuterPosition(_))));
+}
+
+#[test]
+fn a_native_move_after_pointer_events_are_lost_keeps_the_new_position() {
+    let mut m = locked_machine(1.5, [480.0, 320.0]);
+    // Windows 原生拖动期间可能一帧都没有；松手后的第一帧只带
+    // “刚结束原生手势”的标志，也要按最终位置更新名义中心。
+    let mut after_native_move = obs([300.0, 200.0], [480.0, 320.0], 0.2);
+    after_native_move.pointer_down = true;
+    assert!(m.observe(&after_native_move).is_empty());
+    // 下一帧按新的名义中心校正，不能把窗口拉回按下时的位置。
+    let commands = m.observe(&obs([300.0, 200.0], [480.0, 320.0], 0.3));
+    assert!(!commands
+        .iter()
+        .any(|c| matches!(c, GeomCommand::SetOuterPosition(_))));
+}
+
+#[test]
+fn user_drag_takes_over_without_a_snap_back() {
+    // 收编后没有几何动画可打断；保留的是回弹修复的本质：拖动中
+    // 不发任何校正命令，松手后只按新尺寸做一次比例校正、不动位置。
+    let mut m = machine(SAVED, Some(1.5), true);
+    let area = [0.0, 0.0, 1920.0, 1080.0];
+    m.observe(&obs_in_work_area([100.0, 100.0], [480.0, 320.0], 0.0, area));
+    m.set_image_aspect(Some(1.0));
+    let mut dragging = obs_in_work_area([100.0, 100.0], [480.0, 320.0], 0.2, area);
+    dragging.pointer_down = true;
+    assert!(m.observe(&dragging).is_empty());
+    let mut still_dragging = obs_in_work_area([140.0, 120.0], [560.0, 320.0], 0.3, area);
+    still_dragging.pointer_down = true;
+    assert!(m.observe(&still_dragging).is_empty());
+    let released = m.observe(&obs_in_work_area([140.0, 120.0], [560.0, 420.0], 0.4, area));
+    assert_eq!(sizes(&released), vec![[420.0, 420.0]]);
+    assert!(!released
+        .iter()
+        .any(|c| matches!(c, GeomCommand::SetOuterPosition(_))));
 }

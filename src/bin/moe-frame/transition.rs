@@ -10,7 +10,7 @@ use moe_frame::transition_ambient as ambient;
 
 #[cfg(test)]
 mod tests {
-    use super::{card_frame, curl_frame, CardSide};
+    use super::{card_frame, curl_frame, fade_alpha, CardSide};
     use crate::egui::{pos2, Rect};
     use moe_frame::playlist::Direction;
 
@@ -69,6 +69,16 @@ mod tests {
         // 翻面中点两侧都不露图：恰在中点 scale_x 为 0。
         let mid_old = card_frame(Direction::Next, 0.5 - f32::EPSILON);
         assert!(mid_old.scale_x < 0.01);
+    }
+
+    #[test]
+    fn fade_alpha_is_eased_and_clamped() {
+        // 淡化（收编工单 05）：端点 0/255，三次缓出半程已过 0.875。
+        assert_eq!(fade_alpha(0.0), 0);
+        assert_eq!(fade_alpha(1.0), 255);
+        assert!((fade_alpha(0.5) as f32 / 255.0 - 0.875).abs() < 0.01);
+        assert_eq!(fade_alpha(-1.0), 0);
+        assert_eq!(fade_alpha(2.0), 255);
     }
 
     #[test]
@@ -385,7 +395,29 @@ fn paint_transition(
         ConcreteAnimation::Pixel => {
             paint_pixel(painter, p, elapsed_ms, transition.seed, old, new, stage)
         }
+        // 淡化（收编工单 05）：新旧图 alpha 交叉——旧图垫底满幅
+        // 不动，新图按缓出进度叠加；无方向，不读 direction。
+        ConcreteAnimation::Fade => {
+            painter.image(
+                old.id(),
+                fit_rect(stage, old.size_vec2()),
+                full_uv,
+                egui::Color32::WHITE,
+            );
+            painter.image(
+                new.id(),
+                fit_rect(stage, new.size_vec2()),
+                full_uv,
+                egui::Color32::from_white_alpha(fade_alpha(p)),
+            );
+        }
     }
+}
+
+/// 淡化一帧的新图 alpha（0..=255）：进度经三次缓出（与对方交叉
+/// 淡化的曲线一致，收编工单 05）。
+pub(crate) fn fade_alpha(p: f32) -> u8 {
+    (ambient::ease_out_cubic(p) * 255.0).round() as u8
 }
 
 /// 卷页的卷边亮影：前沿一条高光线 + 揭示侧数条渐淡的影带

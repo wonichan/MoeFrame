@@ -19,8 +19,13 @@ pub(crate) struct FrameApp {
     /// `StartTransition` 时置位，宿主按墙钟绘制新旧两图，到期
     /// 回送完成时才把 `incoming` 转正；None 表示无转场。
     pub(crate) transition: Option<transition::HostTransition>,
+    /// Win32 窗口句柄：只用于取当前屏工作区（egui 不提供工作区/原点）。
+    pub(crate) hwnd: isize,
     /// 本次左键按下时窗口的外框位置：右键取消拖动时回滚到这里（工单 15）。
     pub(crate) press_window_pos: Option<egui::Pos2>,
+    /// 原生拖动/缩放已开始：Windows 的模态移动循环里 egui 收不到指针状态，
+    /// 用它把循环结束后的最终位置/尺寸当作一次用户操作交给几何机。
+    pub(crate) native_gesture_active: bool,
     /// 托盘（工单 17）：首帧懒建（须在事件循环内建）；建失败为 None，相框照常。
     pub(crate) tray: Option<TrayHandles>,
     pub(crate) tray_tried: bool,

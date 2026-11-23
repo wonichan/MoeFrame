@@ -7,7 +7,16 @@
 //!
 //! 本状态机只产出要保存的几何值；落盘与退出收尾归 config_sync。启动初值来自配置；图像比例由宿主在新图到达时更新。
 //!
-//! 已知限制：离屏判定把主屏当作原点 (0,0) 的矩形。egui 只提供相框所在屏尺寸，不提供屏幕原点与屏幕枚举，因此整窗放在副屏重启后会被移回主屏右下角，作为防丢行为保留。
+//! 切图几何口径（2026-11-23 收编合并定案）：切图时尺寸瞬间变到新图
+//! 比例（切换动画专题 spec §7），不做尺寸/位置平滑动画，也不移动
+//! 窗口位置（锚点沿用普通切图的既有规则）；对方专题的几何平滑动画
+//! 与名义中心锚定已撤除。保留的名义量只有“名义高度”：目标尺寸按
+//! 它推导并按工作区等比适配（超宽临时缩高），临时值不落盘。原生
+//! 拖动后的回弹修复保留：指针按下期间只更新名义量、松手后重校正。
+//!
+//! 已知限制：启动离屏判定把主屏当作原点 (0,0) 的矩形。egui 只提供
+//! 相框所在屏尺寸，不提供屏幕原点与屏幕枚举；正式宿主会另外从
+//! Win32 取工作区（含原点），本状态机的启动钳制仍按旧口径执行。
 
 use crate::config_sync::GeometryRecord;
 
@@ -15,6 +24,8 @@ use crate::config_sync::GeometryRecord;
 pub const MIN_WINDOW_SIDE: f32 = 120.0;
 /// 默认窗口尺寸（逻辑）：无图时使用此尺寸，有图时高度作为缩放基准。
 pub const DEFAULT_FRAME_SIZE: [f32; 2] = [480.0, 320.0];
+/// 切图尺寸适配工作区时四边预留的边距（逻辑像素）。
+pub const WORK_AREA_MARGIN: f32 = 6.0;
 
 /// 四边内距（逻辑像素）：画框在每一边占的厚度，左/右/上/下各自
 /// 独立（V2 相框外观专题工单 01）。外框尺寸 = 画面尺寸 + 四边
@@ -51,7 +62,7 @@ impl Insets {
 /// 几何落盘防抖（工单 20）：观察值停稳满此时长才产出保存命令。
 const SAVE_SETTLE_SECS: f64 = 0.6;
 
-/// 宿主每帧喂入的观察值：窗口矩形、显示器尺寸、指针与可见性。
+/// 宿主每帧喂入的观察值：窗口矩形、显示器尺寸、工作区、指针与可见性。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GeomObservation {
     /// 窗口外矩形的位置（左上，逻辑坐标）；取不到时为 None。
@@ -60,8 +71,12 @@ pub struct GeomObservation {
     pub outer_size: Option<[f32; 2]>,
     /// 窗口内尺寸；取不到时为 None（本帧不做修正与落盘观察）。
     pub inner: Option<[f32; 2]>,
-    /// 相框所在屏的尺寸；取不到时为 None。
+    /// 相框所在屏的尺寸；取不到时为 None。工作区缺失时作为退化的
+    /// 工作区（原点 0,0）使用，兼容既有启动钳制口径。
     pub monitor: Option<[f32; 2]>,
+    /// 相框所在屏的工作区 [left, top, right, bottom]（逻辑坐标）：
+    /// 切图尺寸适配的边界；取不到时为 None。
+    pub work_area: Option<[f32; 4]>,
     /// 指针是否按下（拖动/缩放进行中）：按下时不做锁定修正。
     pub pointer_down: bool,
     /// 相框是否可见：隐藏时不观察待落盘几何（工单 20）。
@@ -91,8 +106,20 @@ pub enum GeomCommand {
 pub struct GeometryMachine {
     image_aspect: Option<f32>,
     aspect_applied: bool,
+    /// 最近一帧已结算的外框内尺寸：指针按下期间不推进，释放后据此
+    /// 触发一次比例校正。
     last_inner: [f32; 2],
+    /// 最近一帧实际观察到的几何：识别用户改动与程序化落地用。
+    last_observed_inner: [f32; 2],
+    last_observed_pos: Option<[f32; 2]>,
     last_insets: Insets,
+    last_work_area: Option<[f32; 4]>,
+    pointer_was_down: bool,
+    /// 名义中心：落盘位置的推导基准；只有用户拖动/缩放、首次
+    /// 放置、启动钳制或恢复默认才更新（切图本身不改位置）。
+    nominal_center: Option<[f32; 2]>,
+    /// 名义外框高度：用户设置的高度，超宽图临时缩高不修改它。
+    nominal_height: f32,
     saved_geom: GeometryRecord,
     observed_geom: Option<GeometryRecord>,
     candidate: Option<(GeometryRecord, f64)>,
@@ -108,11 +135,31 @@ impl GeometryMachine {
         has_saved_position: bool,
     ) -> Self {
         let image_aspect = valid_aspect(image_aspect);
+        let nominal_height = if saved_geom.3 > 0 {
+            saved_geom.3 as f32
+        } else {
+            DEFAULT_FRAME_SIZE[1]
+        };
+        let saved_pos = match (saved_geom.0, saved_geom.1) {
+            (Some(x), Some(y)) => Some([x as f32, y as f32]),
+            _ => None,
+        };
         Self {
             image_aspect,
             aspect_applied: image_aspect.is_none(),
             last_inner: [saved_geom.2 as f32, saved_geom.3 as f32],
+            last_observed_inner: [saved_geom.2 as f32, saved_geom.3 as f32],
+            last_observed_pos: saved_pos,
             last_insets: Insets::ZERO,
+            last_work_area: None,
+            pointer_was_down: false,
+            nominal_center: saved_pos.map(|pos| {
+                [
+                    pos[0] + saved_geom.2 as f32 * 0.5,
+                    pos[1] + saved_geom.3 as f32 * 0.5,
+                ]
+            }),
+            nominal_height,
             saved_geom,
             observed_geom: None,
             candidate: None,
@@ -130,7 +177,8 @@ impl GeometryMachine {
         }
     }
 
-    /// 喂一帧观察，返回本帧命令：启动钳制 → 图像比例校正 → 落盘观察 → 首次放置。
+    /// 喂一帧观察，返回本帧命令：启动钳制 → 图像比例校正
+    /// → 落盘观察 → 首次放置。
     pub fn observe(&mut self, obs: &GeomObservation) -> Vec<GeomCommand> {
         let mut commands = Vec::new();
         // 启动离屏钳制：只查一次，等外矩形与显示器都取到才查。
@@ -140,6 +188,8 @@ impl GeometryMachine {
             {
                 self.startup_clamp_done = true;
                 if let Some(clamped) = offscreen_position(pos, size, monitor) {
+                    self.nominal_center =
+                        Some([clamped[0] + size[0] * 0.5, clamped[1] + size[1] * 0.5]);
                     commands.push(GeomCommand::SetOuterPosition(clamped));
                 }
             }
@@ -147,32 +197,65 @@ impl GeometryMachine {
         let Some(cur) = obs.inner else {
             return commands;
         };
-        let mut effective_inner = cur;
-        // 内距变化（如切换外观）即使外框尺寸没动也要重新推导宽度：
-        // 外框总高不变，画面高随内距变，宽随画面高走。
+        let cur_pos = obs.outer_pos;
+        let work_area = observation_work_area(obs);
+        if work_area.is_some() {
+            self.last_work_area = work_area;
+        }
         let insets_changed = obs.insets != self.last_insets;
         self.last_insets = obs.insets;
-        if !obs.pointer_down {
+        let cur_changed = cur != self.last_observed_inner;
+
+        let mut effective_inner = cur;
+        let effective_pos = cur_pos;
+        if obs.pointer_down {
+            // 拖动/缩放中用户最大：只记名义高度，不抢方向盘。
+            if cur_changed {
+                self.nominal_height = cur[1].max(MIN_WINDOW_SIDE);
+            }
+            if let Some(pos) = cur_pos {
+                self.nominal_center = Some([pos[0] + cur[0] * 0.5, pos[1] + cur[1] * 0.5]);
+            }
+            self.pointer_was_down = true;
+        } else {
+            if self.pointer_was_down {
+                // 松手这一帧即使尺寸没再变，也要按名义高度做一次比例校正。
+                if cur_changed {
+                    self.nominal_height = cur[1].max(MIN_WINDOW_SIDE);
+                }
+                self.aspect_applied = false;
+            }
+            self.pointer_was_down = false;
+            // 无图时没有比例校正参与，观察到的移动就是用户移动。
+            if self.image_aspect.is_none() {
+                if let Some(pos) = cur_pos {
+                    self.nominal_center = Some([pos[0] + cur[0] * 0.5, pos[1] + cur[1] * 0.5]);
+                }
+            }
             if let Some(aspect) = self.image_aspect {
-                if !self.aspect_applied || cur != self.last_inner || insets_changed {
-                    let corrected = outer_size_from_height(cur, aspect, obs.insets);
-                    if (corrected[0] - cur[0]).abs() > 0.5 || (corrected[1] - cur[1]).abs() > 0.5 {
-                        commands.push(GeomCommand::SetInnerSize(corrected));
+                if !self.aspect_applied || cur_changed || insets_changed {
+                    // 瞬时校正（收编定案）：按名义高度推导，再按工作区
+                    // 等比适配（超宽临时缩高，只改显示不落盘）；只发
+                    // 尺寸命令，不移动窗口位置。
+                    let desired = self.size_from_nominal_height(aspect, obs.insets);
+                    let target_size = fit_size_to_work_area(desired, work_area);
+                    if size_differs(cur, target_size) {
+                        commands.push(GeomCommand::SetInnerSize(target_size));
                     }
-                    effective_inner = corrected;
+                    effective_inner = target_size;
                     self.aspect_applied = true;
                 }
             }
+            // 指针释放后（或程序化尺寸落地后）以实际尺寸为新基准，
+            // 只有下一次用户改尺寸才重新触发校正。
             self.last_inner = cur;
         }
+        self.last_observed_inner = cur;
+        self.last_observed_pos = cur_pos;
+
         if obs.frame_visible {
-            if let Some(pos) = obs.outer_pos {
-                let geom = (
-                    Some(pos[0].round() as i64),
-                    Some(pos[1].round() as i64),
-                    effective_inner[0].round() as u32,
-                    effective_inner[1].round() as u32,
-                );
+            if let Some(pos) = effective_pos {
+                let geom = self.nominal_record(Some(pos), effective_inner);
                 self.observed_geom = Some(geom);
                 if geom == self.saved_geom {
                     self.candidate = None;
@@ -201,6 +284,10 @@ impl GeometryMachine {
         if !self.placed {
             if let Some(monitor) = obs.monitor {
                 let pos = bottom_right_position(effective_inner, monitor);
+                self.nominal_center = Some([
+                    pos[0] + effective_inner[0] * 0.5,
+                    pos[1] + effective_inner[1] * 0.5,
+                ]);
                 commands.push(GeomCommand::SetOuterPosition(pos));
                 self.placed = true;
             }
@@ -208,7 +295,6 @@ impl GeometryMachine {
         commands
     }
 
-    /// 新图的比例延迟至非拖动帧应用，避免抢占系统窗口缩放。
     /// 恢复默认位置与大小：外框高度回到 320 逻辑像素，并按当前图像
     /// 比例与四边内距推导外框宽度；位置放在当前屏右下角内缩处，
     /// 隐藏时多一条 ShowFrame。显示器取不到时不发位置命令，保存
@@ -219,6 +305,7 @@ impl GeometryMachine {
         frame_visible: bool,
         insets: Insets,
     ) -> Vec<GeomCommand> {
+        self.nominal_height = DEFAULT_FRAME_SIZE[1];
         let size = self
             .image_aspect
             .map(|aspect| outer_size_from_height(DEFAULT_FRAME_SIZE, aspect, insets))
@@ -229,6 +316,9 @@ impl GeometryMachine {
         let pos = monitor.map(|m| bottom_right_position(size, m));
         if let Some(pos) = pos {
             commands.push(GeomCommand::SetOuterPosition(pos));
+        }
+        if let Some(pos) = pos {
+            self.nominal_center = Some([pos[0] + size[0] * 0.5, pos[1] + size[1] * 0.5]);
         }
         if !frame_visible {
             commands.push(GeomCommand::ShowFrame);
@@ -252,8 +342,32 @@ impl GeometryMachine {
     pub fn settle_deadline_secs(&self) -> Option<f64> {
         self.candidate.map(|(_, since)| since + SAVE_SETTLE_SECS)
     }
+
     pub fn exit_settle(&self) -> (Option<GeometryRecord>, GeometryRecord) {
         (self.observed_geom, self.saved_geom)
+    }
+
+    /// 名义尺寸：超宽图临时缩高不写回，落盘与退出结算都用它。
+    fn size_from_nominal_height(&self, aspect: f32, insets: Insets) -> [f32; 2] {
+        outer_size_from_height([0.0, self.nominal_height], aspect, insets)
+    }
+
+    fn nominal_record(&self, pos: Option<[f32; 2]>, fallback_inner: [f32; 2]) -> GeometryRecord {
+        let size = self
+            .image_aspect
+            .map(|aspect| self.size_from_nominal_height(aspect, self.last_insets))
+            .unwrap_or(fallback_inner);
+        // 位置以实际观察为准（收编定案：切图不移动窗口，名义中心
+        // 反推的位置会把没动过的位置写错）；名义中心只在观察不到
+        // 位置时兜底。尺寸仍按名义量（临时缩高不落盘）。
+        let nominal_pos = self
+            .nominal_center
+            .map(|center| [center[0] - size[0] * 0.5, center[1] - size[1] * 0.5]);
+        let (x, y) = match pos.or(nominal_pos) {
+            Some(p) => (Some(p[0].round() as i64), Some(p[1].round() as i64)),
+            None => (self.saved_geom.0, self.saved_geom.1),
+        };
+        (x, y, size[0].round() as u32, size[1].round() as u32)
     }
 }
 
@@ -291,6 +405,29 @@ fn outer_size_from_height(current: [f32; 2], aspect: f32, insets: Insets) -> [f3
         image_width + insets.horizontal(),
         image_height + insets.vertical(),
     ]
+}
+
+fn fit_size_to_work_area(size: [f32; 2], work_area: Option<[f32; 4]>) -> [f32; 2] {
+    let Some([left, top, right, bottom]) = work_area else {
+        return size;
+    };
+    let available_width = (right - left - WORK_AREA_MARGIN * 2.0).max(1.0);
+    let available_height = (bottom - top - WORK_AREA_MARGIN * 2.0).max(1.0);
+    let scale = (available_width / size[0])
+        .min(available_height / size[1])
+        .min(1.0);
+    [size[0] * scale, size[1] * scale]
+}
+
+fn observation_work_area(obs: &GeomObservation) -> Option<[f32; 4]> {
+    obs.work_area.or_else(|| {
+        obs.monitor
+            .map(|monitor| [0.0, 0.0, monitor[0], monitor[1]])
+    })
+}
+
+fn size_differs(current: [f32; 2], target: [f32; 2]) -> bool {
+    (current[0] - target[0]).abs() > 0.5 || (current[1] - target[1]).abs() > 0.5
 }
 
 fn valid_aspect(aspect: Option<f32>) -> Option<f32> {

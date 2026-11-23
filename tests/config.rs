@@ -137,6 +137,7 @@ fn every_animation_value_round_trips_unchanged() {
         ("ink", Animation::Ink),
         ("card", Animation::Card),
         ("pixel", Animation::Pixel),
+        ("fade", Animation::Fade),
         ("random", Animation::Random),
     ] {
         let (path, store) = store_with_animation(&format!("anim-{stored}"), stored);
@@ -152,10 +153,16 @@ fn every_animation_value_round_trips_unchanged() {
 
 #[test]
 fn legacy_and_unknown_animation_values_migrate_to_curl() {
-    // none 是新旧共有的值，保留为无动画；其余旧值与未知值统一落默认卷页。
+    // none 是新旧共有的值，保留为无动画；slide 与未知值统一落默认卷页。
     let (_path, store) = store_with_animation("anim-keep-none", "none");
     assert_eq!(store.config().playback.animation, Animation::None);
-    for stored in ["slide", "fade", "spin"] {
+    // fade 在对方两档时代是真实行为（交叉淡化），2026-11-23 收编后
+    // 映射到新 Fade 档并保留，不再落卷页（收编工单 05）。
+    let (path, store) = store_with_animation("anim-keep-fade", "fade");
+    assert_eq!(store.config().playback.animation, Animation::Fade);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("animation = \"fade\""), "fade: {text}");
+    for stored in ["slide", "spin"] {
         let (path, store) = store_with_animation(&format!("anim-migrate-{stored}"), stored);
         assert_eq!(
             store.config().playback.animation,
@@ -295,6 +302,21 @@ fn saving_the_playback_mode_changes_only_that_field() {
     assert!(text.contains("interval_secs = 30"), "{text}");
     let reloaded = ConfigStore::load(&path);
     assert_eq!(reloaded.config().playback.mode, PlaybackMode::Sequential);
+    assert_eq!(reloaded.config().playback.interval_secs, 30);
+}
+
+#[test]
+fn saving_the_animation_changes_only_that_field() {
+    let path = temp_config("animation-save");
+    let mut store = ConfigStore::load(&path);
+    // 默认模板无 animation 键，默认档为卷页（对方 Slide 档已撤除）。
+    assert_eq!(store.config().playback.animation, Animation::Curl);
+    store.set_animation(Animation::None).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("animation = \"none\""), "{text}");
+    assert!(text.contains("interval_secs = 30"), "{text}");
+    let reloaded = ConfigStore::load(&path);
+    assert_eq!(reloaded.config().playback.animation, Animation::None);
     assert_eq!(reloaded.config().playback.interval_secs, 30);
 }
 

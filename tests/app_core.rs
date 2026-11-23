@@ -1131,6 +1131,8 @@ fn each_animation_tier_reports_its_kind_and_duration() {
         (Animation::Ink, ConcreteAnimation::Ink, 750),
         (Animation::Card, ConcreteAnimation::Card, 600),
         (Animation::Pixel, ConcreteAnimation::Pixel, 550),
+        // 淡化：2026-11-23 收编合并新增档，时长沿用对方交叉淡化的 240ms。
+        (Animation::Fade, ConcreteAnimation::Fade, 240),
     ] {
         let (mut core, _) = showing_core_animation(&["a.png", "b.png"], tier);
         assert_eq!(
@@ -1183,8 +1185,9 @@ fn a_hidden_frame_commits_immediately_without_a_transition() {
 
 #[test]
 fn the_random_tier_draws_concrete_animations_without_repeating() {
-    // 脚本恒抽下标 0：首抽在全池 5 种里取 Curl；之后池子排除上一次，
-    // bound 变 4，下标 0 依次落到 Blinds、再回到 Curl（非连续重复合法）。
+    // 脚本恒抽下标 0：首抽在全池 6 种（含收编的淡化）里取 Curl；
+    // 之后池子排除上一次，bound 变 5，下标 0 依次落到 Blinds、再回到
+    // Curl（非连续重复合法）。
     let (mut core, bounds) = showing_core_random(&["a.png", "b.png", "c.png", "d.png"], &[0, 0, 0]);
     let mut kinds = Vec::new();
     for (shown, now) in [("b.png", 100), ("c.png", 200), ("d.png", 300)] {
@@ -1199,7 +1202,7 @@ fn the_random_tier_draws_concrete_animations_without_repeating() {
             ConcreteAnimation::Curl,
         ]
     );
-    assert_eq!(*bounds.borrow(), vec![5, 4, 4]);
+    assert_eq!(*bounds.borrow(), vec![6, 5, 5]);
 }
 
 #[test]

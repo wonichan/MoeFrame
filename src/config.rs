@@ -90,9 +90,10 @@ impl PlaybackMode {
     }
 }
 
-/// 切换动画（`animation` 配置键，切换动画专题工单 01 转正）：7 档，
+/// 切换动画（`animation` 配置键，切换动画专题工单 01 转正）：8 档，
 /// 默认卷页。核心按档位驱动转场；`Random` 由核心在每次转场开始时抽成
-/// 具体动画，存盘只记档位本身。
+/// 具体动画，存盘只记档位本身。`Fade`（淡化）是 2026-11-23 收编合并
+/// 从对方交叉淡化收编的一档（工单 05）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Animation {
     None,
@@ -101,6 +102,7 @@ pub enum Animation {
     Ink,
     Card,
     Pixel,
+    Fade,
     Random,
 }
 
@@ -113,6 +115,7 @@ impl Animation {
             Animation::Ink => "ink",
             Animation::Card => "card",
             Animation::Pixel => "pixel",
+            Animation::Fade => "fade",
             Animation::Random => "random",
         }
     }
@@ -558,8 +561,10 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
         }
     };
     let pause_on_hover = repair_bool(playback_table, "pause_on_hover", true, repaired);
-    // 切换动画迁移（专题工单 01）：none 是新旧共有的值，保留；旧值
-    // slide/fade 从未驱动过真实行为，与未知值一并落默认卷页并写回。
+    // 切换动画迁移（专题工单 01 + 收编工单 05）：none 是新旧共有的
+    // 值，保留；fade 在对方两档时代是真实行为（交叉淡化），2026-11-23
+    // 收编后映射到新 Fade 档，不再落卷页；旧值 slide 从未在我们的
+    // 体系驱动过真实行为，与未知值一并落默认卷页并写回。
     let animation = match playback_table.get("animation").and_then(Item::as_str) {
         Some("none") => Animation::None,
         Some("curl") => Animation::Curl,
@@ -567,6 +572,7 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
         Some("ink") => Animation::Ink,
         Some("card") => Animation::Card,
         Some("pixel") => Animation::Pixel,
+        Some("fade") => Animation::Fade,
         Some("random") => Animation::Random,
         _ => {
             playback_table["animation"] = value(Animation::Curl.as_str());
