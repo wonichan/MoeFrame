@@ -12,7 +12,14 @@ impl FrameApp {
         // 帧消费请求。开关关闭时不枚举、不组装。缩放手势不吸附。
         let snap = if self.native_gesture == Some(NativeGesture::Move) && !primary_button_down() {
             self.native_gesture = None;
-            if self.window_snap {
+            // 拖动结束是轮询调度的重新武装事件之一（工单 03）。
+            self.poll_schedule.wake();
+            if self.solo_drag {
+                // Shift 拖动（工单 03）：被拖窗 solo，松手不做松手
+                // 吸附把它拉回组里；松手后组关系按新几何重新派生。
+                self.solo_drag = false;
+                None
+            } else if self.window_snap {
                 super::snap_enum::release_snap_request(self.hwnd, pixels_per_point)
             } else {
                 None
@@ -20,6 +27,59 @@ impl FrameApp {
         } else {
             None
         };
+        // 组联动跟随轮询（工单 03）：调度到期、相框可见且无原生手
+        // 势时才枚举一次伙伴喂跟随引擎；无伙伴即休眠（零唤醒、
+        // 零枚举），静止时只有心跳级检查且不发命令。开关关闭时
+        // 整体停摆（设置窗落地处已清引擎与调度）。
+        let mut follow_target: Option<[f32; 2]> = None;
+        if self.window_snap && self.core.frame_visible() && self.native_gesture.is_none() {
+            let now_ms = (ctx.input(|input| input.time) * 1000.0) as u64;
+            if self.poll_schedule.poll_due(now_ms) {
+                let own_rect = ctx.input(|input| input.viewport().outer_rect).map(|rect| {
+                    moe_frame::snap::WindowRect::from_pos_size(
+                        [rect.min.x, rect.min.y],
+                        [rect.width(), rect.height()],
+                    )
+                });
+                match (
+                    own_rect,
+                    super::snap_enum::own_monitor_work_area(self.hwnd, pixels_per_point),
+                ) {
+                    (Some(rect), Some((monitor, work_area))) => {
+                        let own_frame = moe_frame::snap::PartnerFrame {
+                            rect,
+                            monitor,
+                            work_area,
+                        };
+                        let partners =
+                            super::snap_enum::follow_partners(self.hwnd, pixels_per_point);
+                        if partners.is_empty() {
+                            self.snap_contacts.clear();
+                            self.snap_anchor.clear();
+                            self.poll_schedule
+                                .report(moe_frame::snap::PollOutcome::NoPartners, now_ms);
+                        } else {
+                            let own_dragging = ctx.input(|input| input.pointer.any_down());
+                            follow_target =
+                                self.follow.poll(own_frame, &partners, true, own_dragging);
+                            self.snap_contacts =
+                                self.follow.direct_contact_ids(own_frame, &partners);
+                            self.snap_anchor = self.follow.anchor_edges(own_frame, &partners);
+                            let outcome = if follow_target.is_some() {
+                                moe_frame::snap::PollOutcome::Movement
+                            } else {
+                                moe_frame::snap::PollOutcome::Quiet
+                            };
+                            self.poll_schedule.report(outcome, now_ms);
+                        }
+                    }
+                    _ => {
+                        self.poll_schedule
+                            .report(moe_frame::snap::PollOutcome::NoPartners, now_ms);
+                    }
+                }
+            }
+        }
         let native_gesture = self.native_gesture.is_some();
         let (observation, focused) = ctx.input(|input| {
             let viewport = input.viewport();
@@ -43,6 +103,7 @@ impl FrameApp {
                         viewport.inner_rect.map(|rect| rect.width()).unwrap_or(0.0),
                     ),
                     snap,
+                    snap_anchor: self.snap_anchor.clone(),
                 },
                 viewport.focused,
             )
@@ -84,6 +145,10 @@ impl FrameApp {
             }
         }
         self.execute_geometry_commands(ctx, commands);
+        // 跟随命令走既有几何命令通道落地（工单 03），不另开通道。
+        if let Some(target) = follow_target {
+            self.execute_geometry_commands(ctx, vec![GeomCommand::SetOuterPosition(target)]);
+        }
         requested_size
     }
     pub(crate) fn execute_geometry_commands(

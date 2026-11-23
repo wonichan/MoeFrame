@@ -147,9 +147,18 @@ impl FrameApp {
                 SessionAction::ApplyWindowSnap(target) => {
                     // 窗口吸附开关是宿主状态：改当前值并经 config_sync
                     // 写回全局段；本进程下一次松手起按新值（跨实例实时
-                    // 同步归工单 04）。
+                    // 同步归工单 04）。工单 03：关闭时跟随引擎整体
+                    // 停摆并清状态、调度休眠；打开时重新武装探活。
                     self.window_snap = target;
                     self.sync.save_window_snap(target);
+                    if target {
+                        self.poll_schedule.wake();
+                    } else {
+                        self.follow.reset();
+                        self.poll_schedule.sleep();
+                        self.snap_contacts.clear();
+                        self.snap_anchor.clear();
+                    }
                 }
                 SessionAction::Rescan => {
                     let effects = self.core.handle(Intent::RescanRequested);

@@ -3,8 +3,9 @@
 //! 全部组装成库 snap 的候选事实后交给纯判定筛伙伴。本层不含判定
 //! 逻辑（标题与 exe 两层过滤、同屏、求解都在库里）。
 //!
-//! 调用时机只有一个：拖动松手瞬间，由几何宿主组装一次吸附请求。
-//! 没有常驻轮询，桌面静止时零枚举、零打扰。
+//! 调用时机：拖动松手瞬间组装吸附请求（工单 02），以及工单 03
+//! 跟随轮询按调度到期时枚举伙伴——无伙伴即休眠、零枚举（轮询
+//! 成本口径在库 snap 的 PollSchedule），桌面静止时不打扰。
 //!
 //! 坐标换算口径：Win32 返回的矩形是物理像素；每扇窗口按**它自己
 //! 的** DPI（GetDpiForWindow ÷ 96）换算成逻辑像素后才进候选事实
@@ -14,7 +15,10 @@
 
 use moe_frame::{
     instance::process_alive,
-    snap::{partner_frames, CandidateWindow, SnapPartner, SnapRequest, WindowRect},
+    snap::{
+        is_partner_frame, partner_frames, CandidateWindow, FollowPartner, PartnerFrame,
+        SnapPartner, SnapRequest, WindowRect,
+    },
 };
 use windows_sys::core::BOOL;
 use windows_sys::Win32::{
@@ -55,6 +59,55 @@ pub(crate) fn release_snap_request(own_hwnd: isize, own_scale: f32) -> Option<Sn
         partners,
         own_monitor,
     })
+}
+
+/// 工单 03 的跟随轮询枚举：筛出带窗口身份标识（句柄值）的伙伴
+/// 相框，供跟随引擎按身份键控历史与抑制标记。判定仍在库里。
+pub(crate) fn follow_partners(own_hwnd: isize, own_scale: f32) -> Vec<FollowPartner> {
+    if own_hwnd == 0 {
+        return Vec::new();
+    }
+    let Some(own_exe) = std::env::current_exe()
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+    else {
+        return Vec::new();
+    };
+    let mut hwnds: Vec<HWND> = Vec::new();
+    // SAFETY: 同 enumerate_candidates 的回调口径。
+    unsafe {
+        let _ = EnumWindows(Some(collect_window), &mut hwnds as *mut Vec<HWND> as LPARAM);
+    }
+    hwnds
+        .into_iter()
+        .filter_map(|hwnd| {
+            let candidate = candidate_for_window(hwnd, own_hwnd, own_scale)?;
+            if is_partner_frame(&candidate, &own_exe) {
+                Some(FollowPartner {
+                    id: (hwnd as usize) as u64,
+                    frame: PartnerFrame {
+                        rect: candidate.rect,
+                        monitor: candidate.monitor,
+                        work_area: candidate.work_area,
+                    },
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// 本窗所在屏的（显示器矩形，工作区矩形），逻辑像素：跟随引擎组
+/// 装本窗事实时用。
+pub(crate) fn own_monitor_work_area(
+    own_hwnd: isize,
+    own_scale: f32,
+) -> Option<(WindowRect, WindowRect)> {
+    if own_hwnd == 0 {
+        return None;
+    }
+    monitor_rects(own_hwnd as HWND, own_scale)
 }
 
 /// 枚举全部顶层可见窗口为候选事实（判定在库里，本层只取事实）。

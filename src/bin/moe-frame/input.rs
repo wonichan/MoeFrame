@@ -84,6 +84,7 @@ impl FrameApp {
                     pos,
                     button: egui::PointerButton::Primary,
                     pressed: true,
+                    modifiers,
                     ..
                 } if rect.contains(*pos) => {
                     let edge_distances = [
@@ -132,6 +133,12 @@ impl FrameApp {
                     });
                     self.dispatch(ctx, effects);
                     if !maximized_or_fullscreen {
+                        // Shift 拖动拆组（工单 03）：手势开始时采样
+                        // Shift——被拖窗 solo（松手不吸附回组，见
+                        // geometry 的松手组装）；拖动开始同时是轮询
+                        // 调度的重新武装事件。
+                        self.solo_drag = modifiers.shift;
+                        self.poll_schedule.wake();
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                         self.native_gesture = Some(NativeGesture::Move);
                     }

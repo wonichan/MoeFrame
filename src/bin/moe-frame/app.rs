@@ -90,6 +90,21 @@ pub(crate) struct FrameApp {
     /// config_sync 写回；松手组装吸附请求前读它（关闭时不枚举、
     /// 不计算、不落位）。
     pub(crate) window_snap: bool,
+    /// 组联动跟随引擎（多实例吸附专题工单 03）：纯逻辑在库 snap，
+    /// 宿主按轮询调度枚举伙伴喂入、执行它返回的位置；含菜单脱离
+    /// 的抑制标记（只存本进程内存，不落盘）。
+    pub(crate) follow: moe_frame::snap::FollowEngine,
+    /// 轮询调度（工单 03）：无伙伴时休眠、零唤醒；重新武装靠本窗
+    /// 自身事件（启动、拖动开始/结束、开关打开）。
+    pub(crate) poll_schedule: moe_frame::snap::PollSchedule,
+    /// 最近一轮派生的直接接触伙伴（未抑制）：右键菜单「脱离吸附
+    /// 组」的出现条件与脱离名单都取它。
+    pub(crate) snap_contacts: Vec<moe_frame::snap::PartnerId>,
+    /// 最近一轮派生的贴合边：喂几何机的锚边变尺寸接缝。
+    pub(crate) snap_anchor: Vec<moe_frame::snap::AnchorEdge>,
+    /// 本次移动手势是 Shift 拖动（手势开始时采样）：被拖窗 solo，
+    /// 松手不做松手吸附，松手后按新几何重新派生。
+    pub(crate) solo_drag: bool,
     /// 内置画框参数（V2 相框外观专题工单 02）：框体预设与框宽 /
     /// 卡纸宽；内置模式的内距（框宽 + 卡纸宽）与三层绘制都读它，
     /// 设置窗调整时更新本字段并经 config_sync 整组写回。

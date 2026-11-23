@@ -83,6 +83,7 @@ impl eframe::App for FrameApp {
         let requested_window_level = self.window_level;
         let mut menu_intent: Option<Intent> = None;
         let mut menu_settings = false;
+        let mut menu_detach = false;
         // 窗口永远透明创建（V2 相框外观专题工单 01）：画哪一层、
         // 面板铺不铺底、空状态提示怎么落，由布局接缝的绘制计划
         // 一次裁决（frame_layout::paint_plan，工单 04）——极简靠
@@ -192,6 +193,14 @@ impl eframe::App for FrameApp {
                     menu_intent = Some(Intent::PlayPauseToggled { now_ms: now });
                     ui.close();
                 }
+                // 脱离吸附组（工单 03）：仅在当前有直接接触伙伴时
+                // 出现（守菜单瘦身口径）；点击按抑制语义执行——
+                // 位置不变，对当时直接接触的伙伴各立一条本进程
+                // 抑制，真正分开超阈值后自动失效。
+                if !self.snap_contacts.is_empty() && ui.button("脱离吸附组").clicked() {
+                    menu_detach = true;
+                    ui.close();
+                }
                 if ui
                     .selectable_label(
                         requested_window_level == egui::WindowLevel::AlwaysOnTop,
@@ -253,6 +262,11 @@ impl eframe::App for FrameApp {
         if menu_settings {
             self.request_settings(&ctx);
         }
+        if menu_detach {
+            let ids = std::mem::take(&mut self.snap_contacts);
+            self.follow.detach_ids(&ids);
+            self.snap_anchor.clear();
+        }
         if self.settings_open {
             self.show_settings(&ctx, now);
         }
@@ -283,6 +297,11 @@ impl eframe::App for FrameApp {
                 .settle_deadline_secs()
                 .map(|secs| (secs.max(0.0) * 1000.0) as u64),
             self.core.next_deadline_ms(),
+            if self.window_snap {
+                self.poll_schedule.delay_ms()
+            } else {
+                None
+            },
             now,
         ) {
             ctx.request_repaint_after(delay);
@@ -292,8 +311,13 @@ impl eframe::App for FrameApp {
 
 /// 帧尾的下一帧唤醒裁决（纯函数，回归测试钉住），优先级从高到低：
 /// 隐藏低频心跳 → 导航加载轮询 → 转场动画帧（≤16ms，截止已过为
-/// 0）→ 治愈保活 → 几何落盘结算与轮播截止取更早者；都不命中则
-/// 不唤醒（None），避免空转重绘。
+/// 0）→ 治愈保活 → 几何落盘结算、轮播截止与吸附轮询延时取更早
+/// 者；都不命中则不唤醒（None），避免空转重绘。吸附轮询延时是
+/// 最低优先级的一项：调度休眠时为 None（无伙伴零唤醒，工单 03
+/// 轮询成本口径），静止心跳为 1000ms、跟随节奏为 16ms，都不会把
+/// 本裁决顶成常开。
+// 参数即裁决的全部输入事实，逐项平铺便于回归测试逐项钉住。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn next_frame_delay(
     frame_visible: bool,
     load_in_flight: bool,
@@ -301,6 +325,7 @@ pub(crate) fn next_frame_delay(
     transition_deadline_ms: Option<u64>,
     geom_settle_ms: Option<u64>,
     next_deadline_ms: Option<u64>,
+    follow_delay_ms: Option<u64>,
     now_ms: u64,
 ) -> Option<Duration> {
     if !frame_visible {
@@ -325,12 +350,12 @@ pub(crate) fn next_frame_delay(
             next_deadline_ms.map(|deadline| Duration::from_millis(deadline.saturating_sub(now_ms)));
         let settle =
             geom_settle_ms.map(|deadline| Duration::from_millis(deadline.saturating_sub(now_ms)));
+        // 吸附轮询延时是相对延时（不是截止时刻）：心跳/跟随节奏
+        // 直接参与取更早者；休眠（None）不产生任何唤醒。
+        let follow = follow_delay_ms.map(Duration::from_millis);
         // 几何还没停稳 0.6 秒：结算时刻前必须再出一帧，否则要等下一次
         // 轮播唤醒才写盘，"移动后随手退出"就会丢位置。
-        match (rotation, settle) {
-            (Some(rotation), Some(settle)) => Some(rotation.min(settle)),
-            (rotation, settle) => rotation.or(settle),
-        }
+        [rotation, settle, follow].into_iter().flatten().min()
     }
 }
 
@@ -342,7 +367,7 @@ mod tests {
     #[test]
     fn hidden_frame_keeps_the_slow_heartbeat_above_all() {
         assert_eq!(
-            next_frame_delay(false, true, u64::MAX, None, None, Some(0), 1_000),
+            next_frame_delay(false, true, u64::MAX, None, None, Some(0), None, 1_000),
             Some(Duration::from_millis(250))
         );
     }
@@ -350,7 +375,7 @@ mod tests {
     #[test]
     fn load_in_flight_polls_fast() {
         assert_eq!(
-            next_frame_delay(true, true, 0, None, None, Some(9_000), 1_000),
+            next_frame_delay(true, true, 0, None, None, Some(9_000), None, 1_000),
             Some(Duration::from_millis(50))
         );
     }
@@ -359,17 +384,17 @@ mod tests {
     fn transition_wakes_per_frame_and_immediately_once_due() {
         // 转场进行中：距截止还远也只睡一帧（16ms），保证连续绘制。
         assert_eq!(
-            next_frame_delay(true, false, 0, Some(9_000), None, None, 1_000),
+            next_frame_delay(true, false, 0, Some(9_000), None, None, None, 1_000),
             Some(Duration::from_millis(16))
         );
         // 距截止 5ms：睡 5ms，到期帧不迟到。
         assert_eq!(
-            next_frame_delay(true, false, 0, Some(1_005), None, None, 1_000),
+            next_frame_delay(true, false, 0, Some(1_005), None, None, None, 1_000),
             Some(Duration::from_millis(5))
         );
         // 截止已过：0ms，下一帧立即回送完成（不漏发、不拖延）。
         assert_eq!(
-            next_frame_delay(true, false, 0, Some(900), None, None, 1_000),
+            next_frame_delay(true, false, 0, Some(900), None, None, None, 1_000),
             Some(Duration::from_millis(0))
         );
         // 转场优先于治愈保活与轮播截止，但低于隐藏心跳与加载轮询。
@@ -381,6 +406,7 @@ mod tests {
                 Some(9_000),
                 None,
                 Some(60_000),
+                None,
                 1_000
             ),
             Some(Duration::from_millis(16))
@@ -391,7 +417,7 @@ mod tests {
     fn heal_keepalive_beats_the_slide_deadline() {
         // 保活窗口内（now < 截止）：50ms 出帧，不睡到轮播截止。
         assert_eq!(
-            next_frame_delay(true, false, 3_000, None, None, Some(60_000), 1_000),
+            next_frame_delay(true, false, 3_000, None, None, Some(60_000), None, 1_000),
             Some(Duration::from_millis(50))
         );
     }
@@ -399,12 +425,12 @@ mod tests {
     #[test]
     fn expired_heal_window_falls_back_to_the_slide_deadline() {
         assert_eq!(
-            next_frame_delay(true, false, 3_000, None, None, Some(60_000), 3_000),
+            next_frame_delay(true, false, 3_000, None, None, Some(60_000), None, 3_000),
             Some(Duration::from_millis(57_000))
         );
         // 截止已过按 0 处理，不欠账。
         assert_eq!(
-            next_frame_delay(true, false, 0, None, None, Some(500), 1_000),
+            next_frame_delay(true, false, 0, None, None, Some(500), None, 1_000),
             Some(Duration::from_millis(0))
         );
     }
@@ -412,7 +438,7 @@ mod tests {
     #[test]
     fn idle_without_deadline_requests_nothing() {
         assert_eq!(
-            next_frame_delay(true, false, 0, None, None, None, 1_000),
+            next_frame_delay(true, false, 0, None, None, None, None, 1_000),
             None
         );
     }
@@ -420,13 +446,32 @@ mod tests {
     fn geometry_settle_wakes_earlier_than_the_slide_deadline() {
         // 轮播还剩 10 秒，但几何 0.4 秒后结算：先出帧把位置写盘。
         assert_eq!(
-            next_frame_delay(true, false, 0, None, Some(1_400), Some(11_000), 1_000),
+            next_frame_delay(true, false, 0, None, Some(1_400), Some(11_000), None, 1_000),
             Some(Duration::from_millis(400))
         );
         // 轮播比结算更早时按轮播走。
         assert_eq!(
-            next_frame_delay(true, false, 0, None, Some(11_000), Some(1_500), 1_000),
+            next_frame_delay(true, false, 0, None, Some(11_000), Some(1_500), None, 1_000),
             Some(Duration::from_millis(500))
+        );
+    }
+
+    #[test]
+    fn follow_delay_is_the_lowest_priority_wake() {
+        // 调度休眠（None）：不产生任何唤醒，静止零重绘口径不变。
+        assert_eq!(
+            next_frame_delay(true, false, 0, None, None, None, None, 1_000),
+            None
+        );
+        // 心跳 1000ms：比轮播截止早时按心跳出帧做低频检查。
+        assert_eq!(
+            next_frame_delay(true, false, 0, None, None, Some(60_000), Some(1_000), 1_000),
+            Some(Duration::from_millis(1_000))
+        );
+        // 跟随节奏 16ms 也不压过更早的轮播截止。
+        assert_eq!(
+            next_frame_delay(true, false, 0, None, None, Some(1_005), Some(16), 1_000),
+            Some(Duration::from_millis(5))
         );
     }
 }

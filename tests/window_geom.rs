@@ -31,6 +31,7 @@ fn obs_with_insets(pos: [f32; 2], inner: [f32; 2], now: f64, insets: Insets) -> 
         now_secs: now,
         insets,
         snap: None,
+        snap_anchor: Vec::new(),
     }
 }
 
@@ -802,5 +803,65 @@ fn release_without_snap_request_keeps_nominal_position() {
     dragging.pointer_down = true;
     m.observe(&dragging);
     let commands = m.observe(&obs([588.0, 100.0], [480.0, 320.0], 0.2));
+    assert!(positions(&commands).is_empty(), "{commands:?}");
+}
+
+// ---------- 工单 03：锚边变尺寸（先锚边、后工单 06 钳制） ----------
+
+/// 切图变尺寸的锚边场景：先以 aspect 2.0 落稳 640x320，再切到
+/// aspect 1.0（目标 320x320，宽度收缩），观察带贴合边进场。
+fn resize_with_anchor(
+    anchor: Vec<moe_frame::snap::AnchorEdge>,
+    work_area: Option<[f32; 4]>,
+) -> Vec<GeomCommand> {
+    let saved: GeometryRecord = (Some(100), Some(100), 640, 320);
+    let mut m = machine(saved, Some(2.0), true);
+    let mut first = obs([100.0, 100.0], [640.0, 320.0], 0.0);
+    first.work_area = work_area;
+    m.observe(&first);
+    m.set_image_aspect(Some(1.0));
+    let mut second = obs([100.0, 100.0], [640.0, 320.0], 0.1);
+    second.work_area = work_area;
+    second.snap_anchor = anchor;
+    m.observe(&second)
+}
+
+#[test]
+fn anchored_resize_keeps_the_right_edge_and_grows_left() {
+    // 右贴合：宽度 640→320 时右边（x=740）不动，左上移到 420。
+    let commands = resize_with_anchor(vec![moe_frame::snap::AnchorEdge::Right], None);
+    assert_eq!(sizes(&commands), vec![[320.0, 320.0]]);
+    assert_eq!(positions(&commands), vec![[420.0, 100.0]]);
+}
+
+#[test]
+fn anchored_resize_keeps_the_left_edge_and_grows_right() {
+    // 左贴合：位置纹丝不动，只发尺寸命令。
+    let commands = resize_with_anchor(vec![moe_frame::snap::AnchorEdge::Left], None);
+    assert_eq!(sizes(&commands), vec![[320.0, 320.0]]);
+    assert!(positions(&commands).is_empty(), "{commands:?}");
+}
+
+#[test]
+fn anchored_resize_is_followed_by_the_existing_work_area_clamp() {
+    // 先锚边、后钳制：左贴合向右长到 640 宽会溢出 800 宽工作区，
+    // 工单 06 钳制把窗口平移回界内（右界 800-6-640=154）。
+    let saved: GeometryRecord = (Some(500), Some(100), 320, 320);
+    let mut m = machine(saved, Some(1.0), true);
+    let area = [0.0, 0.0, 800.0, 600.0];
+    m.observe(&obs_in_work_area([500.0, 100.0], [320.0, 320.0], 0.0, area));
+    m.set_image_aspect(Some(2.0));
+    let mut second = obs_in_work_area([500.0, 100.0], [320.0, 320.0], 0.1, area);
+    second.snap_anchor = vec![moe_frame::snap::AnchorEdge::Left];
+    let commands = m.observe(&second);
+    assert_eq!(sizes(&commands), vec![[640.0, 320.0]]);
+    assert_eq!(positions(&commands), vec![[154.0, 100.0]]);
+}
+
+#[test]
+fn resize_without_anchor_keeps_the_existing_position_rule() {
+    // 无贴合：与既有口径逐项一致——只发尺寸命令，位置不动。
+    let commands = resize_with_anchor(Vec::new(), None);
+    assert_eq!(sizes(&commands), vec![[320.0, 320.0]]);
     assert!(positions(&commands).is_empty(), "{commands:?}");
 }

@@ -22,7 +22,7 @@
 
 use crate::{
     config_sync::GeometryRecord,
-    snap::{solve_snap, SnapRequest, WindowRect},
+    snap::{anchored_resize_position, solve_snap, AnchorEdge, SnapRequest, WindowRect},
 };
 
 /// 窗口最小边（逻辑尺寸）：保持无黑边时仍满足宿主最小窗口约束。
@@ -97,6 +97,11 @@ pub struct GeomObservation {
     /// 手帧消费它求解落位，按下帧与静止帧一律忽略——拖动进行中
     /// 不发吸附命令、静止时不因它产生任何命令。
     pub snap: Option<SnapRequest>,
+    /// 本窗当前的贴合边（多实例吸附专题工单 03）：宿主以跟随引擎
+    /// 最近一轮的接触派生供给；比例校正变尺寸时以这些边为锚（共
+    /// 享边不动、向空闲方向长/缩），随后工单 06 钳制照旧叠加。
+    /// 空 = 无贴合，变尺寸保持既有「位置不动」口径。
+    pub snap_anchor: Vec<AnchorEdge>,
 }
 
 /// 状态机返回的抽象命令：宿主翻译成 ViewportCommand 执行，保存类
@@ -272,9 +277,30 @@ impl GeometryMachine {
                                 target_size[0] + outer[0] - cur[0],
                                 target_size[1] + outer[1] - cur[1],
                             ];
-                            if let Some(clamped) =
-                                clamp_outer_position_into_work_area(pos, target_outer, work_area)
+                            // 先锚边、后钳制（工单 03 + 工单 06 叠
+                            // 加顺序，spec 第 7 节）：有贴合边时以共
+                            // 享边为锚算变尺寸位置，再把锚后位置交
+                            // 既有钳制判溢出平移；钳制口径不变。
+                            let base_pos = if obs.snap_anchor.is_empty() {
+                                pos
+                            } else {
+                                anchored_resize_position(
+                                    WindowRect::from_pos_size(pos, outer),
+                                    target_outer,
+                                    &obs.snap_anchor,
+                                )
+                            };
+                            if (base_pos[0] - pos[0]).abs() > 0.5
+                                || (base_pos[1] - pos[1]).abs() > 0.5
                             {
+                                commands.push(GeomCommand::SetOuterPosition(base_pos));
+                                effective_pos = Some(base_pos);
+                            }
+                            if let Some(clamped) = clamp_outer_position_into_work_area(
+                                base_pos,
+                                target_outer,
+                                work_area,
+                            ) {
                                 commands.push(GeomCommand::SetOuterPosition(clamped));
                                 effective_pos = Some(clamped);
                             }
