@@ -384,6 +384,33 @@ fn a_new_instance_cascades_from_the_previous_saved_position() {
 }
 
 #[test]
+fn a_new_instance_cascades_from_the_live_partner_when_available() {
+    // 审查修复 S4：有实时枚举基点时以它为准（已开相框的当前
+    // 位置），落盘段（100,100）只作兜底、本次不生效。
+    let root = temp_root("config-sync", "cascade-live");
+    let (config_path, log_path) = paths(&root);
+    {
+        let mut store = ConfigStore::load_for_instance(&config_path, 1);
+        store
+            .set_window_geometry(Some(100), Some(100), 640, 400)
+            .expect("seed");
+    }
+    let mut registry = FakeStore::default();
+    let (_sync, package) = ConfigSync::startup_for_instance_with_cascade(
+        &config_path,
+        &log_path,
+        &mut registry,
+        2,
+        Some([500.0, 300.0]),
+    );
+    assert_eq!(
+        package.host.saved_position,
+        Some([524.0, 324.0]),
+        "相对已开相框的当前位置级联 +24/+24"
+    );
+}
+
+#[test]
 fn an_instance_with_saved_geometry_opens_exactly_there_without_cascade() {
     let root = temp_root("config-sync", "no-cascade");
     let (config_path, log_path) = paths(&root);

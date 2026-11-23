@@ -39,6 +39,18 @@ pub fn initial_position(saved: Option<[f32; 2]>, previous: Option<[f32; 2]>) -> 
     saved.or_else(|| previous.map(|pos| [pos[0] + CASCADE_OFFSET, pos[1] + CASCADE_OFFSET]))
 }
 
+/// 级联基点选择（审查修复 S4）：spec 第 6 节的「上一扇已开相框」
+/// 以实时枚举为准——活伙伴（编号 + 当前左上位置）中编号最大者
+/// 即最近开启的那扇，取它的位置作基点；没有活伙伴时返回
+/// None，宿主/装配层兜底回落盘段口径。此前实现只看落盘段：
+/// 已关窗的陈旧位置会触发级联、已开的大编号窗反而被忽略。
+pub fn cascade_base_position(live_partners: &[(u32, [f32; 2])]) -> Option<[f32; 2]> {
+    live_partners
+        .iter()
+        .max_by_key(|(number, _)| *number)
+        .map(|(_, position)| *position)
+}
+
 /// pid 存活判断（生产口径）：pid 0 与不存在的进程为死。Unix 查
 /// `/proc/<pid>`；Windows 用 OpenProcess + GetExitCodeProcess 看
 /// 是否仍是 STILL_ACTIVE；其余平台保守按存活处理（宁可跳号，

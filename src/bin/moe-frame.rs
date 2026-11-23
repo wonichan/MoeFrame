@@ -34,6 +34,9 @@ mod geometry;
 #[path = "moe-frame/input.rs"]
 mod input;
 #[cfg(windows)]
+#[path = "moe-frame/instance_launch.rs"]
+mod instance_launch;
+#[cfg(windows)]
 #[path = "moe-frame/settings_ui.rs"]
 mod settings_ui;
 #[cfg(windows)]
@@ -233,62 +236,34 @@ fn run() -> Result<(), Box<dyn Error>> {
     let directory = app_directory().ok_or_else(|| io::Error::other("APPDATA is unavailable"))?;
     let config_path = directory.join("config.toml");
     let log_path = directory.join("moe_frame.log");
-    // 实例编号认领（多实例吸附专题工单 01）：先在 app 目录用编号
-    // 锁文件认领最小空缺编号，认领守卫活到 run() 返回（即进程退出）
-    // 才释放；配置的图库与几何按这个编号读写自己的实例段。
-    // 工单 04：带 `--instance <编号>` 启动的是自启恢复拉起的进程，
-    // 走受控的指定编号认领；指定编号已被存活进程持有时安静退出
-    // （恢复是幂等的，绝不重复拉起真在运行的实例）。
-    let requested_number = std::env::args()
-        .collect::<Vec<_>>()
-        .windows(2)
-        .find(|pair| pair[0] == "--instance")
-        .and_then(|pair| pair[1].parse::<u32>().ok())
-        .filter(|number| *number >= 1);
-    let _instance_claim = match requested_number {
-        Some(number) => match moe_frame::instance::claim_specific_instance(&directory, number) {
-            Ok(claim) => claim,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
-            Err(error) => return Err(Box::new(error)),
-        },
-        None => moe_frame::instance::claim_instance(&directory)?,
+    // 实例编号认领（多实例吸附专题工单 01）：认领守卫活到 run()
+    // 返回（即进程退出）才释放；配置的图库与几何按这个编号读写
+    // 自己的实例段。认领/级联基点/自启恢复的装配细节在
+    // instance_launch 模块，run() 只分发（审查修复 J3）。
+    // 指定编号已被存活进程持有时安静退出（恢复幂等）。
+    let Some(_instance_claim) = instance_launch::claim_from_args(&directory)? else {
+        return Ok(());
     };
     let instance_number = _instance_claim.number();
     startup_marker("instance-claimed", &format!("instance={instance_number}"));
+    // 级联基点：趁本窗尚未创建，先枚举活伙伴的当前位置（S4）。
+    let live_cascade_base = instance_launch::live_cascade_base(&directory);
     // 启动装配（工单 04 深挖）：配置加载/修复、自启对账与全部初值
     // 翻译归 config_sync，run() 只分发启动包。
-    let (mut sync, package) = ConfigSync::startup_for_instance(
+    let (mut sync, package) = ConfigSync::startup_for_instance_with_cascade(
         &config_path,
         &log_path,
         &mut RegAutostartStore,
         instance_number,
+        live_cascade_base,
     );
     // 「在运行」标记置位（工单 04）：走工单 01 写入通道只改本实例
     // 段；正常退出时在 Effect::Exit 落地处清除，崩溃残留不清。
     sync.set_running_marker(true);
-    // 自启恢复（工单 04，协调者定死口径）：任何 1 号实例启动时都
-    // 尝试恢复（不区分自启 / 手动启动），且幂等——只拉起「实例段
-    // 有在运行标记、且该编号当前没有活进程持有锁」的编号（编号锁
-    // + pid 存活判断区分崩溃残留与真在运行），拉起的新进程经
-    // `--instance` 认领指定编号、回到各自落盘位置。
+    // 自启恢复（工单 04）：1 号实例启动时幂等拉起残留的在运行
+    // 编号，裁决与拉起在 instance_launch。
     if instance_number == 1 {
-        let sections: Vec<moe_frame::instance::RecoverySection> = sync
-            .instance_sections()
-            .iter()
-            .map(|section| moe_frame::instance::RecoverySection {
-                number: section.number,
-                running: section.running,
-                holder_pid: moe_frame::instance::lock_holder_pid(&directory, section.number),
-            })
-            .collect();
-        for target in moe_frame::instance::recovery_targets(
-            &sections,
-            instance_number,
-            &moe_frame::instance::process_alive,
-        ) {
-            startup_marker("autostart-recovery", &format!("instance={target}"));
-            spawn_frame_with_number(target);
-        }
+        instance_launch::recover_marked_instances(&directory, &sync);
     }
     // 全局同步基线（工单 04）：启动已应用的全局值 + 此刻的文件修改
     // 时间，同步状态机据此只报基线之后的变化。
@@ -401,8 +376,8 @@ fn run() -> Result<(), Box<dyn Error>> {
                 autostart_store: RegAutostartStore,
                 appearance: host_init.appearance,
                 window_snap: host_init.window_snap,
-                follow: moe_frame::snap::FollowEngine::new(),
-                poll_schedule: moe_frame::snap::PollSchedule::new(),
+                follow: moe_frame::snap_follow::FollowEngine::new(),
+                poll_schedule: moe_frame::snap_follow::PollSchedule::new(),
                 snap_contacts: Vec::new(),
                 snap_anchor: Vec::new(),
                 solo_drag: false,

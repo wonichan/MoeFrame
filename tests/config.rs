@@ -785,6 +785,48 @@ fn writing_my_section_never_changes_the_other_instances_fields() {
     assert_eq!(b_before, b_after, "A 的写回不得改 B 段的任何字段");
 }
 
+#[test]
+fn load_repair_write_back_preserves_other_instances_current_data() {
+    // 审查修复 S2：load 的修复写回改走 update 唯一通道（重读磁盘
+    // 当前文档再重跑修复），不再凭首次读入的文档整表覆写。本测
+    // 构造「盘上已有 B 的最新数据、且文件带一处待修复字段」的
+    // 状态，A 的 load 修复写回后 B 的图库与几何必须原样保留。
+    let path = temp_config("load-repair-channel");
+    {
+        let mut b = ConfigStore::load_for_instance(&path, 2);
+        b.set_image_folder(Some("D:\\B 图库")).unwrap();
+        b.set_window_geometry(Some(700), Some(500), 640, 400)
+            .unwrap();
+        b.set_interval_secs(30).unwrap();
+    }
+    // 在盘上文本里把间隔改成非法值，制造一处与实例段无关的修复点。
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("interval_secs = 30"), "{text}");
+    fs::write(
+        &path,
+        text.replace("interval_secs = 30", "interval_secs = \"bad\""),
+    )
+    .unwrap();
+
+    let a = ConfigStore::load_for_instance(&path, 1);
+    assert_eq!(a.config().playback.interval_secs, 30, "非法间隔被修复");
+
+    let b = ConfigStore::load_for_instance(&path, 2);
+    assert_eq!(b.config().image_folder.as_deref(), Some("D:\\B 图库"));
+    assert_eq!(
+        (
+            b.config().window.x,
+            b.config().window.y,
+            b.config().window.width,
+            b.config().window.height
+        ),
+        (Some(700), Some(500), 640, 400),
+        "A 的 load 修复写回不得回滚 B 的实例段"
+    );
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("interval_secs = 30"), "{text}");
+}
+
 // ---------- 窗口吸附开关（多实例吸附专题工单 02） ----------
 
 #[test]

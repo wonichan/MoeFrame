@@ -16,9 +16,10 @@
 use moe_frame::{
     instance::process_alive,
     snap::{
-        is_partner_frame, partner_frames, CandidateWindow, FollowPartner, PartnerFrame,
-        SnapPartner, SnapRequest, WindowRect,
+        is_partner_frame, partner_frames, CandidateWindow, PartnerFrame, SnapPartner, SnapRequest,
+        WindowRect,
     },
+    snap_follow::FollowPartner,
 };
 use windows_sys::core::BOOL;
 use windows_sys::Win32::{
@@ -92,6 +93,47 @@ pub(crate) fn follow_partners(own_hwnd: isize, own_scale: f32) -> Vec<FollowPart
                         work_area: candidate.work_area,
                     },
                 })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// 启动瞬间的活伙伴位置（审查修复 S4）：级联基点的原料——枚举
+/// 全部相框窗（含隐藏到托盘的：它仍是「已开相框」），按窗口所
+/// 属 pid 查编号锁文件定编号，返回 (编号, 当前左上位置) 列表。
+/// 本进程此时尚无窗口，枚举到的都是别家；编号对不上的（锁已
+/// 释放等）跳过。选择规则在库 `instance::cascade_base_position`。
+pub(crate) fn startup_partner_positions(app_dir: &std::path::Path) -> Vec<(u32, [f32; 2])> {
+    let Some(own_exe) = std::env::current_exe()
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+    else {
+        return Vec::new();
+    };
+    let mut hwnds: Vec<HWND> = Vec::new();
+    // SAFETY: 同 enumerate_candidates 的回调口径。
+    unsafe {
+        let _ = EnumWindows(Some(collect_window), &mut hwnds as *mut Vec<HWND> as LPARAM);
+    }
+    hwnds
+        .into_iter()
+        .filter_map(|hwnd| {
+            // SAFETY: hwnd 来自本次枚举；GetWindowThreadProcessId
+            // 只写 pid，窗口中途销毁时 pid 保持 0、后续校验挡住。
+            let mut pid: u32 = 0;
+            unsafe {
+                GetWindowThreadProcessId(hwnd, &mut pid);
+            }
+            if pid == 0 {
+                return None;
+            }
+            let number = (1..=256)
+                .find(|n| moe_frame::instance::lock_holder_pid(app_dir, *n) == Some(pid))?;
+            let candidate = candidate_for_window(hwnd, 0, 1.0, false)?;
+            if is_partner_frame(&candidate, &own_exe) {
+                Some((number, [candidate.rect.left, candidate.rect.top]))
             } else {
                 None
             }

@@ -378,15 +378,20 @@ impl ConfigStore {
             }
         };
         let config = parse_document(&mut document, instance_number, &mut repaired);
-        let store = Self {
+        let mut store = Self {
             path: path.to_owned(),
             document,
             config,
             instance_number,
         };
         if repaired {
+            // 修复写回也走写入纪律的唯一通道（审查修复 S2）：update
+            // 会重读磁盘当前文档并在新文档上重跑修复/迁移（修复与
+            // 迁移都是幂等的），另一个实例在首次读入之后刚写下的
+            // 字段不会被本实例的启动快照覆写——此前这里直接拿首次
+            // 读入的文档整表写回，与 setter 的纪律不一致。
             // A failed write-back must not crash startup; the in-memory config is already legal.
-            let _ = store.write();
+            let _ = store.update(|_, _| {});
         }
         store
     }
@@ -402,8 +407,9 @@ impl ConfigStore {
 
     /// 单字段保存的共用骨架（写入纪律的唯一通道）：重读磁盘当前
     /// 文档 → 在新文档上重解析配置视图 → 只施加本次改动 → 写回。
-    /// 几何落盘、设置落盘、退出冲刷与迁移写回全部经这里或 load 的
-    /// 修复写回，不存在第二条整文件覆写路径。
+    /// 几何落盘、设置落盘、退出冲刷、迁移写回与 load 的修复写回
+    /// 全部经这里（load 以空改动调用，借它的重读-重解析把修复落
+    /// 到磁盘当前文档上），不存在第二条整文件覆写路径。
     fn update(
         &mut self,
         apply: impl FnOnce(&mut toml_edit::DocumentMut, &mut Config),

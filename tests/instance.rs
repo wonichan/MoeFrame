@@ -11,7 +11,9 @@
 mod common;
 
 use common::temp_root;
-use moe_frame::instance::{claim_instance_with, initial_position, process_alive};
+use moe_frame::instance::{
+    cascade_base_position, claim_instance_with, initial_position, process_alive,
+};
 use std::{fs, sync::Mutex};
 
 #[test]
@@ -149,6 +151,25 @@ fn initial_position_prefers_saved_then_cascades_from_the_previous_frame() {
     );
     // 没有上一扇可参照：交给既有默认放置。
     assert_eq!(initial_position(None, None), None);
+}
+
+#[test]
+fn cascade_base_picks_the_largest_numbered_live_partner() {
+    // 审查修复 S4：级联基点按实时枚举选——编号最大者（最近开启
+    // 的已开相框），与输入顺序无关；无活伙伴返回 None 供兜底。
+    assert_eq!(cascade_base_position(&[]), None);
+    assert_eq!(
+        cascade_base_position(&[(1, [100.0, 100.0])]),
+        Some([100.0, 100.0])
+    );
+    assert_eq!(
+        cascade_base_position(&[
+            (3, [300.0, 300.0]),
+            (1, [100.0, 100.0]),
+            (2, [200.0, 200.0])
+        ]),
+        Some([300.0, 300.0])
+    );
 }
 
 // ---------- 工单 04：认领指定编号与自启恢复裁决 ----------

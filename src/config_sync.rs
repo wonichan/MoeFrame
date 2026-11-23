@@ -87,15 +87,37 @@ impl ConfigSync {
     /// 实例段）、完成开机自启的注册表↔镜像对账（实际状态优先，
     /// 不一致时回写镜像，回写也走统一失败口径），再把配置翻译成
     /// 启动包。初始位置口径（多实例吸附专题工单 01）：本实例段有
-    /// 落盘位置时严格按落盘开；没有时相对上一扇（编号小于本实例
-    /// 且有落盘位置的最大编号段）+24/+24 级联，级联结果只作初始
-    /// 放置（saved_geom 的位置部分），落盘仍等本实例自己的几何
-    /// 变化经既有防抖/退出冲刷写回，钳制走几何机既有工作区口径。
+    /// 落盘位置时严格按落盘开；没有时相对上一扇 +24/+24 级联，
+    /// 级联结果只作初始放置（saved_geom 的位置部分），落盘仍等
+    /// 本实例自己的几何变化经既有防抖/退出冲刷写回，钳制走几何
+    /// 机既有工作区口径。「上一扇」的来源见
+    /// [`Self::startup_for_instance_with_cascade`]。
     pub fn startup_for_instance(
         config_path: &Path,
         log_path: &Path,
         autostart_store: &mut dyn AutostartStore,
         instance_number: u32,
+    ) -> (Self, StartupPackage) {
+        Self::startup_for_instance_with_cascade(
+            config_path,
+            log_path,
+            autostart_store,
+            instance_number,
+            None,
+        )
+    }
+
+    /// 带实时级联基点的启动装配（审查修复 S4）：`live_cascade_base`
+    /// 是宿主启动瞬间枚举到的「上一扇已开相框」的当前位置（选择
+    /// 规则在 `instance::cascade_base_position`）。有实时基点时以
+    /// 它为准；为 None（无活伙伴/枚举失败）时兜底回工单 01 的落
+    /// 盘段口径（编号小于本实例且有落盘位置的最大编号段）。
+    pub fn startup_for_instance_with_cascade(
+        config_path: &Path,
+        log_path: &Path,
+        autostart_store: &mut dyn AutostartStore,
+        instance_number: u32,
+        live_cascade_base: Option<[f32; 2]>,
     ) -> (Self, StartupPackage) {
         let mut sync = Self {
             store: ConfigStore::load_for_instance(config_path, instance_number),
@@ -121,17 +143,20 @@ impl ConfigSync {
             (Some(x), Some(y)) => Some([x as f32, y as f32]),
             _ => None,
         };
-        // 上一扇的位置：编号小于本实例、有落盘位置的最大编号段。
-        let previous_position = config
-            .instances
-            .iter()
-            .filter(|instance| instance.number < instance_number)
-            .filter_map(|instance| match (instance.window.x, instance.window.y) {
-                (Some(x), Some(y)) => Some((instance.number, [x as f32, y as f32])),
-                _ => None,
-            })
-            .max_by_key(|(number, _)| *number)
-            .map(|(_, position)| position);
+        // 上一扇的位置：实时枚举基点优先；没有时兜底用落盘段
+        // （编号小于本实例、有落盘位置的最大编号段）。
+        let previous_position = live_cascade_base.or_else(|| {
+            config
+                .instances
+                .iter()
+                .filter(|instance| instance.number < instance_number)
+                .filter_map(|instance| match (instance.window.x, instance.window.y) {
+                    (Some(x), Some(y)) => Some((instance.number, [x as f32, y as f32])),
+                    _ => None,
+                })
+                .max_by_key(|(number, _)| *number)
+                .map(|(_, position)| position)
+        });
         let initial = initial_position(saved_position, previous_position);
         let saved_geom = match (saved_position, initial) {
             (None, Some(position)) => (
