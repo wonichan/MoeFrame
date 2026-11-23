@@ -6,7 +6,10 @@
 //! 区域绘制，spec 第 8 节），计算本身在 tests/transition_ambient.rs
 //! 钉住。三种动画都不分方向（spec 第 4 节），本模块无方向参数。
 
-use crate::frame_layout::LayoutRect;
+use crate::{
+    display::{display_size, DisplayMode},
+    frame_layout::LayoutRect,
+};
 
 /// 百叶帘的竖帘条数（spec 第 2 节冻结值）。
 pub const BLINDS_STRIPS: usize = 8;
@@ -43,12 +46,11 @@ pub fn fit_rect(stage: LayoutRect, aspect: f32) -> LayoutRect {
     if aspect <= 0.0 || !aspect.is_finite() {
         return stage;
     }
-    let stage_aspect = stage.width() / stage.height();
-    let (width, height) = if aspect >= stage_aspect {
-        (stage.width(), stage.width() / aspect)
-    } else {
-        (stage.height() * aspect, stage.height())
-    };
+    let [width, height] = display_size(
+        DisplayMode::Fit,
+        [stage.width(), stage.height()],
+        [aspect, 1.0],
+    );
     let left = stage.left + (stage.width() - width) / 2.0;
     let top = stage.top + (stage.height() - height) / 2.0;
     LayoutRect::new(left, top, left + width, top + height)

@@ -12,8 +12,8 @@ mod worker;
 use {
     eframe::egui,
     moe_frame::{
-        decode_validation::{DecodeRequest, DisplayImage, DisplayMode},
         diagnostics::SessionLog,
+        loading::{DisplayImage, DisplayMode, LoadRequest},
     },
     observation::{Observation, Sampler},
     std::{
@@ -164,7 +164,7 @@ struct Validator {
     config: config::Config,
     observation: Arc<Observation>,
     worker: worker::Worker,
-    request: Option<DecodeRequest>,
+    request: Option<LoadRequest>,
     pending: bool,
     preload_after_draw: bool,
     current: Option<Texture>,
@@ -400,7 +400,7 @@ impl eframe::App for Validator {
                 .store(observation::HIDDEN, Ordering::Relaxed);
         }
         if !self.config.baseline && !self.pending && physical.width != 0 && physical.height != 0 {
-            let request = DecodeRequest {
+            let request = LoadRequest {
                 target_pixels: [physical.width, physical.height],
                 mode: self.config.mode,
                 limits: self

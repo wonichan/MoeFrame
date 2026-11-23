@@ -100,6 +100,7 @@ bash scripts/check.sh   # cargo fmt --check + clippy -D warnings + test --all-ta
 
 - `cargo run --release --bin window-validation`：08 的窗口验证程序（`F9` 快照、`F10` 最大化、`Esc` 退出），
   清单见 [窗口验证清单](docs/window-validation.md)。
+- `cargo run --release --bin decode-validation -- --help`：09 的独立解码与内存验证器，共用产品解码，见 [复测手册](docs/decode-validation.md)。
 - 发布资源测量：`scripts/measure-release.ps1`，历史结果见 [发布测量记录](docs/release-measurements.md)。
 - 规格与实施票：[.scratch/v1-exe/spec.md](.scratch/v1-exe/spec.md)、[最终验收票](.scratch/v1-exe/issues/23-release-acceptance.md)
 - 架构决定：[docs/adr/](docs/adr/)；工程笔记：[.agents/notes/](.agents/notes/)

@@ -10,7 +10,7 @@
 //! 当前纹理不动、不重试、不提示；同一期望口径不再重复触发，直到口径
 //! 变化（模式、目标或当前图）或导航转正刷新了当前槽记录。
 
-use crate::decode_validation::DisplayMode;
+use crate::loading::DisplayMode;
 use std::path::{Path, PathBuf};
 
 /// 目标尺寸变化的停稳时长（秒）：停稳才触发刷新，避免拖动缩放中反复解码。

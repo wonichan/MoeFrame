@@ -273,7 +273,7 @@ fn real_frame_menu_controls_session_window_level_without_changing_playback_or_vi
     });
     let seq = app
         .pipeline
-        .begin_load(moe_frame::decode_validation::DisplayMode::Fit, [400, 300]);
+        .begin_load(moe_frame::loading::DisplayMode::Fit, [400, 300]);
     assert_eq!(
         app.pipeline.nav_reply(seq, Some(&current)),
         moe_frame::display_data::NavDecision::Accept

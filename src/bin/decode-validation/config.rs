@@ -1,4 +1,4 @@
-use moe_frame::decode_validation::{DecodeLimits, DisplayMode};
+use moe_frame::loading::{DecodeLimits, DisplayMode};
 use std::{ffi::OsString, fs, path::PathBuf, time::Duration};
 
 pub const HELP: &str = "decode-validation [options] -- <image paths>\n  --max-width N --max-height N --max-alloc-mib N  Required experimental Limits (not product defaults)\n  --mode fit|fill           Display mode (default fit)\n  --list FILE               UTF-8 image paths, relative to the list file\n  --interval-ms N           Switch delay after preparation (default 5000)\n  --sample-ms N             Windows process sampling period (default 25)\n  --duration-secs N         Auto-close after first prepared display; baseline starts at launch\n  --log-dir DIR             Default: system temp/MoeFrame-decode-validation\n  --baseline                Empty GUI only; no image paths or Limits\n  --no-system-font-fallback Diagnostic opt-out; font coverage differs, default enabled\n  --font-file FILE          Diagnostic: register this single font file as the only fallback (implies --no-system-font-fallback)\n  --help                    Show this help\n";

@@ -1,14 +1,57 @@
-//! 正式相框的图片加载（工单 10）：后台解码一张图并缩放到窗口物理像素需求。
-//!
-//! 与工单 09 验证接缝 `decode_validation::load_display` 的关系：验证接缝保持冻结作为实测证据；
-//! 本模块是产品路径，差异有二——(1) 使用用户 2026-11-20 确认的产品 Limits，不再是实验输入；
-//! (2) 不做编码文件大小预检，超限由 image 的 Limits 在解码输出侧拒绝（父规格：「以 Limits
-//! 拒绝过大输出」）。其余规则一致：扩展名与文件头必须一致、全分辨率数据只短暂持有、
-//! 适应/填充的尺寸计算相同、解码器 panic 转为带路径的拒绝。
+//! 产品图片解码：按物理像素目标生成显示数据，校验格式与解码输出上限，
+//! 缩放后立即释放原图。正式相框和解码验证器共用本模块；验证器可显式传入
+//! Limits 并观测解码阶段。尺寸算术归 `display`，显示数据的记账与决策归 `display_data`。
 
-use crate::decode_validation::{DecodeError, DecodeLimits, DisplayImage, DisplayMode};
+use crate::display::display_size_pixels;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
-use std::{fs::File, io::BufReader, path::Path};
+use std::{
+    fmt,
+    fs::File,
+    io::BufReader,
+    path::{Path, PathBuf},
+};
+
+pub use crate::display::DisplayMode;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecodeLimits {
+    pub max_width: u32,
+    pub max_height: u32,
+    pub max_alloc: u64,
+}
+
+#[derive(Debug)]
+pub struct DisplayImage {
+    pub path: PathBuf,
+    pub source_pixels: [u32; 2],
+    pub scaled_pixels: [u32; 2],
+    pub display_pixels: [u32; 2],
+    pub rgba: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecodeError {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
+impl fmt::Display for DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.path.display(), self.reason)
+    }
+}
+
+impl std::error::Error for DecodeError {}
+
+/// 解码观测点；释放事件指原图已 drop，不代表进程工作集下降。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecodePhase {
+    Opening,
+    Decoding,
+    Resizing,
+    FullResolutionReleased,
+    DisplayReady,
+}
 
 /// 用户 2026-11-20 确认的产品 Limits（见 `.agents/notes/implemented/process/2026-11-20-product-limits-peak-budget.md`）。
 pub const PRODUCT_LIMITS: DecodeLimits = DecodeLimits {
@@ -37,6 +80,14 @@ impl LoadRequest {
 
 /// 解码 `path` 并缩放为显示数据；返回的 RGBA 仅为显示尺寸，全分辨率图不离开本函数。
 pub fn load_image(path: &Path, request: LoadRequest) -> Result<DisplayImage, DecodeError> {
+    load_image_observed(path, request, |_| {})
+}
+
+pub(crate) fn load_image_observed(
+    path: &Path,
+    request: LoadRequest,
+    mut observe: impl FnMut(DecodePhase),
+) -> Result<DisplayImage, DecodeError> {
     let fail = |reason: String| DecodeError {
         path: path.to_owned(),
         reason,
@@ -53,6 +104,7 @@ pub fn load_image(path: &Path, request: LoadRequest) -> Result<DisplayImage, Dec
     {
         return Err(fail("physical target and Limits must be positive".into()));
     }
+    observe(DecodePhase::Opening);
     let file = File::open(path).map_err(|e| fail(e.to_string()))?;
     let format = ImageFormat::from_path(path).map_err(|e| fail(e.to_string()))?;
     let mut reader = ImageReader::new(BufReader::new(file))
@@ -79,8 +131,8 @@ pub fn load_image(path: &Path, request: LoadRequest) -> Result<DisplayImage, Dec
         .map_err(|e| fail(e.to_string()))?;
     decoder_call(path, || decoder.set_limits(limits))?;
     let [tw, th] = request.target_pixels;
-    let [dw, dh] =
-        display_size([width, height], request.target_pixels, request.mode).map_err(fail)?;
+    let [dw, dh] = display_size_pixels(request.mode, request.target_pixels, [width, height])
+        .map_err(|e| fail(e.to_string()))?;
     let coverage_bytes = u64::from(dw)
         .checked_mul(u64::from(dh))
         .and_then(|n| n.checked_mul(u64::from(decoder.color_type().bytes_per_pixel().max(4))));
@@ -88,15 +140,19 @@ pub fn load_image(path: &Path, request: LoadRequest) -> Result<DisplayImage, Dec
     {
         return Err(fail("coverage buffer exceeds max_alloc".into()));
     }
+    observe(DecodePhase::Decoding);
     let full = decoder_call(path, || DynamicImage::from_decoder(decoder))?;
+    observe(DecodePhase::Resizing);
     let display = full.thumbnail_exact(dw, dh);
     drop(full);
+    observe(DecodePhase::FullResolutionReleased);
     let display = match request.mode {
         DisplayMode::Fit => display,
         DisplayMode::Fill => display.crop_imm((dw - tw) / 2, (dh - th) / 2, tw, th),
     };
     let display_pixels = [display.width(), display.height()];
     let rgba = display.into_rgba8().into_raw();
+    observe(DecodePhase::DisplayReady);
     Ok(DisplayImage {
         path: path.to_owned(),
         source_pixels: [width, height],
@@ -104,40 +160,6 @@ pub fn load_image(path: &Path, request: LoadRequest) -> Result<DisplayImage, Dec
         display_pixels,
         rgba,
     })
-}
-
-/// 按显示模式计算缩放后（填充时为裁剪前覆盖）尺寸。
-fn display_size(source: [u32; 2], target: [u32; 2], mode: DisplayMode) -> Result<[u32; 2], String> {
-    let [width, height] = source;
-    let [tw, th] = target;
-    match mode {
-        DisplayMode::Fit
-            if u64::from(tw) * u64::from(height) <= u64::from(th) * u64::from(width) =>
-        {
-            Ok([
-                tw,
-                (u64::from(height) * u64::from(tw) / u64::from(width)).max(1) as u32,
-            ])
-        }
-        DisplayMode::Fit => Ok([
-            (u64::from(width) * u64::from(th) / u64::from(height)).max(1) as u32,
-            th,
-        ]),
-        DisplayMode::Fill
-            if u64::from(tw) * u64::from(height) >= u64::from(th) * u64::from(width) =>
-        {
-            Ok([
-                tw,
-                u32::try_from((u64::from(height) * u64::from(tw)).div_ceil(u64::from(width)))
-                    .map_err(|e| e.to_string())?,
-            ])
-        }
-        DisplayMode::Fill => Ok([
-            u32::try_from((u64::from(width) * u64::from(th)).div_ceil(u64::from(height)))
-                .map_err(|e| e.to_string())?,
-            th,
-        ]),
-    }
 }
 
 fn image_limits(limits: DecodeLimits) -> Limits {

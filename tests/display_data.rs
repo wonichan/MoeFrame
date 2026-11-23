@@ -3,8 +3,8 @@
 //! 回送与每帧观察，断言它给出的裁决与刷新命令。
 
 use moe_frame::{
-    decode_validation::DisplayMode,
     display_data::{DisplayKey, DisplayPipeline, NavDecision, Observation, RefreshDecision},
+    loading::DisplayMode,
 };
 use std::path::PathBuf;
 

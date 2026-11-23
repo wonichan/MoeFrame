@@ -1,9 +1,9 @@
 //! 工单 10：产品加载路径的真实文件测试（临时目录、小型真实图片）。
 mod common;
 
-use moe_frame::{
-    decode_validation::{DecodeLimits, DisplayMode},
-    loading::{append_skip_log, load_first_available, load_image, LoadRequest, PRODUCT_LIMITS},
+use moe_frame::loading::{
+    append_skip_log, load_first_available, load_image, DecodeLimits, DisplayMode, LoadRequest,
+    PRODUCT_LIMITS,
 };
 use std::{fs, path::PathBuf};
 

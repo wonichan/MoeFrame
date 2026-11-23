@@ -1,7 +1,8 @@
 use super::observation::{self, Observation};
 use eframe::egui;
-use moe_frame::decode_validation::{
-    CycleEvent, CycleSnapshot, DecodePhase, DecodeRequest, ValidationCycle,
+use moe_frame::{
+    decode_validation::{CycleEvent, CycleSnapshot, ValidationCycle},
+    loading::{DecodePhase, LoadRequest},
 };
 use std::{
     path::PathBuf,
@@ -14,7 +15,7 @@ use std::{
 };
 
 pub enum Command {
-    Configure(DecodeRequest),
+    Configure(LoadRequest),
     PreloadNext,
     Advance,
 }
