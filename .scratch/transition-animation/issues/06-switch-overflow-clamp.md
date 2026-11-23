@@ -4,7 +4,7 @@
 
 **Blocked by:** 05（已 resolved；本票是其几何口径的补充条款）
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Bug 与根因（2026-11-23 晚用户实机发现并附截图）
 
@@ -31,4 +31,5 @@
 ## Comments
 
 - 2026-11-23 用户拍板按最小平移方案修复并开工；完工后状态置 needs-info，随实机清单工单 06 一节验收。
+- 2026-11-23 用户实机验收通过（清单工单 06 一节 5 项全过），本票置 resolved，PR #10 合入 main。
 - 2026-11-23 实现完成（提交 `b093835`）：`observe()` 比例校正段在发尺寸命令后，按外框矩形（目标内尺寸 + 当前窗口边框差）判溢出，溢出才同帧追加一条 `SetOuterPosition` 并把落盘观察位置同步为平移后位置；纯函数帮手 `clamp_outer_position_into_work_area`（四边各留 6px、每轴只移越界一截、位移 ≤0.5px 不发命令）。本帧启动钳制已发位置命令时不叠加，留待下一帧按新位置再判。TDD 记录：新测试先行时 5 红（恰好放得下一条天然绿），实现后 window_geom 37 全绿；全量 333 通过 / 0 失败（基线 327 + 新增 6）；Windows 目标 `cargo check --all-targets`、`clippy -D warnings`、`fmt --check` 均通过。`scripts/check.sh` 本体未在 VM 运行（Windows 专用），沿用前票 Linux 测试副本 + Windows 目标替代口径，CI/实机以 check.sh 为准。
