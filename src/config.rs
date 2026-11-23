@@ -157,6 +157,10 @@ pub struct InstanceConfig {
     pub number: u32,
     pub image_folder: Option<String>,
     pub window: WindowConfig,
+    /// 「在运行」标记（多实例吸附专题工单 04）：实例启动置位、正常
+    /// 退出清除，崩溃残留不清；1 号实例启动时据它（配合编号锁的存
+    /// 活判断）决定自启恢复要拉起哪些编号。缺失按 false 处理。
+    pub running: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -307,6 +311,7 @@ impl Default for Config {
                 number: 1,
                 image_folder: None,
                 window: WindowConfig::default(),
+                running: false,
             }],
             playback: PlaybackConfig {
                 mode: PlaybackMode::Random,
@@ -459,6 +464,51 @@ impl ConfigStore {
             document["general"]["window_snap"] = value(enabled);
             config.general.window_snap = enabled;
         })
+    }
+
+    /// 保存本实例的「在运行」标记（多实例吸附专题工单 04）：启动
+    /// 置位、正常退出清除，走同一条写入纪律通道，只改本实例段的
+    /// running 一个键，其他实例段的标记原样保留。
+    pub fn set_instance_running(&mut self, running: bool) -> io::Result<()> {
+        let number = self.instance_number;
+        self.update(|document, config| {
+            let Some(entry) = instance_table_mut(document, number) else {
+                return;
+            };
+            entry["running"] = value(running);
+            if let Some(mine) = config
+                .instances
+                .iter_mut()
+                .find(|instance| instance.number == number)
+            {
+                mine.running = running;
+            }
+        })
+    }
+
+    /// 配置文件路径（工单 04）：宿主的全局同步轮询按它 stat 修改时间。
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// 全局同步的只读重读（多实例吸附专题工单 04）：重读磁盘当前
+    /// 文档，只把全局段（recursive / playback / display / general）
+    /// 的新值换进内存视图并返回全局快照；任何实例段（图库、几何、
+    /// 在运行标记）与实例段快照一律不碰，本方法永不写回磁盘——
+    /// 盘上文档的字段修复只在内存副本上做，落盘仍归各实例自己的
+    /// 写入纪律通道。读不出或不可解析时返回当前内存里的全局值。
+    pub fn reload_globals(&mut self) -> crate::global_sync::GlobalSettings {
+        if let Ok(text) = fs::read_to_string(&self.path) {
+            if let Ok(mut document) = text.parse::<DocumentMut>() {
+                let mut repaired = false;
+                let fresh = parse_document(&mut document, self.instance_number, &mut repaired);
+                self.config.recursive = fresh.recursive;
+                self.config.playback = fresh.playback;
+                self.config.display = fresh.display;
+                self.config.general = fresh.general;
+            }
+        }
+        crate::global_sync::GlobalSettings::from_config(&self.config)
     }
 
     /// 保存窗口几何（工单 20）：位置与尺寸跨启动恢复；x/y 为 None 时
@@ -839,10 +889,24 @@ fn repair_instances(
         };
         let window_table = ensure_table(entry, "window", repaired);
         let window = repair_window_table(window_table, repaired);
+        // 在运行标记（工单 04）：合法布尔保留；非布尔删键按不在运行
+        // 处理；缺失即不在运行（不强制写键，老段不因此被判修复）。
+        let running = match entry.get("running") {
+            Some(item) => match item.as_bool() {
+                Some(value) => value,
+                None => {
+                    entry.remove("running");
+                    *repaired = true;
+                    false
+                }
+            },
+            None => false,
+        };
         instances.push(InstanceConfig {
             number,
             image_folder,
             window,
+            running,
         });
         index += 1;
     }
@@ -858,6 +922,7 @@ fn repair_instances(
             number: instance_number,
             image_folder: None,
             window: WindowConfig::default(),
+            running: false,
         });
         *repaired = true;
     }
@@ -954,10 +1019,15 @@ fn refresh_instance_view(document: &DocumentMut, number: u32, config: &mut Confi
                 },
                 None => WindowConfig::default(),
             };
+            let running = entry
+                .get("running")
+                .and_then(Item::as_bool)
+                .unwrap_or(false);
             instances.push(InstanceConfig {
                 number: raw as u32,
                 image_folder,
                 window,
+                running,
             });
         }
     }

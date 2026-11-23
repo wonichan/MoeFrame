@@ -115,6 +115,143 @@ pub fn claim_instance(dir: &Path) -> io::Result<InstanceClaim> {
     claim_instance_with(dir, std::process::id(), &process_alive)
 }
 
+/// 生产口径的指定编号认领（工单 04 自启恢复）：见
+/// [`claim_specific_instance_with`]。
+pub fn claim_specific_instance(dir: &Path, number: u32) -> io::Result<InstanceClaim> {
+    claim_specific_instance_with(dir, number, std::process::id(), &process_alive)
+}
+
+/// 认领指定编号（工单 04）：自启恢复拉起的进程必须回到它原来的
+/// 编号，而不是认领最小空缺——本入口是受控的指定认领，与最小空缺
+/// 认领共用同一套锁纪律（create_new 原子占位、陈旧锁回收），不绕
+/// 过任何一步。指定编号被存活进程持有时返回 `AlreadyExists`，调用
+/// 方据此安静退出（绝不重复拉起一个真在运行的实例）。
+pub fn claim_specific_instance_with(
+    dir: &Path,
+    number: u32,
+    pid: u32,
+    is_alive: &dyn Fn(u32) -> bool,
+) -> io::Result<InstanceClaim> {
+    if number == 0 || number > MAX_INSTANCE_NUMBER {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "instance number out of range",
+        ));
+    }
+    fs::create_dir_all(dir)?;
+    // 陈旧锁删后重试同一编号；重试次数只防两个恢复进程在同一编号
+    // 上互相删锁的极端竞态，超限按被占用处理。
+    for _ in 0..8 {
+        match try_claim(dir, number, pid, is_alive)? {
+            TryClaim::Claimed(claim) => return Ok(claim),
+            TryClaim::HeldByLive => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "instance number held by a live process",
+                ));
+            }
+            TryClaim::StaleRemoved => continue,
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "instance number contended",
+    ))
+}
+
+/// 读编号锁的持有者 pid：无锁文件、内容为空窗或非法时返回 None
+/// （工单 04 自启恢复据此配合存活判断区分崩溃残留与真在运行）。
+pub fn lock_holder_pid(dir: &Path, number: u32) -> Option<u32> {
+    fs::read_to_string(dir.join(lock_file_name(number)))
+        .ok()?
+        .trim()
+        .parse::<u32>()
+        .ok()
+}
+
+/// 自启恢复裁决的一段输入事实（工单 04）：实例段编号、其「在运行」
+/// 标记与该编号锁的持有者 pid（宿主经 [`lock_holder_pid`] 供给）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoverySection {
+    pub number: u32,
+    pub running: bool,
+    pub holder_pid: Option<u32>,
+}
+
+/// 自启恢复裁决（工单 04，协调者定死口径）：任何 1 号实例启动时都
+/// 尝试恢复（不区分自启 / 手动启动），且必须幂等——只拉起「实例段
+/// 有在运行标记、且该编号当前没有活进程持有锁」的编号。持有者已
+/// 死或锁已失效（holder_pid 为 None）视为崩溃残留，可拉起；锁被存
+/// 活进程持有视为真在运行，绝不重复拉起；本实例自己的编号排除。
+/// 返回待拉起编号（升序）。
+pub fn recovery_targets(
+    sections: &[RecoverySection],
+    own_number: u32,
+    is_alive: &dyn Fn(u32) -> bool,
+) -> Vec<u32> {
+    let mut targets: Vec<u32> = sections
+        .iter()
+        .filter(|section| section.running && section.number != own_number)
+        .filter(|section| !section.holder_pid.is_some_and(is_alive))
+        .map(|section| section.number)
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+    targets
+}
+
+/// 一次编号认领尝试的三种结果。
+enum TryClaim {
+    Claimed(InstanceClaim),
+    /// 被存活进程持有。
+    HeldByLive,
+    /// 陈旧锁已删除，调用方应重试同一编号。
+    StaleRemoved,
+}
+
+/// 尝试认领一个编号：陈旧锁在本函数内删除并报 StaleRemoved，删
+/// 除竞态（锁刚被别人删掉）同样报 StaleRemoved 由调用方重试；其
+/// 他删除错误按被占用处理，避免在本编号上空转。
+fn try_claim(
+    dir: &Path,
+    number: u32,
+    pid: u32,
+    is_alive: &dyn Fn(u32) -> bool,
+) -> io::Result<TryClaim> {
+    let lock_path = dir.join(lock_file_name(number));
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(mut file) => {
+            if let Err(error) = write!(file, "{pid}") {
+                let _ = fs::remove_file(&lock_path);
+                return Err(error);
+            }
+            Ok(TryClaim::Claimed(InstanceClaim {
+                number,
+                lock_path,
+                released: false,
+            }))
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            if lock_is_stale(&lock_path, is_alive) {
+                match fs::remove_file(&lock_path) {
+                    Ok(()) => Ok(TryClaim::StaleRemoved),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        Ok(TryClaim::StaleRemoved)
+                    }
+                    Err(_) => Ok(TryClaim::HeldByLive),
+                }
+            } else {
+                Ok(TryClaim::HeldByLive)
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// 认领最小空缺编号：从 1 起逐个尝试 `create_new` 占位；撞上已
 /// 存在的锁时按陈旧口径裁决（持有者已死或内容非法 → 删后重试同
 /// 一编号；持有者存活 → 下一编号）。pid 与存活判断经参数注入，
@@ -127,39 +264,12 @@ pub fn claim_instance_with(
     fs::create_dir_all(dir)?;
     let mut number = 1u32;
     while number <= MAX_INSTANCE_NUMBER {
-        let lock_path = dir.join(lock_file_name(number));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-        {
-            Ok(mut file) => {
-                if let Err(error) = write!(file, "{pid}") {
-                    let _ = fs::remove_file(&lock_path);
-                    return Err(error);
-                }
-                return Ok(InstanceClaim {
-                    number,
-                    lock_path,
-                    released: false,
-                });
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                if lock_is_stale(&lock_path, is_alive) {
-                    // 陈旧锁：删掉后重试同一编号。若删除失败是因为
-                    // 另一个认领者刚抢先删掉/重建，同样重试本编号，
-                    // 由下一轮 create_new 与存活判断重新裁决；只有
-                    // 其他删除错误才跳号，避免在本编号上空转。
-                    match fs::remove_file(&lock_path) {
-                        Ok(()) => continue,
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                        Err(_) => number += 1,
-                    }
-                } else {
-                    number += 1;
-                }
-            }
-            Err(error) => return Err(error),
+        match try_claim(dir, number, pid, is_alive)? {
+            TryClaim::Claimed(claim) => return Ok(claim),
+            // 陈旧锁已删：重试同一编号，由下一轮 create_new 与存活
+            // 判断重新裁决。
+            TryClaim::StaleRemoved => continue,
+            TryClaim::HeldByLive => number += 1,
         }
     }
     Err(io::Error::other("no free instance number"))

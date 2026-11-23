@@ -150,3 +150,93 @@ fn initial_position_prefers_saved_then_cascades_from_the_previous_frame() {
     // 没有上一扇可参照：交给既有默认放置。
     assert_eq!(initial_position(None, None), None);
 }
+
+// ---------- 工单 04：认领指定编号与自启恢复裁决 ----------
+
+use moe_frame::instance::{
+    claim_specific_instance_with, lock_holder_pid, recovery_targets, RecoverySection,
+};
+
+#[test]
+fn claim_specific_takes_the_requested_number_and_leaves_gaps_free() {
+    let dir = temp_root("instance-claim", "specific");
+    let is_alive = |_pid: u32| true;
+    let third = claim_specific_instance_with(&dir, 3, 103, &is_alive).unwrap();
+    assert_eq!(third.number(), 3);
+    // 指定认领不占最小空缺：普通认领仍从 1 开始。
+    let first = claim_instance_with(&dir, 101, &is_alive).unwrap();
+    assert_eq!(first.number(), 1);
+}
+
+#[test]
+fn claim_specific_refuses_a_live_holder_and_succeeds_after_release() {
+    let dir = temp_root("instance-claim", "specific-live");
+    let is_alive = |_pid: u32| true;
+    let holder = claim_specific_instance_with(&dir, 2, 102, &is_alive).unwrap();
+    let refused = claim_specific_instance_with(&dir, 2, 202, &is_alive);
+    assert_eq!(
+        refused.err().expect("活进程持有时应拒绝").kind(),
+        std::io::ErrorKind::AlreadyExists,
+        "活进程持有时绝不重复认领同一编号"
+    );
+    holder.release();
+    let next = claim_specific_instance_with(&dir, 2, 202, &is_alive).unwrap();
+    assert_eq!(next.number(), 2);
+}
+
+#[test]
+fn claim_specific_recovers_a_stale_lock() {
+    let dir = temp_root("instance-claim", "specific-stale");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("instance-2.lock"), "999").unwrap();
+    let is_alive = |_pid: u32| false;
+    let claim = claim_specific_instance_with(&dir, 2, 202, &is_alive).unwrap();
+    assert_eq!(claim.number(), 2);
+    assert_eq!(lock_holder_pid(&dir, 2), Some(202));
+}
+
+#[test]
+fn lock_holder_pid_reads_the_holder_or_none() {
+    let dir = temp_root("instance-claim", "holder-pid");
+    assert_eq!(lock_holder_pid(&dir, 1), None, "无锁文件为 None");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("instance-1.lock"), "4242").unwrap();
+    assert_eq!(lock_holder_pid(&dir, 1), Some(4242));
+    fs::write(dir.join("instance-1.lock"), "garbage").unwrap();
+    assert_eq!(lock_holder_pid(&dir, 1), None, "内容非法为 None");
+}
+
+#[test]
+fn recovery_targets_only_marked_numbers_without_a_live_holder() {
+    let is_alive = |pid: u32| pid == 111;
+    let sections = vec![
+        RecoverySection {
+            number: 1,
+            running: true,
+            holder_pid: Some(111),
+        },
+        RecoverySection {
+            number: 2,
+            running: true,
+            holder_pid: Some(222),
+        },
+        RecoverySection {
+            number: 3,
+            running: true,
+            holder_pid: None,
+        },
+        RecoverySection {
+            number: 4,
+            running: false,
+            holder_pid: None,
+        },
+        RecoverySection {
+            number: 5,
+            running: true,
+            holder_pid: Some(111),
+        },
+    ];
+    // 1 号是自己（排除）；2 号持有者已死、3 号锁已失效 → 拉起；
+    // 4 号无在运行标记 → 不拉；5 号锁被活进程持有 → 绝不重复拉起。
+    assert_eq!(recovery_targets(&sections, 1, &is_alive), vec![2, 3]);
+}

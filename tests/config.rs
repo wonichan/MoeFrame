@@ -809,3 +809,31 @@ fn window_snap_bad_value_repairs_to_default_on() {
     let text = fs::read_to_string(&path).unwrap();
     assert!(text.contains("window_snap = true"), "{text}");
 }
+
+// ---------- 在运行标记（多实例吸附专题工单 04） ----------
+
+#[test]
+fn running_marker_round_trips_on_the_own_section_only() {
+    let path = temp_config("running-marker");
+    let mut a = ConfigStore::load_for_instance(&path, 1);
+    let mut b = ConfigStore::load_for_instance(&path, 2);
+    let marker = |store: &ConfigStore, number: u32| {
+        store
+            .config()
+            .instances
+            .iter()
+            .find(|i| i.number == number)
+            .map(|i| i.running)
+    };
+    assert_eq!(marker(&a, 1), Some(false), "默认不在运行");
+    a.set_instance_running(true).unwrap();
+    b.set_instance_running(true).unwrap();
+    let fresh_a = ConfigStore::load_for_instance(&path, 1);
+    assert_eq!(marker(&fresh_a, 1), Some(true));
+    assert_eq!(marker(&fresh_a, 2), Some(true), "A 的置位不改 B 的标记");
+    // 正常退出清除自己的标记，对方的残留标记原样保留（崩溃残留口径）。
+    a.set_instance_running(false).unwrap();
+    let fresh_b = ConfigStore::load_for_instance(&path, 2);
+    assert_eq!(marker(&fresh_b, 1), Some(false));
+    assert_eq!(marker(&fresh_b, 2), Some(true));
+}

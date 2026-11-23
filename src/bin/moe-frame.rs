@@ -236,17 +236,66 @@ fn run() -> Result<(), Box<dyn Error>> {
     // 实例编号认领（多实例吸附专题工单 01）：先在 app 目录用编号
     // 锁文件认领最小空缺编号，认领守卫活到 run() 返回（即进程退出）
     // 才释放；配置的图库与几何按这个编号读写自己的实例段。
-    let _instance_claim = moe_frame::instance::claim_instance(&directory)?;
+    // 工单 04：带 `--instance <编号>` 启动的是自启恢复拉起的进程，
+    // 走受控的指定编号认领；指定编号已被存活进程持有时安静退出
+    // （恢复是幂等的，绝不重复拉起真在运行的实例）。
+    let requested_number = std::env::args()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .find(|pair| pair[0] == "--instance")
+        .and_then(|pair| pair[1].parse::<u32>().ok())
+        .filter(|number| *number >= 1);
+    let _instance_claim = match requested_number {
+        Some(number) => match moe_frame::instance::claim_specific_instance(&directory, number) {
+            Ok(claim) => claim,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+            Err(error) => return Err(Box::new(error)),
+        },
+        None => moe_frame::instance::claim_instance(&directory)?,
+    };
     let instance_number = _instance_claim.number();
     startup_marker("instance-claimed", &format!("instance={instance_number}"));
     // 启动装配（工单 04 深挖）：配置加载/修复、自启对账与全部初值
     // 翻译归 config_sync，run() 只分发启动包。
-    let (sync, package) = ConfigSync::startup_for_instance(
+    let (mut sync, package) = ConfigSync::startup_for_instance(
         &config_path,
         &log_path,
         &mut RegAutostartStore,
         instance_number,
     );
+    // 「在运行」标记置位（工单 04）：走工单 01 写入通道只改本实例
+    // 段；正常退出时在 Effect::Exit 落地处清除，崩溃残留不清。
+    sync.set_running_marker(true);
+    // 自启恢复（工单 04，协调者定死口径）：任何 1 号实例启动时都
+    // 尝试恢复（不区分自启 / 手动启动），且幂等——只拉起「实例段
+    // 有在运行标记、且该编号当前没有活进程持有锁」的编号（编号锁
+    // + pid 存活判断区分崩溃残留与真在运行），拉起的新进程经
+    // `--instance` 认领指定编号、回到各自落盘位置。
+    if instance_number == 1 {
+        let sections: Vec<moe_frame::instance::RecoverySection> = sync
+            .instance_sections()
+            .iter()
+            .map(|section| moe_frame::instance::RecoverySection {
+                number: section.number,
+                running: section.running,
+                holder_pid: moe_frame::instance::lock_holder_pid(&directory, section.number),
+            })
+            .collect();
+        for target in moe_frame::instance::recovery_targets(
+            &sections,
+            instance_number,
+            &moe_frame::instance::process_alive,
+        ) {
+            startup_marker("autostart-recovery", &format!("instance={target}"));
+            spawn_frame_with_number(target);
+        }
+    }
+    // 全局同步基线（工单 04）：启动已应用的全局值 + 此刻的文件修改
+    // 时间，同步状态机据此只报基线之后的变化。
+    let sync_baseline_mtime = std::fs::metadata(&config_path)
+        .and_then(|meta| meta.modified())
+        .ok();
+    let sync_applied = sync.global_settings();
     let core_args = package.core;
     let host_init = package.host;
     let autostart_sync = package.autostart;
@@ -357,6 +406,11 @@ fn run() -> Result<(), Box<dyn Error>> {
                 snap_contacts: Vec::new(),
                 snap_anchor: Vec::new(),
                 solo_drag: false,
+                instance_number,
+                global_sync: moe_frame::global_sync::GlobalSyncState::new(
+                    sync_applied,
+                    sync_baseline_mtime,
+                ),
                 frame: host_init.frame,
                 frame_art_path: host_init.frame_art.clone(),
                 frame_art: FrameArtHost::NotSelected,

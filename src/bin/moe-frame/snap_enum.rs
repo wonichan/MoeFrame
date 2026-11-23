@@ -22,7 +22,7 @@ use moe_frame::{
 };
 use windows_sys::core::BOOL;
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, RECT},
+    Foundation::{HANDLE, HWND, LPARAM, RECT},
     Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST},
     System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -30,7 +30,8 @@ use windows_sys::Win32::{
     UI::{
         HiDpi::GetDpiForWindow,
         WindowsAndMessaging::{
-            EnumWindows, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+            EnumWindows, GetPropA, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
+            IsWindowVisible, PostMessageW, RemovePropA, SetPropA, WM_CLOSE,
         },
     },
 };
@@ -81,7 +82,7 @@ pub(crate) fn follow_partners(own_hwnd: isize, own_scale: f32) -> Vec<FollowPart
     hwnds
         .into_iter()
         .filter_map(|hwnd| {
-            let candidate = candidate_for_window(hwnd, own_hwnd, own_scale)?;
+            let candidate = candidate_for_window(hwnd, own_hwnd, own_scale, true)?;
             if is_partner_frame(&candidate, &own_exe) {
                 Some(FollowPartner {
                     id: (hwnd as usize) as u64,
@@ -96,6 +97,72 @@ pub(crate) fn follow_partners(own_hwnd: isize, own_scale: f32) -> Vec<FollowPart
             }
         })
         .collect()
+}
+
+/// 「退出全部相框」的窗口属性名（工单 04）：发起方在伙伴相框窗上
+/// 置此属性再发 WM_CLOSE——裸 WM_CLOSE 会被对方的「关闭即隐藏」
+/// 口径拦成隐藏，属性是对方区分「退出全部」与普通关闭的依据。这
+/// 仍是窗口枚举 + 窗口消息 / 属性的路子，不建任何 IPC 通道。
+const EXIT_ALL_PROP: &[u8] = b"MoeFrame.ExitAllRequested\0";
+
+/// 给全部伙伴相框窗发退出请求（工单 04「退出全部相框」）：枚举口
+/// 径同工单 02（标题 + exe 校验），但含隐藏到托盘的相框（不可见
+/// 窗口也要退）。逐窗置退出属性 + 投递 WM_CLOSE（唤醒对方事件循
+/// 环，对方读到属性后走自身正常退出路径）；返回发出请求的伙伴数。
+/// 发起方在本函数之后才退出自己（本实例最后退出）。
+pub(crate) fn exit_all_partners(own_hwnd: isize, own_scale: f32) -> usize {
+    if own_hwnd == 0 {
+        return 0;
+    }
+    let Some(own_exe) = std::env::current_exe()
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+    else {
+        return 0;
+    };
+    let mut hwnds: Vec<HWND> = Vec::new();
+    // SAFETY: 同 enumerate_candidates 的回调口径。
+    unsafe {
+        let _ = EnumWindows(Some(collect_window), &mut hwnds as *mut Vec<HWND> as LPARAM);
+    }
+    let mut sent = 0;
+    for hwnd in hwnds {
+        let Some(candidate) = candidate_for_window(hwnd, own_hwnd, own_scale, false) else {
+            continue;
+        };
+        if !is_partner_frame(&candidate, &own_exe) {
+            continue;
+        }
+        // SAFETY: hwnd 来自本次枚举；SetPropA / PostMessageW 对已销毁
+        // 窗口按失败返回处理，不解引用任何指针。属性名是纯 ASCII，
+        // 用 A 版属性 API 与字节串指针正好对上。
+        unsafe {
+            if SetPropA(hwnd, EXIT_ALL_PROP.as_ptr(), 1 as HANDLE) != 0 {
+                let _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                sent += 1;
+            }
+        }
+    }
+    sent
+}
+
+/// 本窗是否收到「退出全部」请求（工单 04）：读并清除退出属性，
+/// 读到即 true（宿主据此走自身正常退出路径）。每帧顺手查一次，
+/// 无请求时只是一次 GetPropW 查询。
+pub(crate) fn take_exit_all_request(own_hwnd: isize) -> bool {
+    if own_hwnd == 0 {
+        return false;
+    }
+    // SAFETY: 只查本进程自己窗口的属性；取到后立即移除，防重复触发。
+    unsafe {
+        let hwnd = own_hwnd as HWND;
+        if GetPropA(hwnd, EXIT_ALL_PROP.as_ptr()).is_null() {
+            false
+        } else {
+            let _ = RemovePropA(hwnd, EXIT_ALL_PROP.as_ptr());
+            true
+        }
+    }
 }
 
 /// 本窗所在屏的（显示器矩形，工作区矩形），逻辑像素：跟随引擎组
@@ -119,7 +186,7 @@ fn enumerate_candidates(own_hwnd: isize, own_scale: f32) -> Vec<CandidateWindow>
     }
     hwnds
         .into_iter()
-        .filter_map(|hwnd| candidate_for_window(hwnd, own_hwnd, own_scale))
+        .filter_map(|hwnd| candidate_for_window(hwnd, own_hwnd, own_scale, true))
         .collect()
 }
 
@@ -132,11 +199,16 @@ unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
 }
 
 /// 一扇窗口的候选事实；不可见或矩形/所在屏取不到的窗口跳过。
-fn candidate_for_window(hwnd: HWND, own_hwnd: isize, own_scale: f32) -> Option<CandidateWindow> {
+fn candidate_for_window(
+    hwnd: HWND,
+    own_hwnd: isize,
+    own_scale: f32,
+    require_visible: bool,
+) -> Option<CandidateWindow> {
     // SAFETY: hwnd 来自 EnumWindows 的本次枚举结果；以下调用都只读
     // 该窗口的公开属性，窗口在调用间被销毁时各 API 按失败返回处理。
     unsafe {
-        if IsWindowVisible(hwnd) == 0 {
+        if require_visible && IsWindowVisible(hwnd) == 0 {
             return None;
         }
         let scale = window_scale(hwnd, own_scale);

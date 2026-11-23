@@ -13,6 +13,7 @@ pub mod display_data;
 pub mod frame_art;
 pub mod frame_layout;
 pub mod gesture;
+pub mod global_sync;
 pub mod instance;
 pub mod library;
 pub mod loading;

@@ -239,6 +239,37 @@ impl ConfigSync {
         self.note_write_result("frame_art", result);
     }
 
+    // ---- 多实例收口（工单 04）：在运行标记、全局同步与恢复裁决 ----
+
+    /// 「在运行」标记写回（工单 04）：启动置位、正常退出清除，走
+    /// ConfigStore 的写入纪律通道只改本实例段的 running 键。
+    pub fn set_running_marker(&mut self, running: bool) {
+        let result = self.store.set_instance_running(running);
+        self.note_write_result("running_marker", result);
+    }
+
+    /// 全部实例段的当前快照（工单 04 自启恢复裁决的输入）：取内存
+    /// 视图——启动时即磁盘口径，恢复裁决只在启动瞬间做一次。
+    pub fn instance_sections(&self) -> Vec<crate::config::InstanceConfig> {
+        self.store.config().instances.clone()
+    }
+
+    /// 当前全局段快照（工单 04）：同步状态机的启动基线取它。
+    pub fn global_settings(&self) -> crate::global_sync::GlobalSettings {
+        crate::global_sync::GlobalSettings::from_config(self.store.config())
+    }
+
+    /// 全局同步的只读重读（工单 04）：只换全局段、不碰实例段、
+    /// 不写回，口径在 ConfigStore::reload_globals。
+    pub fn reload_globals(&mut self) -> crate::global_sync::GlobalSettings {
+        self.store.reload_globals()
+    }
+
+    /// 配置文件路径（工单 04）：宿主按它 stat 修改时间驱动同步轮询。
+    pub fn config_path(&self) -> &Path {
+        self.store.path()
+    }
+
     // ---- 注册表反向对齐的镜像落盘 ----
 
     pub fn save_autostart_mirror(&mut self, value: bool) {
