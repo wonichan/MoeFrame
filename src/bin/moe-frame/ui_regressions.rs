@@ -157,6 +157,7 @@ fn test_app(test_id: &str) -> (super::FrameApp, std::path::PathBuf) {
         autostart: package.autostart,
         autostart_store: super::RegAutostartStore,
         appearance: host.appearance,
+        window_snap: host.window_snap,
         frame: host.frame,
         frame_art_path: host.frame_art.clone(),
         frame_art: super::FrameArtHost::NotSelected,

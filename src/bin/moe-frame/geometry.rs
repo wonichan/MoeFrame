@@ -6,6 +6,20 @@ impl FrameApp {
     /// 返回本帧发出的内尺寸请求；调用者不能把请求视为已经落地。
     pub(crate) fn update_window_geometry(&mut self, ctx: &egui::Context) -> Option<[f32; 2]> {
         let pixels_per_point = ctx.pixels_per_point();
+        // 松手吸附（多实例吸附专题工单 02）：原生移动手势结束（模态
+        // 循环已退出、主键已抬起）的这一帧才组装吸附请求——先清手势
+        // 旗标，让本帧观察的 pointer_down 如实为假，几何机据此在松手
+        // 帧消费请求。开关关闭时不枚举、不组装。缩放手势不吸附。
+        let snap = if self.native_gesture == Some(NativeGesture::Move) && !primary_button_down() {
+            self.native_gesture = None;
+            if self.window_snap {
+                super::snap_enum::release_snap_request(self.hwnd, pixels_per_point)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let native_gesture = self.native_gesture.is_some();
         let (observation, focused) = ctx.input(|input| {
             let viewport = input.viewport();
@@ -28,6 +42,7 @@ impl FrameApp {
                     insets: self.effective_insets(
                         viewport.inner_rect.map(|rect| rect.width()).unwrap_or(0.0),
                     ),
+                    snap,
                 },
                 viewport.focused,
             )

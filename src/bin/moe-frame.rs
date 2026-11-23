@@ -37,6 +37,9 @@ mod input;
 #[path = "moe-frame/settings_ui.rs"]
 mod settings_ui;
 #[cfg(windows)]
+#[path = "moe-frame/snap_enum.rs"]
+mod snap_enum;
+#[cfg(windows)]
 #[path = "moe-frame/texture.rs"]
 mod texture;
 #[cfg(windows)]
@@ -348,6 +351,7 @@ fn run() -> Result<(), Box<dyn Error>> {
                 autostart: autostart_sync,
                 autostart_store: RegAutostartStore,
                 appearance: host_init.appearance,
+                window_snap: host_init.window_snap,
                 frame: host_init.frame,
                 frame_art_path: host_init.frame_art.clone(),
                 frame_art: FrameArtHost::NotSelected,

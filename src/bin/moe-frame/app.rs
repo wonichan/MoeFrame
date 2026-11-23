@@ -85,6 +85,11 @@ pub(crate) struct FrameApp {
     /// 参数、自定义相框图按分析结果缩放、回退时按内置默认画框）；
     /// 设置窗切换时更新本字段并经 config_sync 写回。
     pub(crate) appearance: AppearanceMode,
+    /// 窗口吸附全局开关的当前值（多实例吸附专题工单 02）：启动自
+    /// 配置全局段经 HostInit 读入，设置窗切换时更新本字段并经
+    /// config_sync 写回；松手组装吸附请求前读它（关闭时不枚举、
+    /// 不计算、不落位）。
+    pub(crate) window_snap: bool,
     /// 内置画框参数（V2 相框外观专题工单 02）：框体预设与框宽 /
     /// 卡纸宽；内置模式的内距（框宽 + 卡纸宽）与三层绘制都读它，
     /// 设置窗调整时更新本字段并经 config_sync 整组写回。

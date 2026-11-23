@@ -13,9 +13,10 @@ pub(crate) const INTERVAL_PRESETS: [(&str, i64); 6] = [
 ];
 /// 设置窗尺寸（工单 18；V2 相框外观工单 01 加「外观」组后高 700→750，
 /// 工单 02 加内置画框参数块后 750→830，切换动画专题工单 04 在播放组
-/// 加「切换动画」两行单选后 830→910）：
+/// 加「切换动画」两行单选后 830→910，多实例吸附专题工单 02 在窗尾
+/// 加「窗口吸附」开关一行后 910→940）：
 /// 建窗与屏幕居中计算共用。
-pub(crate) const SETTINGS_SIZE: [f32; 2] = [420.0, 910.0];
+pub(crate) const SETTINGS_SIZE: [f32; 2] = [420.0, 940.0];
 /// 设置窗的视口标识（工单 18）：全程只有一块。
 pub(crate) fn settings_viewport_id() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("moe-frame-settings")
@@ -58,6 +59,7 @@ impl FrameApp {
             animation: self.core.animation(),
             appearance: self.appearance,
             frame: self.frame,
+            window_snap: self.window_snap,
         }
     }
     pub(crate) fn effective_folder_text(&self) -> String {
@@ -142,6 +144,13 @@ impl FrameApp {
                 SessionAction::ApplyAutostart(target) => {
                     self.apply_autostart(target);
                 }
+                SessionAction::ApplyWindowSnap(target) => {
+                    // 窗口吸附开关是宿主状态：改当前值并经 config_sync
+                    // 写回全局段；本进程下一次松手起按新值（跨实例实时
+                    // 同步归工单 04）。
+                    self.window_snap = target;
+                    self.sync.save_window_snap(target);
+                }
                 SessionAction::Rescan => {
                     let effects = self.core.handle(Intent::RescanRequested);
                     self.dispatch(ctx, effects);
@@ -220,6 +229,7 @@ impl FrameApp {
         };
         let interval_now = self.core.interval_secs();
         let autostart_now = self.autostart.enabled();
+        let window_snap_now = self.window_snap;
         let current_showing = match self.core.view() {
             View::Showing(path) => Some(path),
             View::Empty => None,
@@ -415,6 +425,10 @@ impl FrameApp {
                 let mut autostart_checked = autostart_now;
                 if ui.checkbox(&mut autostart_checked, "开机自启").clicked() {
                     picks_ref.autostart = Some(autostart_checked);
+                }
+                let mut window_snap_checked = window_snap_now;
+                if ui.checkbox(&mut window_snap_checked, "窗口吸附").clicked() {
+                    picks_ref.window_snap = Some(window_snap_checked);
                 }
             });
         });

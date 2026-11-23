@@ -34,6 +34,9 @@ pub struct EffectiveValues {
     pub appearance: AppearanceMode,
     /// 内置画框参数（工单 02）：预设与双滑杆的同值守卫以它为准。
     pub frame: BuiltinFrame,
+    /// 窗口吸附全局开关（多实例吸附专题工单 02）：点选的同值守卫
+    /// 以它为准，生效值归宿主持（启动自配置全局段读入）。
+    pub window_snap: bool,
 }
 
 /// 打开请求的裁决。
@@ -54,6 +57,8 @@ pub struct Picks {
     pub interval: Option<i64>,
     pub restore_default: bool,
     pub autostart: Option<bool>,
+    /// 窗口吸附开关点选（多实例吸附专题工单 02）：即时控件，与自启同规。
+    pub window_snap: Option<bool>,
     pub rescan: bool,
     pub folder_pick: bool,
     pub frame_art_pick: bool,
@@ -69,7 +74,7 @@ pub struct Picks {
 
 /// 本帧要由宿主执行的动作，按返回顺序执行。顺序即定案的应用顺序：
 /// 回车结算 → 模式 → 切换动画 → 外观 → 内置画框参数（预设 → 框宽 → 卡纸宽）→
-/// 间隔预设 → 恢复默认 → 自启 → 当前图三项 →
+/// 间隔预设 → 恢复默认 → 自启 → 窗口吸附开关 → 当前图三项 →
 /// 关闭/重扫/选文件夹/选相框图（后四者否决待结算）→ 帧尾待结算结算。
 #[derive(Clone, Debug, PartialEq)]
 pub enum SessionAction {
@@ -81,6 +86,7 @@ pub enum SessionAction {
     ApplyIntervalPreset(i64),
     RestoreDefaultGeometry,
     ApplyAutostart(bool),
+    ApplyWindowSnap(bool),
     OpenCurrentImage,
     OpenCurrentFolder,
     CopyCurrentPath,
@@ -124,6 +130,8 @@ pub struct SettingsSession {
     appearance_now: Option<AppearanceMode>,
     /// 帧首快照的内置画框参数：预设与滑杆点选的同值守卫用（同规）。
     frame_now: Option<BuiltinFrame>,
+    /// 帧首快照的窗口吸附开关：开关点选的同值守卫用（同规）。
+    window_snap_now: Option<bool>,
 }
 
 impl SettingsSession {
@@ -160,6 +168,7 @@ impl SettingsSession {
         self.animation_now = Some(effective.animation);
         self.appearance_now = Some(effective.appearance);
         self.frame_now = Some(effective.frame);
+        self.window_snap_now = Some(effective.window_snap);
         OpenDecision::Opened
     }
 
@@ -171,6 +180,7 @@ impl SettingsSession {
         self.animation_now = Some(effective.animation);
         self.appearance_now = Some(effective.appearance);
         self.frame_now = Some(effective.frame);
+        self.window_snap_now = Some(effective.window_snap);
         if self.path.base != effective.folder_text {
             self.path.base = effective.folder_text.clone();
             self.path.text = effective.folder_text.clone();
@@ -316,6 +326,13 @@ impl SettingsSession {
         }
         if let Some(target) = picks.autostart {
             actions.push(SessionAction::ApplyAutostart(target));
+        }
+        if let Some(target) = picks.window_snap {
+            // 窗口吸附开关与自启同为即时开关：同值守卫，点选后内部推进。
+            if self.window_snap_now != Some(target) {
+                self.window_snap_now = Some(target);
+                actions.push(SessionAction::ApplyWindowSnap(target));
+            }
         }
         // 当前图三项是即时动作：不碰草稿与待结算，只按点选产出动作，
         // 作用对象由宿主执行时按核心当前视图取（与渲染同帧同图）。

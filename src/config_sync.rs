@@ -54,6 +54,10 @@ pub struct HostInit {
     /// 本进程的实例编号（多实例吸附专题工单 01）：宿主装配与日志
     /// 辨识用；几何与图库的读写段由 ConfigStore 按此编号定位。
     pub instance_number: u32,
+    /// 窗口吸附全局开关（多实例吸附专题工单 02）：宿主持有当前值，
+    /// 设置窗切换经 save_window_snap 写回；判定逻辑只读本进程这份
+    /// 启动值与自身切换（跨实例实时同步归工单 04）。
+    pub window_snap: bool,
 }
 
 /// 启动包：run() 拿到后只分发，不再逐字段翻译配置。
@@ -146,6 +150,7 @@ impl ConfigSync {
             frame_art: config.display.frame_art.as_ref().map(PathBuf::from),
             window,
             instance_number,
+            window_snap: config.general.window_snap,
         };
         (
             sync,
@@ -217,6 +222,13 @@ impl ConfigSync {
     pub fn save_builtin_frame(&mut self, frame: BuiltinFrame) {
         let result = self.store.set_builtin_frame(frame);
         self.note_write_result("builtin_frame", result);
+    }
+
+    /// 窗口吸附开关写回（多实例吸附专题工单 02）：宿主切换即落盘，
+    /// 只改全局段的 window_snap 一个键。
+    pub fn save_window_snap(&mut self, enabled: bool) {
+        let result = self.store.set_window_snap(enabled);
+        self.note_write_result("window_snap", result);
     }
 
     /// 相框图路径写回（V2 相框外观专题工单 03）：宿主选定即落盘，

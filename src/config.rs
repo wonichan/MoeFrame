@@ -82,6 +82,7 @@ mat_width = 18.0
 
 [general]
 autostart = false
+window_snap = true
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,6 +267,10 @@ pub struct DisplayConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeneralConfig {
     pub autostart: bool,
+    /// 窗口吸附全局开关（多实例吸附专题工单 02）：默认开；关掉后
+    /// 松手不做任何吸附计算与落位（跨实例实时同步归工单 04，本
+    /// 字段只按本进程启动/重读到的值生效）。
+    pub window_snap: bool,
     /// 上次成功显示的图片（工单 13 跨启动恢复）。
     pub current_image: Option<String>,
     /// 本轮进度：本轮成功显示过的路径（工单 13，与历史分开保存，ADR-0002）。
@@ -317,6 +322,7 @@ impl Default for Config {
             },
             general: GeneralConfig {
                 autostart: false,
+                window_snap: true,
                 current_image: None,
                 round_seen: Vec::new(),
                 history: Vec::new(),
@@ -442,6 +448,16 @@ impl ConfigStore {
         self.update(|document, config| {
             document["general"]["autostart"] = value(enabled);
             config.general.autostart = enabled;
+        })
+    }
+
+    /// 保存窗口吸附全局开关（多实例吸附专题工单 02）：只改
+    /// general.window_snap 一个键，走既有写入纪律（重读磁盘后只施
+    /// 加本次改动），不开第二条覆写路径。
+    pub fn set_window_snap(&mut self, enabled: bool) -> io::Result<()> {
+        self.update(|document, config| {
+            document["general"]["window_snap"] = value(enabled);
+            config.general.window_snap = enabled;
         })
     }
 
@@ -701,6 +717,7 @@ fn parse_document(document: &mut DocumentMut, instance_number: u32, repaired: &m
 
     let general_table = ensure_table(root, "general", repaired);
     let autostart = repair_bool(general_table, "autostart", false, repaired);
+    let window_snap = repair_bool(general_table, "window_snap", true, repaired);
     let current_image = match general_table.get("current_image") {
         Some(item) => match item.as_str() {
             Some(text) => Some(text.to_owned()),
@@ -745,6 +762,7 @@ fn parse_document(document: &mut DocumentMut, instance_number: u32, repaired: &m
         },
         general: GeneralConfig {
             autostart,
+            window_snap,
             current_image,
             round_seen,
             history,

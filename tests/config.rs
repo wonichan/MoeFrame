@@ -784,3 +784,28 @@ fn writing_my_section_never_changes_the_other_instances_fields() {
     let b_after = after.iter().find(|i| i.number == 2).unwrap();
     assert_eq!(b_before, b_after, "A 的写回不得改 B 段的任何字段");
 }
+
+// ---------- 窗口吸附开关（多实例吸附专题工单 02） ----------
+
+#[test]
+fn window_snap_defaults_on_and_round_trips() {
+    let path = temp_config("window-snap");
+    let mut store = ConfigStore::load(&path);
+    assert!(store.config().general.window_snap, "默认开");
+    store.set_window_snap(false).unwrap();
+    let reparsed = ConfigStore::load(&path);
+    assert!(!reparsed.config().general.window_snap);
+    // 只动 general.window_snap 一个键：其余全局字段原样。
+    assert_eq!(reparsed.config().playback.interval_secs, 30);
+    assert!(!reparsed.config().general.autostart);
+}
+
+#[test]
+fn window_snap_bad_value_repairs_to_default_on() {
+    let path = temp_config("window-snap-repair");
+    fs::write(&path, "[general]\nwindow_snap = \"yes\"\n").unwrap();
+    let store = ConfigStore::load(&path);
+    assert!(store.config().general.window_snap, "非法值修复回默认开");
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("window_snap = true"), "{text}");
+}

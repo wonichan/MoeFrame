@@ -403,3 +403,20 @@ fn an_instance_with_saved_geometry_opens_exactly_there_without_cascade() {
     assert_eq!(package.host.saved_position, Some([50.0, 60.0]));
     assert_eq!(package.host.saved_geom, (Some(50), Some(60), 480, 320));
 }
+
+#[test]
+fn window_snap_flows_through_startup_and_mirror_writes() {
+    // 窗口吸附开关（多实例吸附专题工单 02）：全局段、默认开；启动包
+    // 携带初值，宿主切换经 save_window_snap 走既有写入纪律写回。
+    let root = temp_root("config-sync", "window-snap");
+    let (config_path, log_path) = paths(&root);
+    let mut registry = FakeStore::default();
+    let (mut sync, package) = ConfigSync::startup(&config_path, &log_path, &mut registry);
+    assert!(package.host.window_snap, "默认开");
+    sync.save_window_snap(false);
+    let config = ConfigStore::load(&config_path).config().clone();
+    assert!(!config.general.window_snap);
+    let mut registry = FakeStore::default();
+    let (_sync, package) = ConfigSync::startup(&config_path, &log_path, &mut registry);
+    assert!(!package.host.window_snap, "重读后按落盘值");
+}
