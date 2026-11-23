@@ -663,3 +663,124 @@ fn a_non_string_frame_art_path_is_repaired_to_none() {
     assert!(!text.contains("frame_art"), "{text}");
     assert!(text.contains("show_filename = true"), "{text}");
 }
+
+// ---------- 多实例吸附专题工单 01：实例段、迁移与写入纪律 ----------
+
+fn instance_sections(text: &str) -> usize {
+    text.matches("[[instances]]").count()
+}
+
+#[test]
+fn legacy_config_migrates_into_instance_one_exactly_once() {
+    let path = temp_config("migrate-once");
+    fs::write(
+        &path,
+        "image_folder = \"D:\\\\图库\"\nrecursive = true\n\n[window]\nx = 300\ny = 200\nwidth = 640\nheight = 400\n",
+    )
+    .unwrap();
+    let store = ConfigStore::load_for_instance(&path, 1);
+    assert_eq!(store.config().image_folder.as_deref(), Some("D:\\图库"));
+    assert_eq!(
+        (
+            store.config().window.x,
+            store.config().window.y,
+            store.config().window.width,
+            store.config().window.height
+        ),
+        (Some(300), Some(200), 640, 400),
+        "1 号继承老配置的位置与图库"
+    );
+    let text = fs::read_to_string(&path).unwrap();
+    assert_eq!(instance_sections(&text), 1, "迁移生成一段：{text}");
+    // 重复启动不重复迁移、不丢数据。
+    let store = ConfigStore::load_for_instance(&path, 1);
+    assert_eq!(store.config().image_folder.as_deref(), Some("D:\\图库"));
+    let text = fs::read_to_string(&path).unwrap();
+    assert_eq!(instance_sections(&text), 1, "只迁移一次：{text}");
+    // 默认 load 即 1 号，行为一致。
+    let store = ConfigStore::load(&path);
+    assert_eq!(store.config().instance_number, 1);
+    assert_eq!(store.config().window.x, Some(300));
+}
+
+#[test]
+fn a_second_instance_does_not_inherit_instance_ones_folder_or_geometry() {
+    let path = temp_config("migrate-second");
+    fs::write(
+        &path,
+        "image_folder = \"D:\\\\图库\"\n\n[window]\nx = 300\ny = 200\nwidth = 640\nheight = 400\n",
+    )
+    .unwrap();
+    let store = ConfigStore::load_for_instance(&path, 2);
+    assert_eq!(store.config().instance_number, 2);
+    assert_eq!(store.config().image_folder, None);
+    assert_eq!(store.config().window.x, None);
+    assert_eq!(store.config().window.width, 480);
+    // 迁移出的一号段仍在，数值不被二号的出现改动。
+    let first = ConfigStore::load_for_instance(&path, 1);
+    assert_eq!(first.config().image_folder.as_deref(), Some("D:\\图库"));
+    assert_eq!(first.config().window.x, Some(300));
+    assert_eq!(first.config().instances.len(), 2);
+}
+
+#[test]
+fn interleaved_writes_from_two_instances_keep_both_changes() {
+    let path = temp_config("interleave");
+    let mut a = ConfigStore::load_for_instance(&path, 1);
+    let mut b = ConfigStore::load_for_instance(&path, 2);
+    // 交错写回：A 改图库、B 改几何、A 再改全局间隔、B 再改图库。
+    // 旧的整文件覆写口径下，后写者会凭内存副本回滚先写者的改动。
+    a.set_image_folder(Some("D:\\A 图库")).unwrap();
+    b.set_window_geometry(Some(700), Some(500), 640, 400)
+        .unwrap();
+    a.set_interval_secs(99).unwrap();
+    b.set_image_folder(Some("D:\\B 图库")).unwrap();
+    a.set_window_geometry(Some(10), Some(20), 480, 320).unwrap();
+
+    let a = ConfigStore::load_for_instance(&path, 1);
+    assert_eq!(a.config().image_folder.as_deref(), Some("D:\\A 图库"));
+    assert_eq!(
+        (a.config().window.x, a.config().window.y),
+        (Some(10), Some(20))
+    );
+    assert_eq!(a.config().playback.interval_secs, 99, "全局改动不被回滚");
+    let b = ConfigStore::load_for_instance(&path, 2);
+    assert_eq!(b.config().image_folder.as_deref(), Some("D:\\B 图库"));
+    assert_eq!(
+        (
+            b.config().window.x,
+            b.config().window.y,
+            b.config().window.width,
+            b.config().window.height
+        ),
+        (Some(700), Some(500), 640, 400),
+        "B 的几何不被 A 的写回回滚"
+    );
+    assert_eq!(b.config().playback.interval_secs, 99);
+}
+
+#[test]
+fn writing_my_section_never_changes_the_other_instances_fields() {
+    let path = temp_config("section-isolation");
+    {
+        let mut b = ConfigStore::load_for_instance(&path, 2);
+        b.set_image_folder(Some("D:\\B 图库")).unwrap();
+        b.set_window_geometry(Some(700), Some(500), 640, 400)
+            .unwrap();
+    }
+    let before = ConfigStore::load_for_instance(&path, 2)
+        .config()
+        .instances
+        .clone();
+    let mut a = ConfigStore::load_for_instance(&path, 1);
+    a.set_image_folder(Some("D:\\A 图库")).unwrap();
+    a.set_window_geometry(Some(1), Some(2), 800, 600).unwrap();
+    a.set_interval_secs(45).unwrap();
+    let after = ConfigStore::load_for_instance(&path, 1)
+        .config()
+        .instances
+        .clone();
+    let b_before = before.iter().find(|i| i.number == 2).unwrap();
+    let b_after = after.iter().find(|i| i.number == 2).unwrap();
+    assert_eq!(b_before, b_after, "A 的写回不得改 B 段的任何字段");
+}

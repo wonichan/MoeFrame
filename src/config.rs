@@ -4,6 +4,15 @@
 //! 整个文件不可解析时恢复为合法默认配置，不崩溃。两个 P1 键（`pause_on_hover`、
 //! `show_filename`）只保存与修复，不驱动行为；`animation` 已由切换动画专题
 //! 工单 01 转正，驱动核心转场。
+//!
+//! 多实例口径（多实例吸附专题工单 01）：一份文件加 `[[instances]]`
+//! 实例段——每段按实例编号存该实例的 `image_folder` 与 `window`
+//! 几何，其余段（recursive / playback / display / general）是全局
+//! 共享设置。`Config` 里的 `image_folder` / `window` 永远指本实例
+//! 那一段；写入纪律是每次写回先重读磁盘当前文档，只改自己那一段
+//! 与全局段中本次确实改动的键，禁止凭内存副本整文件覆写（双开时
+//! 后写者不得回滚先写者的字段）。老配置没有实例段时迁移一次：
+//! 1 号继承顶层 `image_folder` 与 `[window]`，原字段随之移除。
 
 use crate::{playlist::HISTORY_LIMIT, window_geom::Insets};
 use std::{fs, io, path::Path};
@@ -129,6 +138,26 @@ pub struct WindowConfig {
     pub height: u32,
 }
 
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self {
+            x: None,
+            y: None,
+            width: 480,
+            height: 320,
+        }
+    }
+}
+
+/// 一个实例段的落盘内容（多实例吸附专题工单 01）：编号、图库与
+/// 窗口几何。全局共享设置不在段里，仍在 `Config` 的其余字段。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstanceConfig {
+    pub number: u32,
+    pub image_folder: Option<String>,
+    pub window: WindowConfig,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaybackConfig {
     pub mode: PlaybackMode,
@@ -247,9 +276,16 @@ pub struct GeneralConfig {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
+    /// 本实例的图库：取自本实例的实例段，不是全局字段。
     pub image_folder: Option<String>,
     pub recursive: bool,
+    /// 本实例的窗口几何：取自本实例的实例段。
     pub window: WindowConfig,
+    /// 本进程的实例编号（身份）：本配置视图所属的实例段编号。
+    pub instance_number: u32,
+    /// 全部实例段的快照（含本实例段）：供宿主找上一扇的位置等
+    /// 只读用途；写回永远只改本实例段，不经这份快照落盘。
+    pub instances: Vec<InstanceConfig>,
     pub playback: PlaybackConfig,
     pub display: DisplayConfig,
     pub general: GeneralConfig,
@@ -260,12 +296,13 @@ impl Default for Config {
         Self {
             image_folder: None,
             recursive: true,
-            window: WindowConfig {
-                x: None,
-                y: None,
-                width: 480,
-                height: 320,
-            },
+            window: WindowConfig::default(),
+            instance_number: 1,
+            instances: vec![InstanceConfig {
+                number: 1,
+                image_folder: None,
+                window: WindowConfig::default(),
+            }],
             playback: PlaybackConfig {
                 mode: PlaybackMode::Random,
                 interval_secs: DEFAULT_INTERVAL_SECS,
@@ -289,15 +326,32 @@ impl Default for Config {
 }
 
 /// 持有已解析文档的配置存储：保存时只改目标字段，其余内容（合法手改、未知键、注释）原样保留。
+///
+/// 写入纪律（多实例吸附专题工单 01）：内存里的文档只是上次读写的
+/// 快照，绝不直接拿它覆写磁盘。每次写回都先重读磁盘当前文档、在
+/// 新文档上重新解析出配置视图，再只施加本次改动后写回——另一个
+/// 实例刚写下的字段（它的实例段、它改的全局键）因此原样保留。
+/// 磁盘文档读不出或不可解析时才退回内存快照，避免把可读性问题
+/// 变成数据丢失。
 pub struct ConfigStore {
     path: std::path::PathBuf,
     document: DocumentMut,
     config: Config,
+    instance_number: u32,
 }
 
 impl ConfigStore {
-    /// 读取并修复配置；文件缺失或不可解析时得到默认配置。修复结果立即写回。
+    /// 以 1 号实例身份读取并修复配置（单实例口径，与多实例前的
+    /// 行为一致）。
     pub fn load(path: &Path) -> Self {
+        Self::load_for_instance(path, 1)
+    }
+
+    /// 读取并修复配置；文件缺失或不可解析时得到默认配置。修复结果立即写回。
+    /// 本实例的图库与几何取自编号对应的实例段；没有实例段的老
+    /// 配置在此迁移一次（1 号继承顶层图库与 `[window]`）。
+    pub fn load_for_instance(path: &Path, instance_number: u32) -> Self {
+        let instance_number = instance_number.max(1);
         let mut repaired = false;
         let mut document = match fs::read_to_string(path) {
             Ok(text) => match text.parse::<DocumentMut>() {
@@ -312,11 +366,12 @@ impl ConfigStore {
                 default_document()
             }
         };
-        let config = repair_document(&mut document, &mut repaired);
+        let config = parse_document(&mut document, instance_number, &mut repaired);
         let store = Self {
             path: path.to_owned(),
             document,
             config,
+            instance_number,
         };
         if repaired {
             // A failed write-back must not crash startup; the in-memory config is already legal.
@@ -329,26 +384,54 @@ impl ConfigStore {
         &self.config
     }
 
-    /// 单字段保存的共用骨架：改文档与内存模型后写回，其余字段原样保留。
+    /// 本存储所属的实例编号。
+    pub fn instance_number(&self) -> u32 {
+        self.instance_number
+    }
+
+    /// 单字段保存的共用骨架（写入纪律的唯一通道）：重读磁盘当前
+    /// 文档 → 在新文档上重解析配置视图 → 只施加本次改动 → 写回。
+    /// 几何落盘、设置落盘、退出冲刷与迁移写回全部经这里或 load 的
+    /// 修复写回，不存在第二条整文件覆写路径。
     fn update(
         &mut self,
         apply: impl FnOnce(&mut toml_edit::DocumentMut, &mut Config),
     ) -> io::Result<()> {
-        apply(&mut self.document, &mut self.config);
+        let mut document = match fs::read_to_string(&self.path) {
+            Ok(text) => match text.parse::<DocumentMut>() {
+                Ok(document) => document,
+                Err(_) => self.document.clone(),
+            },
+            Err(_) => self.document.clone(),
+        };
+        let mut repaired = false;
+        let mut config = parse_document(&mut document, self.instance_number, &mut repaired);
+        apply(&mut document, &mut config);
+        // apply 只改文档与视图的便捷字段；实例段快照以改后的文档为准重读。
+        refresh_instance_view(&document, self.instance_number, &mut config);
+        self.document = document;
+        self.config = config;
         self.write()
     }
 
-    /// 保存图片文件夹（首次选择或菜单重选时调用），其余字段不动。
+    /// 保存图片文件夹（首次选择或菜单重选时调用）：只改本实例段
+    /// 的 `image_folder`，其余实例段与全局字段不动。
     pub fn set_image_folder(&mut self, folder: Option<&str>) -> io::Result<()> {
         let folder = folder.map(str::to_owned);
-        self.update(|document, config| match &folder {
-            Some(folder) => {
-                document["image_folder"] = value(folder.clone());
-                config.image_folder = Some(folder.clone());
-            }
-            None => {
-                document.remove("image_folder");
-                config.image_folder = None;
+        let number = self.instance_number;
+        self.update(|document, config| {
+            let Some(entry) = instance_table_mut(document, number) else {
+                return;
+            };
+            match &folder {
+                Some(folder) => {
+                    entry["image_folder"] = value(folder.clone());
+                    config.image_folder = Some(folder.clone());
+                }
+                None => {
+                    entry.remove("image_folder");
+                    config.image_folder = None;
+                }
             }
         })
     }
@@ -363,7 +446,8 @@ impl ConfigStore {
     }
 
     /// 保存窗口几何（工单 20）：位置与尺寸跨启动恢复；x/y 为 None 时
-    /// 删除对应键（回到「无存档位置」）。只动 window 表，其余字段保留。
+    /// 删除对应键（回到「无存档位置」）。只动本实例段的 window 表，
+    /// 其余实例段与全局字段保留。
     pub fn set_window_geometry(
         &mut self,
         x: Option<i64>,
@@ -371,19 +455,23 @@ impl ConfigStore {
         width: u32,
         height: u32,
     ) -> io::Result<()> {
+        let number = self.instance_number;
         self.update(|document, config| {
+            let Some(entry) = instance_table_mut(document, number) else {
+                return;
+            };
+            let mut ignored = false;
+            let window = ensure_table(entry, "window", &mut ignored);
             for (key, val) in [("x", x), ("y", y)] {
                 match val {
-                    Some(v) => document["window"][key] = value(v),
+                    Some(v) => window[key] = value(v),
                     None => {
-                        if let Some(table) = document["window"].as_table_mut() {
-                            table.remove(key);
-                        }
+                        window.remove(key);
                     }
                 }
             }
-            document["window"]["width"] = value(i64::from(width));
-            document["window"]["height"] = value(i64::from(height));
+            window["width"] = value(i64::from(width));
+            window["height"] = value(i64::from(height));
             config.window.x = x;
             config.window.y = y;
             config.window.width = width;
@@ -501,32 +589,19 @@ fn default_document() -> DocumentMut {
 }
 
 /// 逐字段校验：合法值保留，缺失或非法值写入默认值/钳制值并标记 repaired。
-fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
+/// 实例段在此一并处理：无实例段时迁移一次（见 repair_instances），
+/// 本实例段缺失时补一段默认值；返回的视图里图库与几何取本实例段。
+fn parse_document(document: &mut DocumentMut, instance_number: u32, repaired: &mut bool) -> Config {
     let root = document.as_table_mut();
 
-    let image_folder = match root.get("image_folder") {
-        Some(item) => match item.as_str() {
-            Some(text) => Some(text.to_owned()),
-            None => {
-                root.remove("image_folder");
-                *repaired = true;
-                None
-            }
-        },
-        None => None,
-    };
     let recursive = repair_bool(root, "recursive", true, repaired);
-
-    let window_table = ensure_table(root, "window", repaired);
-    if window_table.remove("lock_aspect").is_some() {
-        *repaired = true;
-    }
-    let window = WindowConfig {
-        x: optional_i64(window_table, "x"),
-        y: optional_i64(window_table, "y"),
-        width: repair_dimension(window_table, "width", 480, repaired),
-        height: repair_dimension(window_table, "height", 320, repaired),
-    };
+    let instances = repair_instances(root, instance_number, repaired);
+    let mine = instances
+        .iter()
+        .find(|instance| instance.number == instance_number)
+        .expect("repair_instances ensures the own section exists");
+    let image_folder = mine.image_folder.clone();
+    let window = mine.window.clone();
 
     let playback_table = ensure_table(root, "playback", repaired);
     let mode = match playback_table.get("mode").and_then(Item::as_str) {
@@ -650,6 +725,8 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
         image_folder,
         recursive,
         window,
+        instance_number,
+        instances,
         playback: PlaybackConfig {
             mode,
             interval_secs,
@@ -673,6 +750,204 @@ fn repair_document(document: &mut DocumentMut, repaired: &mut bool) -> Config {
             history,
         },
     }
+}
+
+/// 一个 window 表的字段修复（顶层迁移源与实例段共用）：x/y 非整数
+/// 按无存档处理，宽高非法回默认，旧 `lock_aspect` 键移除。
+fn repair_window_table(table: &mut Table, repaired: &mut bool) -> WindowConfig {
+    if table.remove("lock_aspect").is_some() {
+        *repaired = true;
+    }
+    WindowConfig {
+        x: optional_i64(table, "x"),
+        y: optional_i64(table, "y"),
+        width: repair_dimension(table, "width", 480, repaired),
+        height: repair_dimension(table, "height", 320, repaired),
+    }
+}
+
+/// 实例段的修复与迁移：返回全部实例段的解析快照，并保证编号为
+/// `instance_number` 的段存在（缺失时补默认段并标记 repaired）。
+///
+/// 迁移（只发生一次）：文档里没有 `instances` 数组时，把顶层
+/// `image_folder` 与 `[window]` 按字段修复口径读出、写成 1 号段，
+/// 再移除顶层两处原字段——之后文档已有实例段，本函数不会再走
+/// 迁移分支。`instances` 不是数组表时整段丢弃后按无实例段处理。
+/// 段内修复：编号缺失/非整数/小于 1/与先出现段重复的段整段丢弃；
+/// 图库非字符串删键按未选；window 表走 repair_window_table。
+fn repair_instances(
+    root: &mut Table,
+    instance_number: u32,
+    repaired: &mut bool,
+) -> Vec<InstanceConfig> {
+    if !matches!(root.get("instances"), Some(Item::ArrayOfTables(_))) {
+        if root.get("instances").is_some() {
+            root.remove("instances");
+            *repaired = true;
+        }
+        migrate_legacy_into_instance_one(root, repaired);
+    }
+    let array = root["instances"]
+        .as_array_of_tables_mut()
+        .expect("instances array ensured by migration");
+    let mut instances: Vec<InstanceConfig> = Vec::new();
+    let mut index = 0;
+    while index < array.len() {
+        let entry = array.get_mut(index).expect("index within array");
+        let number = entry.get("number").and_then(Item::as_integer);
+        let number = match number {
+            Some(raw) if raw >= 1 && raw <= i64::from(u32::MAX) => raw as u32,
+            _ => {
+                array.remove(index);
+                *repaired = true;
+                continue;
+            }
+        };
+        if instances.iter().any(|seen| seen.number == number) {
+            array.remove(index);
+            *repaired = true;
+            continue;
+        }
+        let image_folder = match entry.get("image_folder") {
+            Some(item) => match item.as_str() {
+                Some(text) => Some(text.to_owned()),
+                None => {
+                    entry.remove("image_folder");
+                    *repaired = true;
+                    None
+                }
+            },
+            None => None,
+        };
+        let window_table = ensure_table(entry, "window", repaired);
+        let window = repair_window_table(window_table, repaired);
+        instances.push(InstanceConfig {
+            number,
+            image_folder,
+            window,
+        });
+        index += 1;
+    }
+    if !instances.iter().any(|seen| seen.number == instance_number) {
+        let mut entry = Table::new();
+        entry["number"] = value(i64::from(instance_number));
+        let mut window_table = Table::new();
+        window_table["width"] = value(480);
+        window_table["height"] = value(320);
+        entry["window"] = Item::Table(window_table);
+        array.push(entry);
+        instances.push(InstanceConfig {
+            number: instance_number,
+            image_folder: None,
+            window: WindowConfig::default(),
+        });
+        *repaired = true;
+    }
+    instances
+}
+
+/// 迁移本体：顶层图库与 `[window]` 读出后写成 1 号段并移除原字段。
+/// 顶层两处都缺失时 1 号段就是默认段（新装首启与老配置同路）。
+fn migrate_legacy_into_instance_one(root: &mut Table, repaired: &mut bool) {
+    let image_folder = root
+        .get("image_folder")
+        .and_then(Item::as_str)
+        .map(str::to_owned);
+    let mut legacy_window = match root.get_mut("window") {
+        Some(Item::Table(table)) => repair_window_table(table, repaired),
+        _ => WindowConfig::default(),
+    };
+    if root.remove("image_folder").is_some() {
+        *repaired = true;
+    }
+    if root.remove("window").is_some() {
+        *repaired = true;
+    }
+    let mut entry = Table::new();
+    entry["number"] = value(1);
+    if let Some(folder) = &image_folder {
+        entry["image_folder"] = value(folder.clone());
+    }
+    let mut window_table = Table::new();
+    if let Some(x) = legacy_window.x.take() {
+        window_table["x"] = value(x);
+    }
+    if let Some(y) = legacy_window.y.take() {
+        window_table["y"] = value(y);
+    }
+    window_table["width"] = value(i64::from(legacy_window.width));
+    window_table["height"] = value(i64::from(legacy_window.height));
+    entry["window"] = Item::Table(window_table);
+    let mut array = toml_edit::ArrayOfTables::new();
+    array.push(entry);
+    root["instances"] = Item::ArrayOfTables(array);
+    *repaired = true;
+}
+
+/// 按编号找实例段的可变引用：写回路径只允许经它碰实例段。
+/// parse_document 已保证本实例段存在，找不到返回 None 供调用方
+/// 安全跳过（不凭空造段覆写文档）。
+fn instance_table_mut(document: &mut DocumentMut, number: u32) -> Option<&mut Table> {
+    let array = document
+        .as_table_mut()
+        .get_mut("instances")?
+        .as_array_of_tables_mut()?;
+    array
+        .iter_mut()
+        .find(|entry| entry.get("number").and_then(Item::as_integer) == Some(i64::from(number)))
+}
+
+/// 以文档当前内容刷新配置视图的实例部分（图库、几何、段快照）：
+/// update 在 apply 之后调用，保证内存视图与刚写回的文档一致。
+fn refresh_instance_view(document: &DocumentMut, number: u32, config: &mut Config) {
+    let mut instances = Vec::new();
+    if let Some(array) = document
+        .as_table()
+        .get("instances")
+        .and_then(Item::as_array_of_tables)
+    {
+        for entry in array.iter() {
+            let Some(raw) = entry.get("number").and_then(Item::as_integer) else {
+                continue;
+            };
+            if raw < 1 || raw > i64::from(u32::MAX) {
+                continue;
+            }
+            let image_folder = entry
+                .get("image_folder")
+                .and_then(Item::as_str)
+                .map(str::to_owned);
+            let window = match entry.get("window").and_then(Item::as_table) {
+                Some(table) => WindowConfig {
+                    x: optional_i64(table, "x"),
+                    y: optional_i64(table, "y"),
+                    width: table
+                        .get("width")
+                        .and_then(Item::as_integer)
+                        .filter(|raw| *raw > 0 && *raw <= i64::from(u32::MAX))
+                        .map(|raw| raw as u32)
+                        .unwrap_or(480),
+                    height: table
+                        .get("height")
+                        .and_then(Item::as_integer)
+                        .filter(|raw| *raw > 0 && *raw <= i64::from(u32::MAX))
+                        .map(|raw| raw as u32)
+                        .unwrap_or(320),
+                },
+                None => WindowConfig::default(),
+            };
+            instances.push(InstanceConfig {
+                number: raw as u32,
+                image_folder,
+                window,
+            });
+        }
+    }
+    if let Some(mine) = instances.iter().find(|seen| seen.number == number) {
+        config.image_folder = mine.image_folder.clone();
+        config.window = mine.window.clone();
+    }
+    config.instances = instances;
 }
 
 /// 历史只留最近 512 条（保存与修复共用同一条上限规则）。

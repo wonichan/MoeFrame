@@ -23,6 +23,7 @@ use crate::{
     app_core::{CoreArgs, ResumeData},
     autostart::{AutostartStore, AutostartSync},
     config::{Animation, AppearanceMode, BuiltinFrame, ConfigStore, PlaybackMode, WindowConfig},
+    instance::initial_position,
 };
 use std::{
     io,
@@ -50,6 +51,9 @@ pub struct HostInit {
     /// 自定义相框图的路径（V2 相框外观专题工单 03）：宿主持有，
     /// 启动时据此分析一次；设置窗选新图经 save_frame_art_path 写回。
     pub frame_art: Option<PathBuf>,
+    /// 本进程的实例编号（多实例吸附专题工单 01）：宿主装配与日志
+    /// 辨识用；几何与图库的读写段由 ConfigStore 按此编号定位。
+    pub instance_number: u32,
 }
 
 /// 启动包：run() 拿到后只分发，不再逐字段翻译配置。
@@ -66,16 +70,31 @@ pub struct ConfigSync {
 }
 
 impl ConfigSync {
-    /// 启动装配：加载并修复配置、完成开机自启的注册表↔镜像对账
-    /// （实际状态优先，不一致时回写镜像，回写也走统一失败口径），
-    /// 再把配置翻译成启动包。
+    /// 启动装配（1 号实例口径）：见 startup_for_instance。
     pub fn startup(
         config_path: &Path,
         log_path: &Path,
         autostart_store: &mut dyn AutostartStore,
     ) -> (Self, StartupPackage) {
+        Self::startup_for_instance(config_path, log_path, autostart_store, 1)
+    }
+
+    /// 启动装配：按实例编号加载并修复配置（图库与几何取该编号的
+    /// 实例段）、完成开机自启的注册表↔镜像对账（实际状态优先，
+    /// 不一致时回写镜像，回写也走统一失败口径），再把配置翻译成
+    /// 启动包。初始位置口径（多实例吸附专题工单 01）：本实例段有
+    /// 落盘位置时严格按落盘开；没有时相对上一扇（编号小于本实例
+    /// 且有落盘位置的最大编号段）+24/+24 级联，级联结果只作初始
+    /// 放置（saved_geom 的位置部分），落盘仍等本实例自己的几何
+    /// 变化经既有防抖/退出冲刷写回，钳制走几何机既有工作区口径。
+    pub fn startup_for_instance(
+        config_path: &Path,
+        log_path: &Path,
+        autostart_store: &mut dyn AutostartStore,
+        instance_number: u32,
+    ) -> (Self, StartupPackage) {
         let mut sync = Self {
-            store: ConfigStore::load(config_path),
+            store: ConfigStore::load_for_instance(config_path, instance_number),
             log_path: log_path.to_path_buf(),
         };
         let config = sync.store.config();
@@ -94,16 +113,39 @@ impl ConfigSync {
             resume: resume_data(config),
         };
         let window = config.window.clone();
-        let host = HostInit {
-            saved_geom: (window.x, window.y, window.width, window.height),
-            saved_position: match (window.x, window.y) {
-                (Some(x), Some(y)) => Some([x as f32, y as f32]),
+        let saved_position = match (window.x, window.y) {
+            (Some(x), Some(y)) => Some([x as f32, y as f32]),
+            _ => None,
+        };
+        // 上一扇的位置：编号小于本实例、有落盘位置的最大编号段。
+        let previous_position = config
+            .instances
+            .iter()
+            .filter(|instance| instance.number < instance_number)
+            .filter_map(|instance| match (instance.window.x, instance.window.y) {
+                (Some(x), Some(y)) => Some((instance.number, [x as f32, y as f32])),
                 _ => None,
-            },
+            })
+            .max_by_key(|(number, _)| *number)
+            .map(|(_, position)| position);
+        let initial = initial_position(saved_position, previous_position);
+        let saved_geom = match (saved_position, initial) {
+            (None, Some(position)) => (
+                Some(position[0] as i64),
+                Some(position[1] as i64),
+                window.width,
+                window.height,
+            ),
+            _ => (window.x, window.y, window.width, window.height),
+        };
+        let host = HostInit {
+            saved_geom,
+            saved_position: initial,
             appearance: config.display.appearance,
             frame: config.display.frame,
             frame_art: config.display.frame_art.as_ref().map(PathBuf::from),
             window,
+            instance_number,
         };
         (
             sync,

@@ -230,9 +230,20 @@ fn run() -> Result<(), Box<dyn Error>> {
     let directory = app_directory().ok_or_else(|| io::Error::other("APPDATA is unavailable"))?;
     let config_path = directory.join("config.toml");
     let log_path = directory.join("moe_frame.log");
+    // 实例编号认领（多实例吸附专题工单 01）：先在 app 目录用编号
+    // 锁文件认领最小空缺编号，认领守卫活到 run() 返回（即进程退出）
+    // 才释放；配置的图库与几何按这个编号读写自己的实例段。
+    let _instance_claim = moe_frame::instance::claim_instance(&directory)?;
+    let instance_number = _instance_claim.number();
+    startup_marker("instance-claimed", &format!("instance={instance_number}"));
     // 启动装配（工单 04 深挖）：配置加载/修复、自启对账与全部初值
     // 翻译归 config_sync，run() 只分发启动包。
-    let (sync, package) = ConfigSync::startup(&config_path, &log_path, &mut RegAutostartStore);
+    let (sync, package) = ConfigSync::startup_for_instance(
+        &config_path,
+        &log_path,
+        &mut RegAutostartStore,
+        instance_number,
+    );
     let core_args = package.core;
     let host_init = package.host;
     let autostart_sync = package.autostart;

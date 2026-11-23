@@ -325,3 +325,81 @@ fn startup_package_carries_the_frame_art_path_and_saves_write_through() {
     let config = ConfigStore::load(&config_path).config().clone();
     assert_eq!(config.display.frame_art, None);
 }
+
+// ---------- 多实例吸附专题工单 01：实例贯通与级联 ----------
+
+#[test]
+fn two_instances_interleave_through_config_sync_without_rollback() {
+    let root = temp_root("config-sync", "two-instances");
+    let (config_path, log_path) = paths(&root);
+    let mut registry = FakeStore::default();
+    let (mut a, package_a) =
+        ConfigSync::startup_for_instance(&config_path, &log_path, &mut registry, 1);
+    let mut registry = FakeStore::default();
+    let (mut b, package_b) =
+        ConfigSync::startup_for_instance(&config_path, &log_path, &mut registry, 2);
+    assert_eq!(package_a.host.instance_number, 1);
+    assert_eq!(package_b.host.instance_number, 2);
+    // A 改图库、B 改几何、交错落盘，最终两处都在。
+    a.save_folder(Path::new(r"D:\A 图库"));
+    b.save_window_geometry((Some(700), Some(500), 640, 400));
+    a.save_window_geometry((Some(10), Some(20), 480, 320));
+    b.save_folder(Path::new(r"D:\B 图库"));
+    let a_config = ConfigStore::load_for_instance(&config_path, 1)
+        .config()
+        .clone();
+    assert_eq!(a_config.image_folder.as_deref(), Some(r"D:\A 图库"));
+    assert_eq!((a_config.window.x, a_config.window.y), (Some(10), Some(20)));
+    let b_config = ConfigStore::load_for_instance(&config_path, 2)
+        .config()
+        .clone();
+    assert_eq!(b_config.image_folder.as_deref(), Some(r"D:\B 图库"));
+    assert_eq!(
+        (b_config.window.x, b_config.window.y),
+        (Some(700), Some(500))
+    );
+    // 核心入参也按实例取数：B 的启动包不带 A 的图库。
+    assert_eq!(package_b.core.saved_folder, None);
+}
+
+#[test]
+fn a_new_instance_cascades_from_the_previous_saved_position() {
+    let root = temp_root("config-sync", "cascade");
+    let (config_path, log_path) = paths(&root);
+    {
+        let mut store = ConfigStore::load_for_instance(&config_path, 1);
+        store
+            .set_window_geometry(Some(100), Some(100), 640, 400)
+            .expect("seed");
+    }
+    let mut registry = FakeStore::default();
+    let (_sync, package) =
+        ConfigSync::startup_for_instance(&config_path, &log_path, &mut registry, 2);
+    assert_eq!(
+        package.host.saved_position,
+        Some([124.0, 124.0]),
+        "级联 +24/+24"
+    );
+    assert_eq!(package.host.saved_geom, (Some(124), Some(124), 480, 320));
+}
+
+#[test]
+fn an_instance_with_saved_geometry_opens_exactly_there_without_cascade() {
+    let root = temp_root("config-sync", "no-cascade");
+    let (config_path, log_path) = paths(&root);
+    {
+        let mut store = ConfigStore::load_for_instance(&config_path, 1);
+        store
+            .set_window_geometry(Some(100), Some(100), 640, 400)
+            .expect("seed");
+        let mut store = ConfigStore::load_for_instance(&config_path, 2);
+        store
+            .set_window_geometry(Some(50), Some(60), 480, 320)
+            .expect("seed");
+    }
+    let mut registry = FakeStore::default();
+    let (_sync, package) =
+        ConfigSync::startup_for_instance(&config_path, &log_path, &mut registry, 2);
+    assert_eq!(package.host.saved_position, Some([50.0, 60.0]));
+    assert_eq!(package.host.saved_geom, (Some(50), Some(60), 480, 320));
+}
