@@ -43,6 +43,16 @@ fn sizes(commands: &[GeomCommand]) -> Vec<[f32; 2]> {
         .collect()
 }
 
+fn positions(commands: &[GeomCommand]) -> Vec<[f32; 2]> {
+    commands
+        .iter()
+        .filter_map(|c| match c {
+            GeomCommand::SetOuterPosition(pos) => Some(*pos),
+            _ => None,
+        })
+        .collect()
+}
+
 /// 模拟一次用户拖拽：按下帧不抢尺寸，松手帧按名义高度校正。
 fn drag_then_release(
     m: &mut GeometryMachine,
@@ -461,11 +471,13 @@ fn switching_images_resizes_instantly_without_moving_the_window() {
 
 #[test]
 fn an_oversized_switch_target_shrinks_to_fit_the_work_area() {
+    // 窗口起点在左界 6：缩后尺寸恰好放满可用宽，不触发工单 06 的
+    // 溢出平移，本测试只验尺寸适配本身。
     let mut m = machine(SAVED, Some(1.5), true);
     let area = [0.0, 0.0, 1000.0, 800.0];
-    m.observe(&obs_in_work_area([100.0, 100.0], [480.0, 320.0], 0.0, area));
+    m.observe(&obs_in_work_area([6.0, 100.0], [480.0, 320.0], 0.0, area));
     m.set_image_aspect(Some(4.0));
-    let commands = m.observe(&obs_in_work_area([100.0, 100.0], [480.0, 320.0], 0.1, area));
+    let commands = m.observe(&obs_in_work_area([6.0, 100.0], [480.0, 320.0], 0.1, area));
     let shown = sizes(&commands)[0];
     assert!(
         (shown[0] - 988.0).abs() < 0.51,
@@ -501,11 +513,12 @@ fn an_oversized_image_shrinks_for_display_but_keeps_the_nominal_height_on_disk()
 
 #[test]
 fn switching_back_to_a_narrow_image_keeps_the_saved_position() {
-    // 用户把相框放在右侧 x=500；切图从不移动窗口，落盘位置就是
-    // 实际位置，不按任何锚点反推。
+    // 用户把相框放在右侧 x=500；不溢出的切图从不移动窗口，落盘
+    // 位置就是实际位置，不按任何锚点反推（工作区取 1920 宽：
+    // 500+800 放得下，不触发工单 06 的溢出平移）。
     let saved: GeometryRecord = (Some(500), Some(100), 480, 320);
     let mut m = machine(saved, Some(1.5), true);
-    let area = [0.0, 0.0, 1000.0, 800.0];
+    let area = [0.0, 0.0, 1920.0, 1080.0];
     m.observe(&obs_in_work_area([500.0, 100.0], [480.0, 320.0], 0.0, area));
     m.set_image_aspect(Some(2.5));
     let wide = m.observe(&obs_in_work_area([500.0, 100.0], [480.0, 320.0], 0.1, area));
@@ -555,4 +568,166 @@ fn user_drag_takes_over_without_a_snap_back() {
     assert!(!released
         .iter()
         .any(|c| matches!(c, GeomCommand::SetOuterPosition(_))));
+}
+
+// ---------- 切图贴边溢出（工单 06）：工单 05「位置不移动」的补充
+// 条款——校正后的外框矩形溢出工作区时，同帧最小平移回界内 ----------
+
+#[test]
+fn a_switch_overflowing_the_right_edge_shifts_left_by_the_exact_overflow() {
+    // 竖图贴右缘（x=1500）切横图：目标 [640, 320]，右缘
+    // 1500+640=2140 超出可用右界 1914，左移刚好 226 到 1274。
+    let saved: GeometryRecord = (Some(1500), Some(100), 160, 320);
+    let mut m = machine(saved, Some(0.5), true);
+    let area = [0.0, 0.0, 1920.0, 1080.0];
+    m.observe(&obs_in_work_area(
+        [1500.0, 100.0],
+        [160.0, 320.0],
+        0.0,
+        area,
+    ));
+    m.set_image_aspect(Some(2.0));
+    let commands = m.observe(&obs_in_work_area(
+        [1500.0, 100.0],
+        [160.0, 320.0],
+        0.1,
+        area,
+    ));
+    // 尺寸与位置同帧成对（尺寸在前、位置在后），没有多余命令。
+    assert_eq!(
+        commands,
+        vec![
+            GeomCommand::SetInnerSize([640.0, 320.0]),
+            GeomCommand::SetOuterPosition([1274.0, 100.0]),
+        ]
+    );
+    // 平移落地后停稳：落盘位置就是平移后的位置，尺寸按名义量。
+    m.observe(&obs_in_work_area(
+        [1274.0, 100.0],
+        [640.0, 320.0],
+        0.2,
+        area,
+    ));
+    let settled = m.observe(&obs_in_work_area(
+        [1274.0, 100.0],
+        [640.0, 320.0],
+        0.81,
+        area,
+    ));
+    assert_eq!(saves(&settled), vec![(Some(1274), Some(100), 640, 320)]);
+}
+
+#[test]
+fn a_switch_overflowing_the_bottom_edge_shifts_up_by_the_exact_overflow() {
+    // 宽图贴底缘（y=900）切高图：名义高 160、比例 0.5，画面宽 80
+    // 不足最小边 → 目标 [120, 240]；底缘 900+240=1140 超出可用
+    // 下界 1074，上移刚好 66 到 834。
+    let saved: GeometryRecord = (Some(100), Some(900), 320, 160);
+    let mut m = machine(saved, Some(2.0), true);
+    let area = [0.0, 0.0, 1920.0, 1080.0];
+    m.observe(&obs_in_work_area([100.0, 900.0], [320.0, 160.0], 0.0, area));
+    m.set_image_aspect(Some(0.5));
+    let commands = m.observe(&obs_in_work_area([100.0, 900.0], [320.0, 160.0], 0.1, area));
+    assert_eq!(sizes(&commands), vec![[120.0, 240.0]]);
+    assert_eq!(positions(&commands), vec![[100.0, 834.0]]);
+}
+
+#[test]
+fn a_switch_overflowing_the_left_or_top_edge_shifts_back_inside() {
+    let area = [0.0, 0.0, 1920.0, 1080.0];
+    // 左溢出：窗口探出左缘（x=-50），首图校正时平移回左界 6。
+    let saved: GeometryRecord = (Some(-50), Some(100), 160, 320);
+    let mut m = machine(saved, None, true);
+    m.observe(&obs_in_work_area([-50.0, 100.0], [160.0, 320.0], 0.0, area));
+    m.set_image_aspect(Some(1.0));
+    let commands = m.observe(&obs_in_work_area([-50.0, 100.0], [160.0, 320.0], 0.1, area));
+    assert_eq!(sizes(&commands), vec![[320.0, 320.0]]);
+    assert_eq!(positions(&commands), vec![[6.0, 100.0]]);
+    // 上溢出：窗口探出上缘（y=-20），同理平移回上界 6。
+    let saved: GeometryRecord = (Some(100), Some(-20), 320, 160);
+    let mut m = machine(saved, None, true);
+    m.observe(&obs_in_work_area([100.0, -20.0], [320.0, 160.0], 0.0, area));
+    m.set_image_aspect(Some(0.5));
+    let commands = m.observe(&obs_in_work_area([100.0, -20.0], [320.0, 160.0], 0.1, area));
+    assert_eq!(sizes(&commands), vec![[120.0, 240.0]]);
+    assert_eq!(positions(&commands), vec![[100.0, 6.0]]);
+}
+
+#[test]
+fn a_switch_that_exactly_fits_the_work_area_never_moves_the_window() {
+    // 右缘恰好落在可用右界上（1274+640=1914）：不算溢出，
+    // 绝不发位置命令（工单 05 口径原样成立）。
+    let saved: GeometryRecord = (Some(1274), Some(100), 160, 320);
+    let mut m = machine(saved, Some(0.5), true);
+    let area = [0.0, 0.0, 1920.0, 1080.0];
+    m.observe(&obs_in_work_area(
+        [1274.0, 100.0],
+        [160.0, 320.0],
+        0.0,
+        area,
+    ));
+    m.set_image_aspect(Some(2.0));
+    let commands = m.observe(&obs_in_work_area(
+        [1274.0, 100.0],
+        [160.0, 320.0],
+        0.1,
+        area,
+    ));
+    assert_eq!(sizes(&commands), vec![[640.0, 320.0]]);
+    assert!(positions(&commands).is_empty());
+}
+
+/// 带窗口边框差的一帧观察：外尺寸 = 内尺寸 + 边框差（真实窗口
+/// 有边框/标题栏时的口径；本相框测试的自洽观察是边框差为 0）。
+fn obs_with_chrome(
+    pos: [f32; 2],
+    inner: [f32; 2],
+    chrome: [f32; 2],
+    now: f64,
+    work_area: [f32; 4],
+) -> GeomObservation {
+    let mut observation = obs_in_work_area(pos, inner, now, work_area);
+    observation.outer_size = Some([inner[0] + chrome[0], inner[1] + chrome[1]]);
+    observation
+}
+
+#[test]
+fn the_overflow_clamp_uses_the_outer_rect_including_window_chrome() {
+    // 边框差 16×8：切横图后目标内尺寸 [640, 320]、外尺寸
+    // [656, 328]；1400+656 超出右界 1914 → 左移到 1258。
+    // 若误按内尺寸算会是 1274，外框右缘仍会探出 16。
+    let saved: GeometryRecord = (Some(1400), Some(100), 480, 320);
+    let mut m = machine(saved, Some(1.5), true);
+    let area = [0.0, 0.0, 1920.0, 1080.0];
+    m.observe(&obs_with_chrome(
+        [1400.0, 100.0],
+        [480.0, 320.0],
+        [16.0, 8.0],
+        0.0,
+        area,
+    ));
+    m.set_image_aspect(Some(2.0));
+    let commands = m.observe(&obs_with_chrome(
+        [1400.0, 100.0],
+        [480.0, 320.0],
+        [16.0, 8.0],
+        0.1,
+        area,
+    ));
+    assert_eq!(sizes(&commands), vec![[640.0, 320.0]]);
+    assert_eq!(positions(&commands), vec![[1258.0, 100.0]]);
+}
+
+#[test]
+fn an_oversized_switch_that_still_overflows_shifts_to_the_work_area_edge() {
+    // 超宽图先按工作区缩到可用宽 988，在 x=100 仍放不下
+    // （100+988 超出右界 994）：同帧左移到左界 6。
+    let mut m = machine(SAVED, Some(1.5), true);
+    let area = [0.0, 0.0, 1000.0, 800.0];
+    m.observe(&obs_in_work_area([100.0, 100.0], [480.0, 320.0], 0.0, area));
+    m.set_image_aspect(Some(4.0));
+    let commands = m.observe(&obs_in_work_area([100.0, 100.0], [480.0, 320.0], 0.1, area));
+    let shown = sizes(&commands)[0];
+    assert!((shown[0] - 988.0).abs() < 0.51, "先缩到可用宽：{shown:?}");
+    assert_eq!(positions(&commands), vec![[6.0, 100.0]]);
 }
