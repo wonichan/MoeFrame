@@ -4,20 +4,20 @@
 
 **Blocked by:** [02: 实例发现与松手吸附](02-window-discovery-snap.md)（枚举校验层与接触派生保留复用；其松手吸附路径由本票取代）
 
-**Status:** ready-for-agent
+**Status:** needs-info
 
 ## Acceptance criteria
 
 代码项：
 
-- [ ] Spike 先行：在集成分支之外验证「SetWindowSubclass 挂到 eframe/winit 相框窗口 + 在 WM_MOVING 里改写 lParam 矩形 + winit 原生模态拖动循环（含松手重校正、拖动回弹）共存不打架」，结论（可行/不可行的具体形态、注意事项）记入本票 Comments；spike 不可行时停下回报，不硬铺实现。
-- [ ] 子类化边界：只挂相框窗口 HWND（设置窗不挂），严格走 DefSubclassProc 链转发所有消息；子类化安装/卸载时机明确（窗口创建后装、退出前卸），不改动 winit 自有 subclass 的行为；既有 NativeGesture 旗标、模态循环结束判定、回弹修复路径零改动且其测试不回归。
-- [ ] 实时磁吸求解：WM_MOVING 处理以拟拖矩形（物理像素）为被拖窗矩形、工单 02 枚举层给出的伙伴物理矩形、拟拖矩形所在显示器工作区（rcWork 物理像素）为输入；命中贴合/对齐/工作区边缘时就地改写拟拖矩形至目标，未命中时不改。拖动全程每帧可重复求解（同一拖动内多次进出阈值行为稳定、无抖动黏滞异常，判定口径在实现中定死并有测试或注释说明）。
-- [ ] 坐标纪律：本路径全程物理像素；本窗矩形不用 egui outer_rect（需要本窗现状时用自家 HWND 的 GetWindowRect）；阈值 12 逻辑 px 按本窗 DPI（GetDpiForWindow）换算物理像素，换算有纯函数测试（含 100%/125%/150% 三档）。
-- [ ] 求解器评分化（库内纯逻辑）：候选按二维评分裁决——投影重叠比例与间隙距离参与评分；贴合优先于对齐（同等邻近程度下）；对齐候选加另一轴邻近约束（另一轴相距过远不触发对齐）；工作区边缘不凭类别压过明显更近的伙伴。用例至少覆盖旧诊断点名的反例：X/Y 两轴吸向不同伙伴、仅擦边投影的伙伴压过正对伙伴、远处伙伴对齐抢走近处贴合、工作区贴合压过更近的伙伴对齐。旧单轴类别裁决被替换的旧测试逐条交代去向（改写/删除及理由记 Comments）。
-- [ ] 拆除松手吸附路径：工单 02 的松手求解挂接（几何机 GeomObservation.snap 消费、松手帧落位）整段移除，几何机恢复到吸附专题之前的手势口径（松手只做既有重校正）；被移除路径的旧测试逐条交代去向。吸附开关关闭时子类化回调不求解、不改矩形（开关判定与工单 02 落地共用同一开关值）。
-- [ ] 几何机分工不打架：WM_MOVING 改矩形后的落位经 OS 模态循环成为窗口实际位置，几何机在手势中的沉默口径不变；松手后的观察/防抖落盘按既有机制吸收新位置（以实际观察为准），不出现吸附落位被松手重校正顶开的路径（审计两者同帧顺序并在 Comments 写明结论）。
-- [ ] 检查：`scripts/check.sh` 本体未运行（Windows 专用，本 VM 跑不了，不冒充）；替代口径全绿——Linux 测试副本 `cargo test --all-targets` 通过数不低于基线 428（增删逐项对账），Windows 目标 `cargo check --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo fmt --all -- --check` 三项通过。
+- [x] Spike 先行：在集成分支之外验证「SetWindowSubclass 挂到 eframe/winit 相框窗口 + 在 WM_MOVING 里改写 lParam 矩形 + winit 原生模态拖动循环（含松手重校正、拖动回弹）共存不打架」，结论（可行/不可行的具体形态、注意事项）记入本票 Comments；spike 不可行时停下回报，不硬铺实现。
+- [x] 子类化边界：只挂相框窗口 HWND（设置窗不挂），严格走 DefSubclassProc 链转发所有消息；子类化安装/卸载时机明确（窗口创建后装、退出前卸），不改动 winit 自有 subclass 的行为；既有 NativeGesture 旗标、模态循环结束判定、回弹修复路径零改动且其测试不回归。
+- [x] 实时磁吸求解：WM_MOVING 处理以拟拖矩形（物理像素）为被拖窗矩形、工单 02 枚举层给出的伙伴物理矩形、拟拖矩形所在显示器工作区（rcWork 物理像素）为输入；命中贴合/对齐/工作区边缘时就地改写拟拖矩形至目标，未命中时不改。拖动全程每帧可重复求解（同一拖动内多次进出阈值行为稳定、无抖动黏滞异常，判定口径在实现中定死并有测试或注释说明）。
+- [x] 坐标纪律：本路径全程物理像素；本窗矩形不用 egui outer_rect（需要本窗现状时用自家 HWND 的 GetWindowRect）；阈值 12 逻辑 px 按本窗 DPI（GetDpiForWindow）换算物理像素，换算有纯函数测试（含 100%/125%/150% 三档）。
+- [x] 求解器评分化（库内纯逻辑）：候选按二维评分裁决——投影重叠比例与间隙距离参与评分；贴合优先于对齐（同等邻近程度下）；对齐候选加另一轴邻近约束（另一轴相距过远不触发对齐）；工作区边缘不凭类别压过明显更近的伙伴。用例至少覆盖旧诊断点名的反例：X/Y 两轴吸向不同伙伴、仅擦边投影的伙伴压过正对伙伴、远处伙伴对齐抢走近处贴合、工作区贴合压过更近的伙伴对齐。旧单轴类别裁决被替换的旧测试逐条交代去向（改写/删除及理由记 Comments）。
+- [x] 拆除松手吸附路径：工单 02 的松手求解挂接（几何机 GeomObservation.snap 消费、松手帧落位）整段移除，几何机恢复到吸附专题之前的手势口径（松手只做既有重校正）；被移除路径的旧测试逐条交代去向。吸附开关关闭时子类化回调不求解、不改矩形（开关判定与工单 02 落地共用同一开关值）。
+- [x] 几何机分工不打架：WM_MOVING 改矩形后的落位经 OS 模态循环成为窗口实际位置，几何机在手势中的沉默口径不变；松手后的观察/防抖落盘按既有机制吸收新位置（以实际观察为准），不出现吸附落位被松手重校正顶开的路径（审计两者同帧顺序并在 Comments 写明结论）。
+- [x] 检查：`scripts/check.sh` 本体未运行（Windows 专用，本 VM 跑不了，不冒充）；替代口径全绿——Linux 测试副本 `cargo test --all-targets` 通过数不低于基线 428（增删逐项对账），Windows 目标 `cargo check --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo fmt --all -- --check` 三项通过。
 
 实机项（汇总进专题实机清单，返工收尾时重写对应条目）：
 
@@ -34,3 +34,14 @@
 ## Comments
 
 - 2026-11-24 用户拍板换路线 (a) 后建票（路线修订组第一票），待 spike 与实现。
+
+- 2026-11-24 工单 05 实现完成（分支 impl/multi-instance-snap-05，代码提交 4c9ee40，基于集成分支 95b61be；VM 内验收口径，Status 置 needs-info 待协调者验收与实机清单）。
+  - **Spike 结论：可行（VM 内可达标准）**。HWND 提取通路现成（装配处经 raw-window-handle 取 Win32 HWND 存 FrameApp.hwnd，install 直接接其后）；windows-sys 0.61 的 Win32_UI_Shell feature 含 SetWindowSubclass/RemoveWindowSubclass/DefSubclassProc（Cargo 只加此一 feature），WM_MOVING/ENTERSIZEMOVE/EXITSIZEMOVE、MonitorFromRect、GetDpiForWindow 均现成，Windows 目标 check/clippy 全过、回调签名与 SUBCLASSPROC 精确对齐；共存形态为全消息 DefSubclassProc 收尾转发，NativeGesture 旗标/模态结束判定/回弹路径零改动且测试不回归。未发现结构性不可行项。实机才能证的：WM_MOVING 在 winit 模态循环中如期到达子类化过程、改写 RECT 后落位与观察一致性——留实机项。
+  - **子类化与数据传递设计**：新模块 src/bin/moe-frame/snap_subclass.rs，只挂相框 HWND（装配 install、Effect::Exit 前 uninstall，设置窗不挂）。回调无 &mut App 访问——回调在窗口所在 UI 线程由消息泵触发，数据走进程级静态：开关值 AtomicBool 镜像（apply_window_snap_value 同步，与工单 02 落地共用同一开关值；关闭时回调不求解不改矩形），拖动会话 Mutex<Option<DragSession>>（每进程一扇相框窗、会话至多一份，实际访问全在 UI 线程无竞争）。会话在 WM_ENTERSIZEMOVE 经 snap_enum::drag_partners 枚举一次（复用标题 + exe 校验，矩形另取物理 GetWindowRect 带句柄），WM_MOVING 每帧逐个 GetWindowRect 刷新伙伴矩形（销毁剔除）、工作区取拟拖矩形所在屏 rcWork（MonitorFromRect，物理）、阈值按本窗 GetDpiForWindow 换算。
+  - **求解器评分化（库 snap::solve_drag_snap，物理像素）**：两轴独立裁决组合；贴合成本 = 间隙 + (1 − 另一轴投影重叠比例) × 阈值；对齐成本 = 间隙 + 另一轴相距距离 + 阈值/2 类别罚分（同等邻近贴合优先、明显更近的对齐可赢更远贴合）；对齐加另一轴邻近约束（相距超阈值不产生候选）；工作区与伙伴同尺竞争、生成在伙伴之后（同成本伙伴优先）；同成本先生成者胜。纯函数无状态、目标位幂等——反复进出阈值无黏滞/漂移的判定口径即此。工单点名四反例均有测试：drag_counterexample_axes_attach_to_different_partners / _grazing_projection_loses_to_head_on_partner / _far_alignment_does_not_steal_near_attach / _work_area_does_not_beat_nearer_partner_by_category。阈值换算 physical_snap_threshold 带 100/125/150% 三档测试（threshold_scales_with_dpi、drag_physical_threshold_governs_the_gap）。
+  - **工单 06 接缝**：库层 DragSnapOutcome { target, hits: Vec<SnapHit> }，SnapHit { partner_hwnd: u64, edge: SnapEdge::{Left,Right,Top,Bottom}, target: WindowRect }（物理像素；对齐/工作区命中不产出）；宿主 DragSession { partners, hits, last_target } 每帧更新 hits，WM_EXITSIZEMOVE 清会话处留「清前消费 hits」注记锚点。本票不设窗口属性、不搬伙伴。
+  - **几何机分工审计结论**：WM_MOVING 改写经 OS 模态循环成为实际位置；几何机手势中照旧沉默，松手帧重校正的位置平移只有既有工作区溢出钳制一条路径且输入为实际观察位置，不存在把吸附落位顶开的路径；落盘以实际观察为准。两者同帧顺序无打架点。
+  - **拆除清单**：宿主 geometry.rs 松手 SnapRequest 组装整段、库 window_geom 的 GeomObservation.snap 字段与松手消费块、snap_enum::release_snap_request 与 enumerate_candidates、库 solve_snap/SnapRequest/SnapPartner/AxisSolver。snap_anchor 锚边接缝（工单 03）保留不动；轮询跟随引擎不在本票拆除范围（归工单 06 路线收尾）。
+  - **旧测试逐条去向**：tests/snap.rs 旧 solve_snap 用例 12 条全删（solve_attaches_right_edge_and_zeroes_the_gap、solve_attaches_each_relative_edge、solve_beyond_threshold_does_nothing、solve_at_exact_threshold_still_attaches、solve_aligns_same_name_edges_without_contact、solve_attach_wins_over_alignment、solve_attach_on_one_edge_beats_smaller_gap_alignment_on_the_other、solve_nearest_partner_wins_and_tie_keeps_enumeration_order、solve_combines_axes_attach_on_x_align_on_y、solve_work_area_edge_zeroes_gap_without_reserve、solve_ignores_partners_on_other_monitors、solve_already_touching_is_no_command）——旧单轴类别裁决已被评分求解替代，对应用例由新拖动求解用例覆盖（贴合四边/阈值内外/对齐/工作区/幂等/四反例/DPI 换算等共 14 条新用例）；其中 solve_ignores_partners_on_other_monitors 的同屏口径改由宿主组装层承担（drag_partners 只给同屏判定后的伙伴组装口径见 snap_enum，库求解不再带 monitor 字段）。tests/window_geom.rs 删 2 条（release_frame_applies_snap_target_via_position_command、snap_request_without_a_release_is_ignored，随 GeomObservation.snap 接缝拆除），release_without_snap_request_keeps_nominal_position 改名 release_frame_keeps_nominal_position_without_a_target 保留（松手无目标保持名义位仍是现行口径）。
+  - **检查数字**：Linux 测试副本 cargo test --all-targets = 428 passed / 0 failed（基线 428；删 14 加 14 持平）。Windows 目标 cargo check --all-targets、cargo clippy --all-targets -- -D warnings、cargo fmt --all -- --check 三项全过。scripts/check.sh 本体未运行（Windows 专用，本 VM 跑不了，不冒充）。边界检查（safe_code_edits_and_commits）：最终 diff 专项复读无劈裂/孤儿文档注释；GLOSSARY Avoid 词（磁吸/贴边停靠）grep 全 diff 零命中。
+  - **实机项**：下方五条实机验收全部未勾，汇总进专题实机清单；另注意 spike 遗留风险——WM_MOVING 到达率与改写生效、outer_rect 观察与实际落位一致性、回弹问题不复现，均只能实机证。
