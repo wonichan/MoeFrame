@@ -12,18 +12,18 @@ WS_EX_TOPMOST 标记是否还在，并记一行日志区分「标记被摘」与
 **Blocked by:** None（基线 main @ 417f32d，PR #11 吸附已合入；本票不改吸
 附行为，只与之共存）。
 
-**Status:** ready-for-agent
+**Status:** needs-info
 
 ## Acceptance criteria
 
-- [ ] 层级为 AlwaysOnTop 时，相框窗口失去焦点后层级命令被重申（回归测试钉住，沿用 ui_regressions 的 FullOutput 断言口径）
-- [ ] 层级为 AlwaysOnBottom 时同理重申；层级为 Normal 时任何情况下零重申（既有测试全绿不回归）
-- [ ] 重申有节流：持续失焦/反复唤醒不产生命令风暴（纯函数判定 + 测试断言）；判定逻辑放在可单测的纯函数里
-- [ ] 自检日志：重申前读本窗 WS_EX_TOPMOST，标记缺失记一行、标记在但发生重申记一行（或等价区分），仅状态变化时记录；日志走仓库既有日志口径
-- [ ] 不与吸附子类化（WM_MOVING）及几何机冲突：不新增 SetWindowPos 直调，吸附/拖动/切图既有测试全绿
-- [ ] `scripts/check.sh` 口径全绿（fmt / clippy -D warnings / test --all-targets；VM 代偿口径如实记入 Comments）
-- [ ] 实机清单新增「置顶守擂」一节：置顶后依次点击普通窗口、另一置顶窗口、最小化/恢复其他窗口、轮播切图数轮，相框始终在顶层；托盘隐藏/召回后置顶仍有效
-- [ ] 实现笔记落 `.agents/notes/implemented/` 并通过三道校验门
+- [x] 层级为 AlwaysOnTop 时，相框窗口失去焦点后层级命令被重申（回归测试钉住，沿用 ui_regressions 的 FullOutput 断言口径）
+- [x] 层级为 AlwaysOnBottom 时同理重申；层级为 Normal 时任何情况下零重申（既有测试全绿不回归）
+- [x] 重申有节流：持续失焦/反复唤醒不产生命令风暴（纯函数判定 + 测试断言）；判定逻辑放在可单测的纯函数里
+- [x] 自检日志：重申前读本窗 WS_EX_TOPMOST，标记缺失记一行、标记在但发生重申记一行（或等价区分），仅状态变化时记录；日志走仓库既有日志口径
+- [x] 不与吸附子类化（WM_MOVING）及几何机冲突：不新增 SetWindowPos 直调，吸附/拖动/切图既有测试全绿
+- [x] `scripts/check.sh` 口径全绿（fmt / clippy -D warnings / test --all-targets；VM 代偿口径如实记入 Comments）
+- [x] 实机清单新增「置顶守擂」一节：置顶后依次点击普通窗口、另一置顶窗口、最小化/恢复其他窗口、轮播切图数轮，相框始终在顶层；托盘隐藏/召回后置顶仍有效
+- [x] 实现笔记落 `.agents/notes/implemented/` 并通过三道校验门
 
 ## Context
 
@@ -33,4 +33,23 @@ WS_EX_TOPMOST 标记是否还在，并记一行日志区分「标记被摘」与
 
 ## Comments
 
-（暂无）
+- 2026-11-24 实现完成（分支 fix/topmost-guard，功能提交 7a5cc6c）：
+  库层新增纯判定 `level_guard::LevelGuard`——非 Normal 层级在失焦
+  边沿触发重申，节流下限 1000ms、被压住的重申挂起待到期补发（回
+  焦或切回 Normal 作废）；宿主 frame_ui 在菜单层级应用后每帧采样
+  焦点轮询，命中时先以 Win32 读 WS_EX_TOPMOST 自检、按分类变化经
+  `[level-guard]` 前缀记一行日志（MarkMissing / BandReorder），再
+  经既有 viewport 命令重申，不新增 SetWindowPos 直调。
+- 验证（VM 代偿口径，如实记录）：`cargo fmt --check` 通过；
+  Windows 目标 `cargo check --all-targets` 与 `cargo clippy
+  --all-targets -- -D warnings` 通过；测试以 Linux 刮擦副本（剥
+  rfd/tray-icon、启用 wayland/x11）跑 `cargo test --all-targets`：
+  432 passed / 0 failed（含 level_guard 新增 8 个纯判定单测）。
+  宿主 bin 测试（含本次新增 ui_regressions 守擂回归）受产品 bin
+  Windows-only 限制，在本 VM 只能编译校验，实际运行在 CI
+  （windows-latest 跑 scripts/check.sh）。
+- 笔记校验门：tree 与 archived 通过；format 门本笔记无问题，但仓
+  库整体有一处既有失败（implemented/feature/2026-11-24-wm-moving-
+  snap.md，吸附线 af4d696 引入、非本票范围），未代为修改。
+- Status 置 needs-info：待用户按实机清单新增「置顶守擂」一节实机
+  验收后回填。
