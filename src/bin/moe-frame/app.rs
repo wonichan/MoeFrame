@@ -90,17 +90,11 @@ pub(crate) struct FrameApp {
     /// config_sync 写回；WM_MOVING 子类化回调经静态镜像读同一
     /// 值（关闭时不求解、不改矩形，见 snap_subclass）。
     pub(crate) window_snap: bool,
-    /// 组联动跟随引擎（多实例吸附专题工单 03）：纯逻辑在库 snap，
-    /// 宿主按轮询调度枚举伙伴喂入、执行它返回的位置；含菜单脱离
-    /// 的抑制标记（只存本进程内存，不落盘）。
-    pub(crate) follow: moe_frame::snap_follow::FollowEngine,
-    /// 轮询调度（工单 03）：无伙伴时休眠、零唤醒；重新武装靠本窗
-    /// 自身事件（启动、拖动开始/结束、开关打开）。
-    pub(crate) poll_schedule: moe_frame::snap_follow::PollSchedule,
-    /// 最近一轮派生的直接接触伙伴（未抑制）：右键菜单「脱离吸附
-    /// 组」的出现条件与脱离名单都取它。
-    pub(crate) snap_contacts: Vec<moe_frame::snap_follow::PartnerId>,
-    /// 最近一轮派生的贴合边：喂几何机的锚边变尺寸接缝。
+    /// 菜单「脱离吸附组」的出现条件（工单 06 定死）：本窗有基
+    /// 座属性或有直接接触伙伴；由 geometry 的锚边刷新每帧更新。
+    pub(crate) snap_detach_available: bool,
+    /// 最近一轮派生的贴合边：喂几何机的锚边变尺寸接缝（邻居按
+    /// 属性关系 + 直接接触派生，工单 06）。
     pub(crate) snap_anchor: Vec<moe_frame::snap_follow::AnchorEdge>,
     /// 本次移动手势是 Shift 拖动（手势开始时采样）：被拖窗 solo，
     /// 松手不做松手吸附，松手后按新几何重新派生。
@@ -345,19 +339,15 @@ impl FrameApp {
         }
     }
     /// 窗口吸附开关值的落地（工单 04 抽共用）：设置窗切换与全局同步
-    /// 应用共用这份副作用——改当前值；关闭时跟随引擎整体停摆并清
-    /// 状态、调度休眠；打开时重新武装探活。写回与否由调用方决定
-    /// （设置窗路径经 config_sync 写回；同步路径只读应用、绝不写回）。
+    /// 应用共用这份副作用——改当前值；关闭时清锚边与菜单条件。
+    /// 写回与否由调用方决定（设置窗路径经 config_sync 写回；同步
+    /// 路径只读应用、绝不写回）。工单 06 起无轮询可停摆/武装：
+    /// 子类化回调读的是同一开关值的静态镜像，关闭即不求解。
     pub(crate) fn apply_window_snap_value(&mut self, target: bool) {
         self.window_snap = target;
-        // 工单 05：子类化回调读的是同一开关值的静态镜像。
         super::snap_subclass::set_enabled(target);
-        if target {
-            self.poll_schedule.wake();
-        } else {
-            self.follow.reset();
-            self.poll_schedule.sleep();
-            self.snap_contacts.clear();
+        if !target {
+            self.snap_detach_available = false;
             self.snap_anchor.clear();
         }
     }

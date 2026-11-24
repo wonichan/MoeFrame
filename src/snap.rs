@@ -1,8 +1,9 @@
 //! 窗口吸附的纯逻辑（多实例吸附专题工单 02 / 05）：伙伴判定、
 //! 接触派生与拖动中吸附求解。宿主把窗口事实（标题、所属进程
 //! exe、矩形、所在屏）喂进来，本模块只做判定与求解，不碰任何系
-//! 统调用；吸附关系不落盘、不存储，任意时刻都由窗口边缘的几何
-//! 接触实时派生（spec 第 7 节）。
+//! 统调用。接触派生仍是几何事实（存量接触临时成树与锚边邻居
+//! 判定用）；带方向的吸附关系自工单 06 起记在从属窗的窗口属
+//! 性上，纯判定在 snap_group（spec 第 15 节）。
 //!
 //! 坐标口径：伙伴判定与接触派生用**逻辑像素**（宿主枚举拿到的
 //! Win32 矩形按各窗口自身的 DPI 比例换算后才喂进来）；拖动中求
@@ -46,10 +47,6 @@ pub const SNAP_THRESHOLD: f32 = 12.0;
 /// 贴合。它只回答「现在贴没贴」，与吸附阈值是两回事——阈值回答
 /// 「松手时靠得够不够近、要不要吸过去」。
 pub const CONTACT_TOLERANCE: f32 = 1.0;
-
-/// 落位生效的最小位移（逻辑 px）：求解目标与现位之差不超过它视
-/// 为没有移动（已贴合/已对齐不重复发命令）。
-pub(crate) const MIN_MOVE: f32 = 0.5;
 
 /// 一扇窗口的矩形（逻辑像素，屏幕坐标，含原点）：左上与右下。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -204,8 +201,9 @@ pub(crate) fn pair_in_contact(a: &WindowRect, b: &WindowRect) -> bool {
     (vertical_touch && a.overlap_y(b) > 0.0) || (horizontal_touch && a.overlap_x(b) > 0.0)
 }
 
-/// 吸附组派生：贴合边连成的连通分量（含无接触的单窗分量），组内
-/// 与组间都按下标稳定排序。组关系只由此实时派生，不落盘。
+/// 接触连通分量：贴合边连成的连通分量（含无接触的单窗分量），
+/// 组内与组间都按下标稳定排序。这是接触几何的派生事实；带方
+/// 向的吸附关系在 snap_group（工单 06），不由本函数表达。
 pub fn snap_groups(frames: &[PartnerFrame]) -> Vec<Vec<usize>> {
     let mut parent: Vec<usize> = (0..frames.len()).collect();
     fn find(parent: &mut [usize], mut node: usize) -> usize {

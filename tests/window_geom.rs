@@ -809,3 +809,32 @@ fn resize_without_anchor_keeps_the_existing_position_rule() {
     assert_eq!(sizes(&commands), vec![[320.0, 320.0]]);
     assert!(positions(&commands).is_empty(), "{commands:?}");
 }
+
+// ---------- 工单 06：伙伴被外力移动的吸收审计 ----------
+
+#[test]
+fn external_position_only_move_is_absorbed_without_correction() {
+    // 审计回归（工单 06）：伙伴窗被领队 HDWP 搬走后，其进程的
+    // 几何机只观察到 outer_pos 变化——尺寸不变、无 pointer_down。
+    // 观察路径不得把纯位置变化误判为用户手势：不发 SetInnerSize、
+    // 不发位置校正；新位置经防抖后按实际观察落盘。
+    let mut m = machine(SAVED, Some(1.5), true);
+    // 先落稳一帧（480x320 与 aspect 1.5 自洽，比例校正不发命令）。
+    let first = m.observe(&obs([100.0, 100.0], [480.0, 320.0], 0.0));
+    assert!(sizes(&first).is_empty(), "{first:?}");
+    assert!(positions(&first).is_empty(), "{first:?}");
+    // 外力搬移：只有位置变到 (340,180)。
+    let moved = m.observe(&obs([340.0, 180.0], [480.0, 320.0], 0.1));
+    assert!(sizes(&moved).is_empty(), "{moved:?}");
+    assert!(positions(&moved).is_empty(), "{moved:?}");
+    // 防抖到期后落盘几何跟随新位置（落盘以实际观察为准）。
+    let settled = m.observe(&obs([340.0, 180.0], [480.0, 320.0], 1.0));
+    let saves: Vec<GeometryRecord> = settled
+        .iter()
+        .filter_map(|c| match c {
+            GeomCommand::SaveGeometry(record) => Some(*record),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(saves, vec![(Some(340), Some(180), 480, 320)]);
+}

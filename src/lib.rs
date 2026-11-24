@@ -21,6 +21,7 @@ pub mod playlist;
 pub mod settings_session;
 pub mod snap;
 pub mod snap_follow;
+pub mod snap_group;
 pub mod transition_ambient;
 
 /// 当前 winit 窗口的观测；每帧重新查询，不保存窗口句柄。

@@ -13,65 +13,63 @@ impl FrameApp {
         // 松手吸附路径；松手位置以实际观察为准、防抖落盘照旧。
         if self.native_gesture == Some(NativeGesture::Move) && !primary_button_down() {
             self.native_gesture = None;
-            // 拖动结束是轮询调度的重新武装事件之一（工单 03）。
-            self.poll_schedule.wake();
             if self.solo_drag {
-                // Shift 拖动（工单 03）：被拖窗 solo，松手后组关系
-                // 按新几何重新派生。
+                // Shift 拖动（工单 03 手势开始采样、工单 06 清
+                // 属性语义）：独走已由子类化层在拖动开始执行，
+                // 这里只收尾旗标。
                 self.solo_drag = false;
             }
         }
-        // 组联动跟随轮询（工单 03）：调度到期、相框可见且无原生手
-        // 势时才枚举一次伙伴喂跟随引擎；无伙伴即休眠（零唤醒、
-        // 零枚举），静止时只有心跳级检查且不发命令。开关关闭时
-        // 整体停摆（设置窗落地处已清引擎与调度）。
-        let mut follow_target: Option<[f32; 2]> = None;
-        if self.window_snap && self.core.frame_visible() && self.native_gesture.is_none() {
-            let now_ms = (ctx.input(|input| input.time) * 1000.0) as u64;
-            if self.poll_schedule.poll_due(now_ms) {
-                let own_rect = ctx.input(|input| input.viewport().outer_rect).map(|rect| {
-                    moe_frame::snap::WindowRect::from_pos_size(
-                        [rect.min.x, rect.min.y],
-                        [rect.width(), rect.height()],
-                    )
-                });
-                match (
-                    own_rect,
-                    super::snap_enum::own_monitor_work_area(self.hwnd, pixels_per_point),
-                ) {
-                    (Some(rect), Some((monitor, work_area))) => {
-                        let own_frame = moe_frame::snap::PartnerFrame {
-                            rect,
-                            monitor,
-                            work_area,
-                        };
-                        let partners =
-                            super::snap_enum::follow_partners(self.hwnd, pixels_per_point);
-                        if partners.is_empty() {
-                            self.snap_contacts.clear();
-                            self.snap_anchor.clear();
-                            self.poll_schedule
-                                .report(moe_frame::snap_follow::PollOutcome::NoPartners, now_ms);
-                        } else {
-                            let own_dragging = ctx.input(|input| input.pointer.any_down());
-                            follow_target =
-                                self.follow.poll(own_frame, &partners, true, own_dragging);
-                            self.snap_contacts =
-                                self.follow.direct_contact_ids(own_frame, &partners);
-                            self.snap_anchor = self.follow.anchor_edges(own_frame, &partners);
-                            let outcome = if follow_target.is_some() {
-                                moe_frame::snap_follow::PollOutcome::Movement
-                            } else {
-                                moe_frame::snap_follow::PollOutcome::Quiet
-                            };
-                            self.poll_schedule.report(outcome, now_ms);
-                        }
-                    }
-                    _ => {
-                        self.poll_schedule
-                            .report(moe_frame::snap_follow::PollOutcome::NoPartners, now_ms);
-                    }
+        // 锚边邻居刷新（工单 06）：只在已唤醒的帧上枚举一次伙伴
+        // （含各伙伴与本窗的基座属性），按「属性关系 + 直接接
+        // 触」派生锚边与菜单脱离的出现条件；不新增任何唤醒——
+        // 静止零重绘口径回到无吸附专题轮询的基线（工单 03 的轮
+        // 询跟随已整段拆除，整组联动由子类化层领队搬运）。
+        if self.window_snap && self.core.frame_visible() {
+            let own_rect = ctx.input(|input| input.viewport().outer_rect).map(|rect| {
+                moe_frame::snap::WindowRect::from_pos_size(
+                    [rect.min.x, rect.min.y],
+                    [rect.width(), rect.height()],
+                )
+            });
+            if let (Some(rect), Some((monitor, work_area))) = (
+                own_rect,
+                super::snap_enum::own_monitor_work_area(self.hwnd, pixels_per_point),
+            ) {
+                let own_frame = moe_frame::snap::PartnerFrame {
+                    rect,
+                    monitor,
+                    work_area,
+                };
+                let partners = super::snap_enum::relation_partners(self.hwnd, pixels_per_point);
+                let own_id = self.hwnd as u64;
+                let mut relations: Vec<moe_frame::snap_group::SnapRelation> = partners
+                    .iter()
+                    .filter_map(|partner| {
+                        partner
+                            .base
+                            .map(|base| moe_frame::snap_group::SnapRelation {
+                                subordinate: partner.id,
+                                base,
+                            })
+                    })
+                    .collect();
+                let own_base = super::snap_enum::read_base(own_id);
+                if let Some(base) = own_base {
+                    relations.push(moe_frame::snap_group::SnapRelation {
+                        subordinate: own_id,
+                        base,
+                    });
                 }
+                let contacts = moe_frame::snap_group::direct_contact_ids(own_frame, &partners);
+                let neighbours =
+                    moe_frame::snap_group::anchor_neighbour_ids(own_id, &relations, &contacts);
+                self.snap_anchor =
+                    moe_frame::snap_group::anchor_edges(own_frame, &partners, &neighbours);
+                self.snap_detach_available = moe_frame::snap_group::menu_detach_available(
+                    own_base.is_some(),
+                    !contacts.is_empty(),
+                );
             }
         }
         let native_gesture = self.native_gesture.is_some();
@@ -138,10 +136,6 @@ impl FrameApp {
             }
         }
         self.execute_geometry_commands(ctx, commands);
-        // 跟随命令走既有几何命令通道落地（工单 03），不另开通道。
-        if let Some(target) = follow_target {
-            self.execute_geometry_commands(ctx, vec![GeomCommand::SetOuterPosition(target)]);
-        }
         requested_size
     }
     pub(crate) fn execute_geometry_commands(

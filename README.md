@@ -41,18 +41,14 @@ MoeFrame 可以同时开多扇相框：再次运行 exe（或点托盘菜单「�
   互相回滚。老配置首次启动自动迁移：1 号继承原图库与窗口位置。全局设置在任一
   设置窗改动后，其他实例轮询配置文件自动实时生效（只读应用，不触发写回）。
 - **窗口吸附**：拖一扇相框靠近另一扇的边（或所在显示器工作区边缘）到 12 逻辑 px
-  内，松手即贴合成零间隙；同名边接近时松手对齐成线。拖动过程中不干预，只在松手
-  瞬间吸附。贴合的相框结成**吸附组**：拖任意一扇，整组同移（各进程轮询跟随，约
-  一帧量级延迟）；组员切图变尺寸时以贴合边为锚、邻居不动。吸附只在同一显示器内
-  成立，拖过屏界自然脱组。设置窗有全局「窗口吸附」开关（默认开），关掉后吸附与
-  联动全部失效、一处关闭全家生效。
-- **拆组**：按住 Shift 拖动可让被拖的那扇独自移动（松手后按新位置重新派生组
-  关系）；或右键菜单「脱离吸附组」（仅在当前有贴合时出现）让本扇脱离联动、位置
-  不变，真正分开后重新贴合可再次成组。
-- **退出与自启**：每扇的「退出」只退自己；托盘菜单「退出全部相框」让全部相框
-  各自走正常退出路径收尾。开机自启仍只注册一个启动项：1 号实例启动时（不区分
-  自启还是手动启动）按各实例段的「在运行」标记恢复上次在运行的全部相框，被恢复
-  的相框认领回原编号、回到各自落盘位置；真在运行的编号不会被重复拉起。
+  内，拖动中即实时贴合成零间隙；同名边接近时对齐成线。贴合的相框结成**吸附组**：
+  吸附关系带方向（从属窗以窗口属性记基座），拖基座时被拖进程把整棵从属子树按同
+  一增量实时同移，拖从属则先脱离再只带自己的子树。组员切图变尺寸时以贴合边为
+  锚、邻居不动。吸附求解只认同一显示器内的伙伴，联动搬运可带成员过屏界（回拖
+  时按卫生规则清理失效关系）。设置窗有全局「窗口吸附」开关（默认开），关掉后吸
+  附与联动全部失效、一处关闭全家生效。
+- **拆组**：按住 Shift 拖动让被拖的那扇独自离开（清其基座属性）；或右键菜单
+  「脱离吸附组」（本窗有基座或有直接接触时出现）清本窗基座属性、位置不变。
 
 ## 第一次使用
 
@@ -140,8 +136,8 @@ bash scripts/check.sh   # cargo fmt --check + clippy -D warnings + test --all-ta
 src/lib.rs                      egui 输入 → 视口命令（拖动、八方向缩放、最大化守卫）
 src/app_core.rs、playlist.rs    轮播状态机与历史
 src/config.rs、config_sync.rs   配置读写与跨进程同步
-src/instance.rs、snap.rs、snap_follow.rs
-                                实例编号认领、窗口吸附判定/派生/求解与组联动跟随的纯逻辑
+src/instance.rs、snap.rs、snap_follow.rs、snap_group.rs
+                                实例编号认领、窗口吸附判定/求解、锚边变尺寸与吸附组方向关系/领队计划的纯逻辑
 src/global_sync.rs               全局设置跨实例同步的纯判定
 src/library.rs、loading.rs      图库扫描与解码
 src/display.rs、display_data.rs 显示数据与共享帧
@@ -150,7 +146,7 @@ src/window_geom.rs              窗口位置/尺寸与 DPI 恢复
 src/diagnostics.rs              真实文件日志与窗口观测
 src/bin/moe-frame.rs            正式相框入口：main、日志、配置装载
 src/bin/moe-frame/              宿主分模块：app、frame_ui、settings_ui、input、geometry、
-                                tray、texture、autostart_store、snap_enum、instance_launch、
+                                tray、texture、autostart_store、snap_enum、snap_subclass、instance_launch、
                                 ui_regressions
 src/bin/window-validation/      08 验证程序与 Win32 观测
 src/bin/decode-validation/      09 解码与内存验证程序

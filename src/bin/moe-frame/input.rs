@@ -138,7 +138,9 @@ impl FrameApp {
                         // geometry 的松手组装）；拖动开始同时是轮询
                         // 调度的重新武装事件。
                         self.solo_drag = modifiers.shift;
-                        self.poll_schedule.wake();
+                        // 工单 06：Shift 采样结果同步给子类化层，
+                        // 其在 WM_ENTERSIZEMOVE 按独走口径清属性。
+                        super::snap_subclass::set_solo_drag(modifiers.shift);
                         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                         self.native_gesture = Some(NativeGesture::Move);
                     }

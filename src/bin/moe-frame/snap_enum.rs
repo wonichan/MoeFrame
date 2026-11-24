@@ -3,11 +3,11 @@
 //! 全部组装成库 snap 的候选事实后交给纯判定筛伙伴。本层不含判定
 //! 逻辑（标题与 exe 两层过滤、同屏、求解都在库里）。
 //!
-//! 调用时机：工单 05 的 WM_MOVING 子类化层在拖动开始时枚举一
-//! 次物理伙伴、拖动中逐帧刷新伙伴矩形；以及工单 03 跟随轮询按
-//! 调度到期时枚举伙伴——无伙伴即休眠、零枚举（轮询成本口径在
-//! 库 snap 的 PollSchedule），桌面静止时不打扰。工单 02 的松手
-//! 吸附请求组装已随工单 05 拆除。
+//! 调用时机：工单 05/06 的 WM_MOVING 子类化层在拖动开始时枚举
+//! 一次物理伙伴（顺带读各伙伴的基座属性组装关系表）、拖动中逐
+//! 帧刷新伙伴矩形；锚边/菜单路径在已唤醒的帧上枚举逻辑伙伴
+//! （含基座属性），不新增任何唤醒。工单 03 的跟随轮询已随工
+//! 单 06 整段拆除。
 //!
 //! 坐标换算口径：Win32 返回的矩形是物理像素；每扇窗口按**它自己
 //! 的** DPI（GetDpiForWindow ÷ 96）换算成逻辑像素后才进候选事实
@@ -18,7 +18,7 @@
 use moe_frame::{
     instance::process_alive,
     snap::{is_partner_frame, CandidateWindow, DragSnapPartner, PartnerFrame, WindowRect},
-    snap_follow::FollowPartner,
+    snap_group::{parse_base_prop, SnapPartner},
 };
 use windows_sys::core::BOOL;
 use windows_sys::Win32::{
@@ -38,9 +38,52 @@ use windows_sys::Win32::{
     },
 };
 
-/// 工单 03 的跟随轮询枚举：筛出带窗口身份标识（句柄值）的伙伴
-/// 相框，供跟随引擎按身份键控历史与抑制标记。判定仍在库里。
-pub(crate) fn follow_partners(own_hwnd: isize, own_scale: f32) -> Vec<FollowPartner> {
+/// 基座关系窗口属性名（工单 06）：从属窗以此属性记其基座
+/// HWND。与工单 04 的退出请求标记 `MoeFrame.ExitAllRequested`
+/// 错开，互不干扰。值即基座窗口句柄（HANDLE）。
+const SNAP_BASE_PROP: &[u8] = b"MoeFrame.SnapBaseHwnd\0";
+
+/// 读一扇窗口的基座属性（跨进程可读）：无属性为 None。纯解
+/// 析在库 snap_group::parse_base_prop，本层只做 Win32 读写。
+pub(crate) fn read_base(hwnd_value: u64) -> Option<u64> {
+    if hwnd_value == 0 {
+        return None;
+    }
+    // SAFETY: 只读该窗口的公开属性；窗口已销毁时 GetPropA 返回
+    // null，按无基座处理。
+    let raw = unsafe { GetPropA(hwnd_value as usize as HWND, SNAP_BASE_PROP.as_ptr()) };
+    parse_base_prop(raw as usize)
+}
+
+/// 在一扇窗口上写基座属性（值 = 基座 HWND）。
+pub(crate) fn write_base(hwnd_value: u64, base: u64) {
+    if hwnd_value == 0 || base == 0 {
+        return;
+    }
+    // SAFETY: 同 read_base；写入失败（窗口已销毁）静默忽略。
+    unsafe {
+        SetPropA(
+            hwnd_value as usize as HWND,
+            SNAP_BASE_PROP.as_ptr(),
+            base as usize as HANDLE,
+        );
+    }
+}
+
+/// 清除一扇窗口的基座属性（菜单脱离 / 拖从属脱离 / 卫生清理）。
+pub(crate) fn clear_base(hwnd_value: u64) {
+    if hwnd_value == 0 {
+        return;
+    }
+    // SAFETY: 同 read_base；无属性时 RemovePropA 返回 null 忽略。
+    unsafe {
+        let _ = RemovePropA(hwnd_value as usize as HWND, SNAP_BASE_PROP.as_ptr());
+    }
+}
+
+/// 工单 06 的关系枚举（逻辑像素）：筛出带窗口身份与基座属性
+/// 的伙伴相框，供锚边邻居派生与菜单出现条件组装。判定仍在库里。
+pub(crate) fn relation_partners(own_hwnd: isize, own_scale: f32) -> Vec<SnapPartner> {
     if own_hwnd == 0 {
         return Vec::new();
     }
@@ -60,19 +103,74 @@ pub(crate) fn follow_partners(own_hwnd: isize, own_scale: f32) -> Vec<FollowPart
         .filter_map(|hwnd| {
             let candidate = candidate_for_window(hwnd, own_hwnd, own_scale, true)?;
             if is_partner_frame(&candidate, &own_exe) {
-                Some(FollowPartner {
-                    id: (hwnd as usize) as u64,
+                let id = (hwnd as usize) as u64;
+                Some(SnapPartner {
+                    id,
                     frame: PartnerFrame {
                         rect: candidate.rect,
                         monitor: candidate.monitor,
                         work_area: candidate.work_area,
                     },
+                    base: read_base(id),
                 })
             } else {
                 None
             }
         })
         .collect()
+}
+
+/// 工单 06 的拖动伙伴全事实（物理像素）：求解用矩形 + 所在屏
+/// 物理矩形 + 基座属性，拖动开始时枚举一次组装关系表与临时
+/// 成树判定；矩形每帧另经 partner_rect_physical 刷新。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DragPartnerInfo {
+    pub(crate) snap: DragSnapPartner,
+    pub(crate) monitor: WindowRect,
+    pub(crate) base: Option<u64>,
+}
+
+pub(crate) fn drag_partner_infos(own_hwnd: isize) -> Vec<DragPartnerInfo> {
+    drag_partners(own_hwnd)
+        .into_iter()
+        .filter_map(|snap| {
+            let monitor = monitor_rect_physical(snap.hwnd)?;
+            Some(DragPartnerInfo {
+                base: read_base(snap.hwnd),
+                monitor,
+                snap,
+            })
+        })
+        .collect()
+}
+
+/// 一扇窗口所在显示器的物理矩形（rcMonitor 原值）。
+pub(crate) fn monitor_rect_physical(hwnd_value: u64) -> Option<WindowRect> {
+    if hwnd_value == 0 {
+        return None;
+    }
+    // SAFETY: MonitorFromWindow 对任意句柄返回最近显示器或 null；
+    // GetMonitorInfoW 要求 cbSize 先行填好。
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd_value as usize as HWND, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_null() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return None;
+        }
+        let m = info.rcMonitor;
+        Some(WindowRect {
+            left: m.left as f32,
+            top: m.top as f32,
+            right: m.right as f32,
+            bottom: m.bottom as f32,
+        })
+    }
 }
 
 /// 启动瞬间的活伙伴位置（审查修复 S4）：级联基点的原料——枚举
