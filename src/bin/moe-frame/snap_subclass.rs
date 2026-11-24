@@ -28,10 +28,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use moe_frame::snap::{
-    physical_snap_threshold, solve_drag_snap, DragSnapPartner, PartnerFrame, SnapHit, WindowRect,
+    drag_partners_on_monitor, physical_snap_threshold, solve_drag_snap, DragSnapPartner,
+    PartnerFrame, SnapHit, WindowRect,
 };
 use moe_frame::snap_group::{
-    base_relation_valid, choose_base, frame_delta, plan_drag_start, temporary_contact_ids,
+    base_relation_valid, base_update_decision, frame_delta, plan_drag_start, temporary_contact_ids,
     SnapPartner, SnapRelation,
 };
 use windows_sys::Win32::{
@@ -59,14 +60,20 @@ static SOLO_DRAG: AtomicBool = AtomicBool::new(false);
 static DRAG_SESSION: Mutex<Option<DragSession>> = Mutex::new(None);
 
 /// 一次原生拖动的会话状态：开始时枚举一次的伙伴（矩形每帧经
-/// GetWindowRect 刷新）、本次拖动的搬运集合（拖动开始按关系
-/// 树 + 存量接触临时成树定死，拖动中不因新关系改变）、会话
-/// 已记录的本窗基座、最近一帧的贴合命中与目标矩形。关系属
-/// 性留在窗上、不随会话清除。
+/// GetWindowRect 刷新，与伙伴各自的显示器矩形事实成对保存，
+/// 供 WM_MOVING 每帧同屏过滤）、本次拖动的搬运集合（拖动开
+/// 始按关系树 + 存量接触临时成树定死，拖动中不因新关系改
+/// 变）、会话已记录的本窗基座、基座记录的排除集与独走禁记
+/// 旗标（审查修复 F1/F2：排除集 = 搬运集合 ∪ 拖动开始被清
+/// 掉的基座，WM_ENTERSIZEMOVE 组装、WM_EXITSIZEMOVE 随会
+/// 话销毁）、最近一帧的贴合命中与目标矩形。关系属性留在窗
+/// 上、不随会话清除。
 pub(crate) struct DragSession {
-    pub(crate) partners: Vec<DragSnapPartner>,
+    pub(crate) partners: Vec<(DragSnapPartner, WindowRect)>,
     pub(crate) carry: Vec<u64>,
     pub(crate) recorded_base: Option<u64>,
+    pub(crate) recording_exclusions: Vec<u64>,
+    pub(crate) block_base_recording: bool,
     pub(crate) hits: Vec<SnapHit>,
     pub(crate) last_target: Option<WindowRect>,
 }
@@ -89,7 +96,11 @@ pub(crate) fn install(hwnd: isize, enabled: bool) {
     }
     set_enabled(enabled);
     // SAFETY: hwnd 是本进程相框窗口的句柄（装配处经 raw-window-
-    // handle 取得）；子类化过程只转发消息，见 snap_subclass_proc。
+    // handle 取得）。snap_subclass_proc 只处理三条拖动消息
+    // （WM_ENTERSIZEMOVE / WM_MOVING / WM_EXITSIZEMOVE），其余
+    // 消息一律经 DefSubclassProc 转发给 winit 自有链；整体安全
+    // 性不来自回调本身无 unsafe，而来自各 unsafe 点的局部论证
+    // （RECT 改写、HDWP、属性读写各自的 SAFETY 注记）。
     unsafe {
         SetWindowSubclass(hwnd as HWND, Some(snap_subclass_proc), SUBCLASS_ID, 0);
     }
@@ -128,19 +139,18 @@ unsafe extern "system" fn snap_subclass_proc(
             WM_MOVING => {
                 handle_moving(hwnd, lparam);
             }
-            WM_EXITSIZEMOVE => {
-                // 关系属性留在窗上（下次拖动开始再做卫生校验）；
-                // 这里只清会话状态。
-                if let Ok(mut session) = DRAG_SESSION.lock() {
-                    *session = None;
-                }
-            }
             _ => {}
         }
-    } else if msg == WM_EXITSIZEMOVE {
+    }
+    if msg == WM_EXITSIZEMOVE {
+        // 会话收尾（开关启用与否都执行）：清拖动会话，并复位
+        // Shift 独走旗标（审查修复 F6——旗标只活在一次拖动内，
+        // 不复位会污染下一次拖动的独走判定）。关系属性留在窗
+        // 上（卫生规则在拖动开始与拖动中校验），不在此清。
         if let Ok(mut session) = DRAG_SESSION.lock() {
             *session = None;
         }
+        SOLO_DRAG.store(false, Ordering::Relaxed);
     }
     // SAFETY: 转发参数原样来自系统分发；DefSubclassProc 是子类化
     // 链的标准下一环（winit 自有过程）。
@@ -165,6 +175,9 @@ fn begin_drag_session(hwnd: HWND) {
         })
         .collect();
     let mut own_base = snap_enum::read_base(own_id);
+    // 拖动开始被清掉的基座（卫生清理或 plan 裁决脱离）：进入
+    // 本次会话的记录排除集，整个会话内不得被命中写回（F2）。
+    let mut cleared_base: Option<u64> = None;
     if let Some(base) = own_base {
         relations.push(SnapRelation {
             subordinate: own_id,
@@ -191,6 +204,7 @@ fn begin_drag_session(hwnd: HWND) {
         if !valid {
             snap_enum::clear_base(own_id);
             relations.retain(|r| r.subordinate != own_id);
+            cleared_base = own_base;
             own_base = None;
         }
     }
@@ -201,10 +215,13 @@ fn begin_drag_session(hwnd: HWND) {
         snap_enum::monitor_rect_physical(own_id),
     ) {
         (Some(own_rect), Some(own_monitor)) => {
+            // work_area 填各窗所在显示器的工作区（rcWork），不
+            // 是显示器矩形（审查修复 S6）：本窗经自家 HWND 取，
+            // 伙伴的已在 drag_partner_infos 组装时取好。
             let own_frame = PartnerFrame {
                 rect: own_rect,
                 monitor: own_monitor,
-                work_area: own_monitor,
+                work_area: snap_enum::work_area_rect_physical(own_id).unwrap_or(own_monitor),
             };
             let partners: Vec<SnapPartner> = infos
                 .iter()
@@ -213,7 +230,7 @@ fn begin_drag_session(hwnd: HWND) {
                     frame: PartnerFrame {
                         rect: info.snap.rect,
                         monitor: info.monitor,
-                        work_area: info.monitor,
+                        work_area: info.work_area,
                     },
                     base: info.base,
                 })
@@ -227,20 +244,34 @@ fn begin_drag_session(hwnd: HWND) {
     if plan.clear_own_base {
         // Shift 独走或拖从属：先脱离基座（清本窗基座属性）。
         snap_enum::clear_base(own_id);
+        cleared_base = own_base;
         own_base = None;
+    }
+    // 基座记录排除集（F1/F2）：搬运集合（我的从属 / 临时从属，
+    // 记成基座会让属性树成环）∪ 拖动开始被清掉的基座（脱离 /
+    // 卫生清理，同一拖动内不得被首帧命中写回）。solo 会话另以
+    // block_base_recording 整体禁记。两者都只活在本会话内。
+    let mut recording_exclusions = plan.carry.clone();
+    if let Some(cleared) = cleared_base {
+        if !recording_exclusions.contains(&cleared) {
+            recording_exclusions.push(cleared);
+        }
     }
     if let Ok(mut session) = DRAG_SESSION.lock() {
         *session = Some(DragSession {
-            partners: infos.iter().map(|info| info.snap).collect(),
+            partners: infos.iter().map(|info| (info.snap, info.monitor)).collect(),
             carry: plan.carry,
             recorded_base: own_base,
+            recording_exclusions,
+            block_base_recording: solo,
             hits: Vec::new(),
             last_target: None,
         });
     }
 }
 
-/// WM_MOVING 一帧：刷新伙伴矩形、求解吸附并改写拟拖 RECT、
+/// WM_MOVING 一帧：刷新伙伴矩形、按拟拖矩形所在显示器过滤
+/// 伙伴后求解吸附并改写拟拖 RECT、逐帧卫生校验已记录基座、
 /// 按命中记录关系，最后以帧增量用 HDWP 搬运搬运集合。
 fn handle_moving(hwnd: HWND, lparam: LPARAM) {
     if lparam == 0 {
@@ -256,15 +287,15 @@ fn handle_moving(hwnd: HWND, lparam: LPARAM) {
     // 本窗当前实际左上（帧首以自家 HWND 的 GetWindowRect 取得，
     // 物理像素）：帧增量的减数。
     let own_actual = snap_enum::partner_rect_physical(own_id).map(|rect| rect.pos());
-    session.partners.retain_mut(
-        |partner| match snap_enum::partner_rect_physical(partner.hwnd) {
+    session.partners.retain_mut(|(partner, _monitor)| {
+        match snap_enum::partner_rect_physical(partner.hwnd) {
             Some(rect) => {
                 partner.rect = rect;
                 true
             }
             None => false,
-        },
-    );
+        }
+    });
     // SAFETY: WM_MOVING 的 lparam 按 Win32 约定指向系统持有的
     // RECT（拟拖窗口矩形，物理像素），在本次回调内读写合法。
     let rect_ptr = lparam as *mut RECT;
@@ -278,19 +309,61 @@ fn handle_moving(hwnd: HWND, lparam: LPARAM) {
     };
     let work_area = snap_enum::work_area_for_physical_rect(proposed);
     let threshold = physical_snap_threshold(snap_enum::own_dpi(hwnd as isize));
-    let outcome = solve_drag_snap(proposed, &session.partners, work_area, threshold);
+    // 同屏过滤（F3）：只让与拟拖矩形同屏的伙伴参与本帧求解；
+    // 所在屏取不到时不丢伙伴（MonitorFromRect 带 NEAREST 兜底，
+    // 实践中恒有值），按全量求解。
+    let proposed_monitor = snap_enum::monitor_rect_for_physical_rect(proposed);
+    let solve_partners = match proposed_monitor {
+        Some(monitor) => drag_partners_on_monitor(&session.partners, monitor),
+        None => session
+            .partners
+            .iter()
+            .map(|(partner, _)| *partner)
+            .collect(),
+    };
+    let outcome = solve_drag_snap(proposed, &solve_partners, work_area, threshold);
+    // 逐帧卫生（F4）：记录新基座前先校验会话已记录的基座——
+    // 基座已不在伙伴集（已销毁被 retain 剔除）或与本帧最终落
+    // 位已不接触（含跨屏），则清属性并清会话记录。与拖动开
+    // 始的卫生校验共用库 snap_group::base_relation_valid。
+    if let Some(recorded) = session.recorded_base {
+        let base_frame = session
+            .partners
+            .iter()
+            .find(|(partner, _)| partner.hwnd == recorded);
+        let final_for_hygiene = outcome.as_ref().map_or(proposed, |o| o.target);
+        let valid = match (base_frame, proposed_monitor) {
+            (Some((partner, partner_monitor)), Some(monitor)) => base_relation_valid(
+                true,
+                final_for_hygiene,
+                partner.rect,
+                *partner_monitor == monitor,
+                threshold,
+            ),
+            _ => false,
+        };
+        if !valid {
+            snap_enum::clear_base(own_id);
+            session.recorded_base = None;
+        }
+    }
     let final_rect = match &outcome {
         Some(outcome) => {
             session.hits.clone_from(&outcome.hits);
             session.last_target = Some(outcome.target);
-            // 关系记录：命中非空且选出的基座与已记录者不同才写
-            // 属性（被拖窗成为基座的从属；其搬运集合不变，仍由
-            // 本窗领队搬运，见库 snap_group 文件头）。
-            if let Some(base) = choose_base(&outcome.hits) {
-                if session.recorded_base != Some(base) {
-                    snap_enum::write_base(own_id, base);
-                    session.recorded_base = Some(base);
-                }
+            // 关系记录：由库 base_update_decision 裁决（被拖窗成
+            // 为基座的从属；其搬运集合不变，仍由本窗领队搬运，
+            // 见库 snap_group 文件头）。排除集与 solo 禁记在拖
+            // 动开始组装进会话（F1/F2），命中 carry 内伙伴或刚
+            // 脱离的旧基座都不写回。
+            if let Some(base) = base_update_decision(
+                session.recorded_base,
+                &outcome.hits,
+                &session.recording_exclusions,
+                session.block_base_recording,
+            ) {
+                snap_enum::write_base(own_id, base);
+                session.recorded_base = Some(base);
             }
             outcome.target
         }

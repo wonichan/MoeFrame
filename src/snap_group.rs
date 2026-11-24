@@ -14,14 +14,19 @@
 //! 不变、新基座不被搬运——领队仍是被拖窗，下一次拖基座时
 //! 才按新树联动。
 //!
-//! 关系记录时机（工单 06 定死）：WM_MOVING 每帧求解后，命中
-//! 非空且选出的基座与会话已记录者不同才写属性；一窗至多一
-//! 个基座，多命中时取命中列表第一个（求解器按横轴、纵轴顺
-//! 序组装命中，第一个即本帧的首个贴合命中）；命中为空不
-//! 清属性（拖离后由下次拖动开始的卫生规则清理）。拖动结束
-//! 时关系以最后一次写入为准，留在窗上不清。
+//! 关系记录时机（工单 06 定死，审查修复 F1/F2 补排除口径）：
+//! WM_MOVING 每帧求解后由 [`base_update_decision`] 裁决是否
+//! 写属性——命中非空、选出的基座与会话已记录者不同、且不
+//! 在排除集内才写；排除集 = 本次搬运集合 ∪ 拖动开始被清掉
+//! 的基座，Shift 独走会话整体不记录。一窗至多一个基座，多
+//! 命中时取命中列表第一个（求解器按横轴、纵轴顺序组装命
+//! 中，第一个即本帧的首个贴合命中）；命中为空不清属性（拖
+//! 离后由卫生规则清理——拖动开始与拖动中每帧记录前各校验
+//! 一次，审查修复 F4）。拖动结束时关系以最后一次写入为准，
+//! 留在窗上不清。
 
-use crate::snap::{pair_in_contact, PartnerFrame, SnapHit, WindowRect};
+use crate::snap::{pair_in_contact, PartnerFrame, SnapHit, WindowRect, CONTACT_TOLERANCE};
+use crate::snap_follow::AnchorEdge;
 
 /// 窗口身份标识（宿主以相框窗口句柄值供给）。
 pub type WindowId = u64;
@@ -59,6 +64,35 @@ pub fn choose_base(hits: &[SnapHit]) -> Option<WindowId> {
     hits.first().map(|hit| hit.partner_hwnd)
 }
 
+/// 基座记录裁决（纯函数，工单 06 审查修复 F1/F2）：本帧命中选
+/// 出的基座是否要写成被拖窗的新基座属性——返回 Some(新基座)
+/// 表示宿主应写属性，None 表示不变（不写）。不变的情形：
+/// - 无贴合命中，或选出的基座与已记录者相同；
+/// - 选出的基座在 `excluded` 内：宿主组装的排除集 = 本次搬运
+///   集合（carry，我的从属 / 存量接触临时从属）∪ 会话排除集
+///   （拖动开始被清掉的那个基座——拖从属先脱离 / 卫生清理，
+///   整个会话内不得被首帧命中写回）。把 carry 内伙伴记成基
+///   座会让属性树成环（我带着走的从属反过来成了我的基座），
+///   故一律不记录；
+/// - `block_all` 为真（Shift 独走会话）：整个会话不记录任何
+///   基座。排除与独走都只活在本次拖动会话内，下一拖动由宿主
+///   以空排除集重新裁决、恢复正常记录。
+pub fn base_update_decision(
+    recorded_base: Option<WindowId>,
+    hits: &[SnapHit],
+    excluded: &[WindowId],
+    block_all: bool,
+) -> Option<WindowId> {
+    if block_all {
+        return None;
+    }
+    let candidate = choose_base(hits)?;
+    if recorded_base == Some(candidate) || excluded.contains(&candidate) {
+        return None;
+    }
+    Some(candidate)
+}
+
 /// 从属子树：关系表里以 `root` 为（传递）基座的全部窗口。
 /// 广度优先、按关系表出现顺序展开，结果稳定；关系异常成环
 /// 时已访问者不再展开（断环处理），根自身不计入结果。
@@ -79,16 +113,21 @@ pub fn descendant_subtree(root: WindowId, relations: &[SnapRelation]) -> Vec<Win
     result
 }
 
-/// 两矩形的分离量：横、纵两轴间隙（重叠为负）取大者。
-fn separation(a: &WindowRect, b: &WindowRect) -> f32 {
-    let dx = (a.left - b.right).max(b.left - a.right);
-    let dy = (a.top - b.bottom).max(b.top - a.bottom);
-    dx.max(dy)
+/// 两矩形是否仍算接触（卫生口径，工单 06 审查修复 F4 收紧）：
+/// 一轴的相对边间隙 ≤ 阈值、且另一轴投影真重叠。对角摆放时
+/// 两轴间隙可以同时 ≤ 阈值却毫无投影重叠——那不是接触（旧
+/// 口径取两轴间隙大者会误判有效），必须判无效。
+fn still_in_contact(a: &WindowRect, b: &WindowRect, threshold: f32) -> bool {
+    let gap_x = (a.left - b.right).max(b.left - a.right);
+    let gap_y = (a.top - b.bottom).max(b.top - a.bottom);
+    (gap_x <= threshold && a.overlap_y(b) > 0.0) || (gap_y <= threshold && a.overlap_x(b) > 0.0)
 }
 
-/// 卫生校验（纯判定）：基座须存活、与本窗同屏、且相对边间
-/// 隙不超过吸附阈值（入参按调用路径的坐标口径：拖动路径
-/// 为物理像素阈值）。任一不满足即陈旧关系、应清属性。
+/// 卫生校验（纯判定）：基座须存活、与本窗同屏、且两者仍接
+/// 触（见 [`still_in_contact`]，入参按调用路径的坐标口径：
+/// 拖动路径为物理像素阈值）。任一不满足即陈旧关系、应清
+/// 属性。执行时机有二：拖动开始（宿主 ENTERSIZEMOVE）与拖
+/// 动中每帧记录基座前（宿主 WM_MOVING）。
 pub fn base_relation_valid(
     base_alive: bool,
     own: WindowRect,
@@ -96,7 +135,7 @@ pub fn base_relation_valid(
     same_monitor: bool,
     threshold: f32,
 ) -> bool {
-    base_alive && same_monitor && separation(&own, &base) <= threshold
+    base_alive && same_monitor && still_in_contact(&own, &base, threshold)
 }
 
 /// 拖动开始计划：是否清本窗基座属性 + 本次拖动的搬运集合
@@ -200,46 +239,38 @@ pub fn anchor_neighbour_ids(
 
 /// 本窗与指定邻居之间的贴合边（锚边变尺寸用）：只有名单内
 /// 邻居的接触才产生锚边；按 Left/Right/Top/Bottom 稳定输出。
+/// 接触与否统一由 snap::pair_in_contact 判定（审查修复 S5，
+/// 不再自带第二份接触判定）；命中后按伙伴的相对方位命名边
+/// （间隙 ≈ 0 的那条相对边即贴合边）。
 pub fn anchor_edges(
     own: PartnerFrame,
     partners: &[SnapPartner],
     neighbours: &[WindowId],
-) -> Vec<crate::snap_follow::AnchorEdge> {
-    use crate::snap::{WindowRect as Rect, CONTACT_TOLERANCE};
-    use crate::snap_follow::AnchorEdge;
-    fn overlaps(a: &Rect, b: &Rect, vertical: bool) -> bool {
-        if vertical {
-            a.bottom.min(b.bottom) - a.top.max(b.top) > 0.0
-        } else {
-            a.right.min(b.right) - a.left.max(b.left) > 0.0
-        }
-    }
+) -> Vec<AnchorEdge> {
     let mut edges = Vec::new();
     for partner in partners.iter().filter(|p| neighbours.contains(&p.id)) {
         if partner.frame.monitor != own.monitor {
             continue;
         }
         let p = &partner.frame.rect;
+        if !pair_in_contact(&own.rect, p) {
+            continue;
+        }
         if (own.rect.left - p.right).abs() <= CONTACT_TOLERANCE
-            && overlaps(&own.rect, p, true)
             && !edges.contains(&AnchorEdge::Left)
         {
             edges.push(AnchorEdge::Left);
         }
         if (own.rect.right - p.left).abs() <= CONTACT_TOLERANCE
-            && overlaps(&own.rect, p, true)
             && !edges.contains(&AnchorEdge::Right)
         {
             edges.push(AnchorEdge::Right);
         }
-        if (own.rect.top - p.bottom).abs() <= CONTACT_TOLERANCE
-            && overlaps(&own.rect, p, false)
-            && !edges.contains(&AnchorEdge::Top)
+        if (own.rect.top - p.bottom).abs() <= CONTACT_TOLERANCE && !edges.contains(&AnchorEdge::Top)
         {
             edges.push(AnchorEdge::Top);
         }
         if (own.rect.bottom - p.top).abs() <= CONTACT_TOLERANCE
-            && overlaps(&own.rect, p, false)
             && !edges.contains(&AnchorEdge::Bottom)
         {
             edges.push(AnchorEdge::Bottom);
@@ -248,10 +279,13 @@ pub fn anchor_edges(
     edges
 }
 
-/// 菜单「脱离吸附组」的出现条件（工单 06 定死）：本窗有基
-/// 座属性，或有直接接触伙伴。
-pub fn menu_detach_available(has_base: bool, has_direct_contact: bool) -> bool {
-    has_base || has_direct_contact
+/// 菜单「脱离吸附组」的出现条件（工单 06 审查修复 F5 改定）：
+/// 本窗有基座属性，或有直接从属指向本窗——即存在与本窗相
+/// 关的属性关系可清。无任何属性关系的存量接触不出现该项
+/// （其分离走 Shift 独走）。菜单动作双向清属性：清本窗基
+/// 座属性 + 清直接从属窗上指向本窗的基座属性（宿主执行）。
+pub fn snap_detach_available(has_base: bool, has_direct_subordinate: bool) -> bool {
+    has_base || has_direct_subordinate
 }
 
 /// 一帧的搬运增量（物理像素）：本帧最终落位左上（吸附求解

@@ -1,11 +1,11 @@
-//! 多实例吸附专题工单 02：窗口吸附的纯逻辑——伙伴判定、接触派生
-//! 与松手吸附求解全部在库 snap 的 interface 上验证（宿主 Win32 枚举
-//! 层只把窗口事实喂进来，不含判定）。
+//! 多实例吸附专题工单 02 / 05：窗口吸附的纯逻辑——伙伴判定与
+//! 拖动中吸附求解全部在库 snap 的 interface 上验证（宿主 Win32
+//! 枚举层只把窗口事实喂进来，不含判定）。接触判定（pair_in_contact）
+//! 的用例随其消费方在 tests/snap_group.rs（临时成树 / 锚边）。
 
 use moe_frame::snap::{
-    derive_contacts, is_partner_frame, partner_frames, physical_snap_threshold, snap_groups,
-    solve_drag_snap, CandidateWindow, DragSnapPartner, PartnerFrame, SnapEdge, WindowRect,
-    SNAP_THRESHOLD,
+    drag_partners_on_monitor, is_partner_frame, partner_frames, physical_snap_threshold,
+    solve_drag_snap, CandidateWindow, DragSnapPartner, SnapEdge, WindowRect, SNAP_THRESHOLD,
 };
 
 const OWN_EXE: &str = r"C:\Apps\MoeFrame\MoeFrame.exe";
@@ -45,14 +45,6 @@ fn candidate(title: &str, exe: Option<&str>, rect: WindowRect) -> CandidateWindo
         exe_path: exe.map(str::to_owned),
         owner_alive: true,
         is_self_window: false,
-        rect,
-        monitor: MONITOR_MAIN,
-        work_area: WORK_MAIN,
-    }
-}
-
-fn partner(rect: WindowRect) -> PartnerFrame {
-    PartnerFrame {
         rect,
         monitor: MONITOR_MAIN,
         work_area: WORK_MAIN,
@@ -135,82 +127,6 @@ fn partner_frames_filters_and_keeps_geometry() {
     assert_eq!(frames.len(), 1);
     assert_eq!(frames[0].rect, rect(0.0, 0.0, 100.0, 100.0));
     assert_eq!(frames[0].monitor, MONITOR_MAIN);
-}
-
-// ---------- 接触派生 ----------
-
-#[test]
-fn contact_single_shared_edge() {
-    let frames = vec![
-        partner(rect(0.0, 0.0, 100.0, 100.0)),
-        partner(rect(100.0, 0.0, 200.0, 100.0)),
-    ];
-    let contacts = derive_contacts(&frames);
-    assert_eq!(contacts.len(), 1);
-    assert_eq!((contacts[0].a, contacts[0].b), (0, 1));
-    assert_eq!(snap_groups(&frames), vec![vec![0, 1]]);
-}
-
-#[test]
-fn contact_chain_of_three_forms_one_group() {
-    let frames = vec![
-        partner(rect(0.0, 0.0, 100.0, 100.0)),
-        partner(rect(100.0, 0.0, 200.0, 100.0)),
-        partner(rect(200.0, 0.0, 300.0, 100.0)),
-    ];
-    assert_eq!(derive_contacts(&frames).len(), 2);
-    assert_eq!(snap_groups(&frames), vec![vec![0, 1, 2]]);
-}
-
-#[test]
-fn contact_l_shape_two_edges() {
-    // 窗 2 同时贴住窗 0 的右边与窗 1 的下边：两条接触边、一个组。
-    let frames = vec![
-        partner(rect(0.0, 0.0, 100.0, 100.0)),
-        partner(rect(100.0, 100.0, 200.0, 200.0)),
-        partner(rect(100.0, 0.0, 200.0, 100.0)),
-    ];
-    assert_eq!(derive_contacts(&frames).len(), 2);
-    assert_eq!(snap_groups(&frames), vec![vec![0, 1, 2]]);
-}
-
-#[test]
-fn contact_none_when_apart() {
-    let frames = vec![
-        partner(rect(0.0, 0.0, 100.0, 100.0)),
-        partner(rect(300.0, 300.0, 400.0, 400.0)),
-    ];
-    assert!(derive_contacts(&frames).is_empty());
-    assert_eq!(snap_groups(&frames), vec![vec![0], vec![1]]);
-}
-
-#[test]
-fn contact_gap_beyond_tolerance_does_not_count() {
-    let frames = vec![
-        partner(rect(0.0, 0.0, 100.0, 100.0)),
-        partner(rect(105.0, 0.0, 205.0, 100.0)),
-    ];
-    assert!(derive_contacts(&frames).is_empty());
-}
-
-#[test]
-fn contact_across_monitors_does_not_count() {
-    // 几何上恰好相邻，但分属两屏：不判贴合。
-    let mut second = partner(rect(1920.0, 0.0, 2020.0, 100.0));
-    second.monitor = MONITOR_SECOND;
-    let frames = vec![partner(rect(1820.0, 0.0, 1920.0, 100.0)), second];
-    assert!(derive_contacts(&frames).is_empty());
-    assert_eq!(snap_groups(&frames), vec![vec![0], vec![1]]);
-}
-
-#[test]
-fn contact_requires_projection_overlap() {
-    // 边线对齐但纵向投影完全错开：不是贴合。
-    let frames = vec![
-        partner(rect(0.0, 0.0, 100.0, 100.0)),
-        partner(rect(100.0, 200.0, 200.0, 300.0)),
-    ];
-    assert!(derive_contacts(&frames).is_empty());
 }
 
 // ---------- 拖动中吸附求解（工单 05：物理像素 + 二维评分） ----------
@@ -399,4 +315,28 @@ fn drag_work_area_right_and_bottom_edges_attach() {
     let outcome = solve_drag_snap(moving, &[], Some(WORK_MAIN), SNAP_THRESHOLD).expect("应命中");
     assert_eq!(outcome.target, rect(1820.0, 940.0, 1920.0, 1040.0));
     assert!(outcome.hits.is_empty());
+}
+
+#[test]
+fn drag_partners_filtered_to_proposed_monitor() {
+    // 同屏过滤（审查修复 F3）：伙伴与各自显示器矩形成对供给，
+    // 只保留与拟拖矩形所在显示器相同者，跨屏伙伴不进求解。
+    let partners = vec![
+        (drag_partner(1, rect(0.0, 0.0, 100.0, 100.0)), MONITOR_MAIN),
+        (
+            drag_partner(2, rect(1920.0, 0.0, 2020.0, 100.0)),
+            MONITOR_SECOND,
+        ),
+        (
+            drag_partner(3, rect(200.0, 0.0, 300.0, 100.0)),
+            MONITOR_MAIN,
+        ),
+    ];
+    let filtered = drag_partners_on_monitor(&partners, MONITOR_MAIN);
+    assert_eq!(
+        filtered.iter().map(|p| p.hwnd).collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    let filtered = drag_partners_on_monitor(&partners, MONITOR_SECOND);
+    assert_eq!(filtered.iter().map(|p| p.hwnd).collect::<Vec<_>>(), vec![2]);
 }

@@ -127,6 +127,9 @@ pub(crate) fn relation_partners(own_hwnd: isize, own_scale: f32) -> Vec<SnapPart
 pub(crate) struct DragPartnerInfo {
     pub(crate) snap: DragSnapPartner,
     pub(crate) monitor: WindowRect,
+    /// 该伙伴所在显示器的工作区（物理像素，rcWork 原值）；取
+    /// 不到时退回显示器矩形本身。
+    pub(crate) work_area: WindowRect,
     pub(crate) base: Option<u64>,
 }
 
@@ -137,6 +140,7 @@ pub(crate) fn drag_partner_infos(own_hwnd: isize) -> Vec<DragPartnerInfo> {
             let monitor = monitor_rect_physical(snap.hwnd)?;
             Some(DragPartnerInfo {
                 base: read_base(snap.hwnd),
+                work_area: work_area_rect_physical(snap.hwnd).unwrap_or(monitor),
                 monitor,
                 snap,
             })
@@ -345,6 +349,69 @@ pub(crate) fn partner_rect_physical(hwnd_value: u64) -> Option<WindowRect> {
         right: rect.right as f32,
         bottom: rect.bottom as f32,
     })
+}
+
+/// 一扇窗口所在显示器的工作区（物理像素，rcWork 原值）：
+/// MonitorFromWindow + GetMonitorInfoW，与 monitor_rect_physical
+/// 同路、只换取 rcWork。
+pub(crate) fn work_area_rect_physical(hwnd_value: u64) -> Option<WindowRect> {
+    if hwnd_value == 0 {
+        return None;
+    }
+    // SAFETY: 同 monitor_rect_physical 的口径。
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd_value as usize as HWND, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_null() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return None;
+        }
+        let w = info.rcWork;
+        Some(WindowRect {
+            left: w.left as f32,
+            top: w.top as f32,
+            right: w.right as f32,
+            bottom: w.bottom as f32,
+        })
+    }
+}
+
+/// 拟拖矩形所在显示器的矩形（物理像素，rcMonitor 原值）：
+/// MonitorFromRect 取与拟拖矩形交叠最多的显示器。WM_MOVING
+/// 每帧的同屏过滤以它为准（审查修复 F3）。
+pub(crate) fn monitor_rect_for_physical_rect(rect: WindowRect) -> Option<WindowRect> {
+    let raw = RECT {
+        left: rect.left as i32,
+        top: rect.top as i32,
+        right: rect.right as i32,
+        bottom: rect.bottom as i32,
+    };
+    // SAFETY: 同 work_area_for_physical_rect 的口径，只换取 rcMonitor。
+    unsafe {
+        let monitor = MonitorFromRect(&raw, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_null() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return None;
+        }
+        let m = info.rcMonitor;
+        Some(WindowRect {
+            left: m.left as f32,
+            top: m.top as f32,
+            right: m.right as f32,
+            bottom: m.bottom as f32,
+        })
+    }
 }
 
 /// 拟拖矩形所在显示器的工作区（物理像素）：MonitorFromRect 取

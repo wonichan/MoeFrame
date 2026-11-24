@@ -145,8 +145,8 @@ fn same_exe_path(a: &str, b: &str) -> bool {
     normalize(a) == normalize(b)
 }
 
-/// 一扇已确认的伙伴相框：矩形与所在屏事实，供接触派生与工单 03
-/// 的组联动跟随复用。
+/// 一扇已确认的伙伴相框：矩形与所在屏事实，供接触判定（存量
+/// 接触临时成树与锚边邻居派生）复用。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PartnerFrame {
     pub rect: WindowRect,
@@ -168,31 +168,11 @@ pub fn partner_frames(candidates: &[CandidateWindow], own_exe: &str) -> Vec<Part
         .collect()
 }
 
-/// 一条贴合边：`frames[a]` 与 `frames[b]` 有一边贴合（下标 a < b）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Contact {
-    pub a: usize,
-    pub b: usize,
-}
-
-/// 接触派生（spec 第 7 节）：两扇窗同屏、相对边间隙 ≈ 0（容差
-/// [`CONTACT_TOLERANCE`]）、且两窗在该边的法线方向上投影重叠，
-/// 即视为该边贴合。跨屏不判；恰好相接但投影错开（角对角）不判。
-pub fn derive_contacts(frames: &[PartnerFrame]) -> Vec<Contact> {
-    let mut contacts = Vec::new();
-    for a in 0..frames.len() {
-        for b in (a + 1)..frames.len() {
-            if frames[a].monitor != frames[b].monitor {
-                continue;
-            }
-            if pair_in_contact(&frames[a].rect, &frames[b].rect) {
-                contacts.push(Contact { a, b });
-            }
-        }
-    }
-    contacts
-}
-
+/// 两窗接触判定（spec 第 7 节的接触几何）：相对边间隙 ≈ 0
+/// （容差 [`CONTACT_TOLERANCE`]）、且两窗在该边的法线方向上
+/// 投影重叠，即视为贴合。恰好相接但投影错开（角对角）不判。
+/// 同屏与否由调用方先行判定（本函数只看矩形）。存量接触临时
+/// 成树、锚边邻居与卫生校验的接触口径都收敛到这一份判定。
 pub(crate) fn pair_in_contact(a: &WindowRect, b: &WindowRect) -> bool {
     let vertical_touch = (a.right - b.left).abs() <= CONTACT_TOLERANCE
         || (a.left - b.right).abs() <= CONTACT_TOLERANCE;
@@ -201,49 +181,30 @@ pub(crate) fn pair_in_contact(a: &WindowRect, b: &WindowRect) -> bool {
     (vertical_touch && a.overlap_y(b) > 0.0) || (horizontal_touch && a.overlap_x(b) > 0.0)
 }
 
-/// 接触连通分量：贴合边连成的连通分量（含无接触的单窗分量），
-/// 组内与组间都按下标稳定排序。这是接触几何的派生事实；带方
-/// 向的吸附关系在 snap_group（工单 06），不由本函数表达。
-pub fn snap_groups(frames: &[PartnerFrame]) -> Vec<Vec<usize>> {
-    let mut parent: Vec<usize> = (0..frames.len()).collect();
-    fn find(parent: &mut [usize], mut node: usize) -> usize {
-        while parent[node] != node {
-            parent[node] = parent[parent[node]];
-            node = parent[node];
-        }
-        node
-    }
-    for contact in derive_contacts(frames) {
-        let (ra, rb) = (find(&mut parent, contact.a), find(&mut parent, contact.b));
-        if ra != rb {
-            parent[ra.max(rb)] = ra.min(rb);
-        }
-    }
-    // 按分量根归组：成员按下标升序进入（组内天然有序），分量按其
-    // 最小成员的出现顺序排列（组间稳定有序）。
-    let mut groups: Vec<Vec<usize>> = Vec::new();
-    let mut group_roots: Vec<usize> = Vec::new();
-    for index in 0..frames.len() {
-        let root = find(&mut parent, index);
-        match group_roots.iter().position(|known| *known == root) {
-            Some(slot) => groups[slot].push(index),
-            None => {
-                group_roots.push(root);
-                groups.push(vec![index]);
-            }
-        }
-    }
-    groups
-}
-
 /// 拖动中吸附的一位伙伴（工单 05）：窗口句柄值与物理像素矩形。
 /// 句柄只作身份标识随求解结果透传给工单 06 的接缝，本模块不解
-/// 引用它。同屏过滤由宿主在组装时完成（拟拖窗所在屏的伙伴才进
-/// 列表），故这里不再带显示器矩形。
+/// 引用它。伙伴自身不带显示器矩形：同屏过滤由宿主每帧以拟拖
+/// 矩形所在显示器调用 [`drag_partners_on_monitor`] 完成（伙伴
+/// 的显示器事实由宿主在拖动开始时与伙伴成对保存）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DragSnapPartner {
     pub hwnd: u64,
     pub rect: WindowRect,
+}
+
+/// 同屏过滤（纯判定，工单 05 审查修复 F3）：伙伴与其所在显示
+/// 器矩形（物理像素）成对供给，只保留显示器矩形与 `monitor`
+/// 相等者（保持原顺序）。宿主在 WM_MOVING 每帧以拟拖矩形所在
+/// 显示器调用——跨屏伙伴不进求解，拖过屏界后按新屏的伙伴求解。
+pub fn drag_partners_on_monitor(
+    partners: &[(DragSnapPartner, WindowRect)],
+    monitor: WindowRect,
+) -> Vec<DragSnapPartner> {
+    partners
+        .iter()
+        .filter(|(_, partner_monitor)| *partner_monitor == monitor)
+        .map(|(partner, _)| *partner)
+        .collect()
 }
 
 /// 被拖窗的哪条边贴合到伙伴（工单 05 给工单 06 的接缝词汇）：

@@ -210,9 +210,10 @@ impl eframe::App for FrameApp {
         let playing = self.core.is_playing();
         // 相框右键菜单的最终形态（工单 04 定死，守菜单瘦身口径——
         // 本专题只加「脱离吸附组」一项）：上一张 / 下一张 / 播放·暂
-        // 停 / 脱离吸附组（仅当前有直接接触时出现）/ 置于顶层 / 置
-        // 于底层 / 设置 / 退出，共 7 项、无接触时 6 项（脱离项不
-        // 出现）。「退出」只退本实例，与托盘「退出全部相框」分工。
+        // 停 / 脱离吸附组（仅当本窗有基座属性或有直接从属指向本
+        // 窗时出现，审查修复 F5）/ 置于顶层 / 置于底层 / 设置 /
+        // 退出，共 7 项、无属性关系时 6 项（脱离项不出现）。
+        // 「退出」只退本实例，与托盘「退出全部相框」分工。
         panel
             .response
             .interact(egui::Sense::click())
@@ -229,10 +230,10 @@ impl eframe::App for FrameApp {
                     menu_intent = Some(Intent::PlayPauseToggled { now_ms: now });
                     ui.close();
                 }
-                // 脱离吸附组（工单 06）：出现条件定死为「本窗有
-                // 基座属性或有直接接触伙伴」（守菜单瘦身口径）；
-                // 点击清本窗基座属性（经宿主薄层 RemoveProp），
-                // 位置不变。
+                // 脱离吸附组（工单 06，审查修复 F5 改定）：出现
+                // 条件为「本窗有基座属性，或有直接从属指向本
+                // 窗」（守菜单瘦身口径）；点击双向清属性（清本
+                // 窗基座 + 清直接从属指向本窗的基座），位置不变。
                 if self.snap_detach_available && ui.button("脱离吸附组").clicked() {
                     menu_detach = true;
                     ui.close();
@@ -299,9 +300,18 @@ impl eframe::App for FrameApp {
             self.request_settings(&ctx);
         }
         if menu_detach {
-            // 清本窗基座属性即脱离（工单 06）；锚边下一帧按新关
-            // 系 + 直接接触重新派生，不在此清。
-            super::snap_enum::clear_base(self.hwnd as u64);
+            // 双向清属性（审查修复 F5）：清本窗基座属性 + 枚举
+            // 伙伴逐个比对、清直接从属窗上指向本窗的基座属性；
+            // 与本窗相关的属性关系全清才算脱离（基座窗点此项同
+            // 样生效）。锚边下一帧按新关系 + 直接接触重新派生，
+            // 不在此清。
+            let own_id = self.hwnd as u64;
+            super::snap_enum::clear_base(own_id);
+            for partner in super::snap_enum::relation_partners(self.hwnd, ctx.pixels_per_point()) {
+                if partner.base == Some(own_id) {
+                    super::snap_enum::clear_base(partner.id);
+                }
+            }
             self.snap_detach_available = false;
         }
         if self.settings_open {

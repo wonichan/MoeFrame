@@ -90,14 +90,16 @@ pub(crate) struct FrameApp {
     /// config_sync 写回；WM_MOVING 子类化回调经静态镜像读同一
     /// 值（关闭时不求解、不改矩形，见 snap_subclass）。
     pub(crate) window_snap: bool,
-    /// 菜单「脱离吸附组」的出现条件（工单 06 定死）：本窗有基
-    /// 座属性或有直接接触伙伴；由 geometry 的锚边刷新每帧更新。
+    /// 菜单「脱离吸附组」的出现条件（工单 06 审查修复 F5 改
+    /// 定）：本窗有基座属性，或有直接从属指向本窗；由 geometry
+    /// 的锚边刷新每帧更新。
     pub(crate) snap_detach_available: bool,
     /// 最近一轮派生的贴合边：喂几何机的锚边变尺寸接缝（邻居按
     /// 属性关系 + 直接接触派生，工单 06）。
     pub(crate) snap_anchor: Vec<moe_frame::snap_follow::AnchorEdge>,
-    /// 本次移动手势是 Shift 拖动（手势开始时采样）：被拖窗 solo，
-    /// 松手不做松手吸附，松手后按新几何重新派生。
+    /// 本次移动手势是 Shift 拖动（拖动开始时采样）：子类化层
+    /// 据此在拖动开始清本窗基座属性并独走（不带子树），且本次
+    /// 拖动不记录新基座（审查修复 F2 的会话禁记）。
     pub(crate) solo_drag: bool,
     /// 本进程的实例编号（多实例吸附专题工单 01/04）：托盘 tooltip
     /// 与设置窗标题的编号来源，启动时自 HostInit 读入后不变。

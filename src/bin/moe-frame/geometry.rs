@@ -66,9 +66,12 @@ impl FrameApp {
                     moe_frame::snap_group::anchor_neighbour_ids(own_id, &relations, &contacts);
                 self.snap_anchor =
                     moe_frame::snap_group::anchor_edges(own_frame, &partners, &neighbours);
-                self.snap_detach_available = moe_frame::snap_group::menu_detach_available(
+                // 菜单脱离出现条件（审查修复 F5 改定）：本窗有基
+                // 座属性，或有直接从属指向本窗——存量接触无属性
+                // 关系不再触发该项。
+                self.snap_detach_available = moe_frame::snap_group::snap_detach_available(
                     own_base.is_some(),
-                    !contacts.is_empty(),
+                    partners.iter().any(|partner| partner.base == Some(own_id)),
                 );
             }
         }

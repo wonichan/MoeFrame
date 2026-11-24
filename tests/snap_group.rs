@@ -5,9 +5,9 @@
 use moe_frame::snap::{PartnerFrame, WindowRect};
 use moe_frame::snap_follow::AnchorEdge;
 use moe_frame::snap_group::{
-    anchor_edges, anchor_neighbour_ids, base_relation_valid, choose_base, descendant_subtree,
-    direct_contact_ids, frame_delta, menu_detach_available, parse_base_prop, plan_drag_start,
-    temporary_contact_ids, SnapPartner, SnapRelation,
+    anchor_edges, anchor_neighbour_ids, base_relation_valid, base_update_decision, choose_base,
+    descendant_subtree, direct_contact_ids, frame_delta, parse_base_prop, plan_drag_start,
+    snap_detach_available, temporary_contact_ids, SnapPartner, SnapRelation,
 };
 
 const MONITOR: WindowRect = WindowRect {
@@ -126,6 +126,57 @@ fn mid_drag_new_base_does_not_switch_leader() {
     assert!(!plan.carry.contains(&9));
 }
 
+// ---------- 基座记录裁决（审查修复 F1/F2） ----------
+
+fn hit(partner_hwnd: u64) -> moe_frame::snap::SnapHit {
+    moe_frame::snap::SnapHit {
+        partner_hwnd,
+        edge: moe_frame::snap::SnapEdge::Right,
+        target: WindowRect::from_pos_size([0.0, 0.0], [10.0, 10.0]),
+    }
+}
+
+#[test]
+fn base_update_skips_partner_inside_carry() {
+    // F1：拖基座时命中已在本次搬运集合（carry）内的从属——记
+    // 成基座会让属性树成环，不记录。
+    assert_eq!(base_update_decision(None, &[hit(5)], &[5, 6], false), None);
+}
+
+#[test]
+fn base_update_records_partner_outside_exclusions() {
+    // F1：命中 carry 外的伙伴，正常记录为新基座。
+    assert_eq!(
+        base_update_decision(None, &[hit(9)], &[5, 6], false),
+        Some(9)
+    );
+}
+
+#[test]
+fn base_update_never_rewrites_detached_base_within_same_drag() {
+    // F2：拖从属先脱离，旧基座 3 进会话排除集；同一拖动首帧再
+    // 命中 3 也不写回（否则脱离被当场撤销）。
+    assert_eq!(base_update_decision(None, &[hit(3)], &[3], false), None);
+    // 命中别的伙伴则正常记录。
+    assert_eq!(base_update_decision(None, &[hit(9)], &[3], false), Some(9));
+}
+
+#[test]
+fn base_update_solo_session_records_nothing_and_next_drag_recovers() {
+    // F2：solo 会话整体禁记——命中任何新伙伴都不记录；下一拖
+    // 动（新会话、空排除集、不禁记）恢复正常记录。
+    assert_eq!(base_update_decision(None, &[hit(9)], &[], true), None);
+    assert_eq!(base_update_decision(None, &[hit(9)], &[], false), Some(9));
+}
+
+#[test]
+fn base_update_keeps_recorded_base_when_hit_repeats_or_empty() {
+    // 已记录者与命中相同不重写；无命中不改关系。
+    assert_eq!(base_update_decision(Some(9), &[hit(9)], &[], false), None);
+    assert_eq!(base_update_decision(Some(9), &[], &[], false), None);
+    assert_eq!(base_update_decision(None, &[], &[], false), None);
+}
+
 // ---------- 存量接触临时成树 ----------
 
 #[test]
@@ -203,6 +254,20 @@ fn hygiene_rejects_cross_monitor_base() {
     ));
 }
 
+#[test]
+fn hygiene_rejects_diagonal_without_projection_overlap() {
+    // 对角反例（审查修复 F4）：基座在右下方，横、纵两轴间隙
+    // 各 10（都 ≤ 阈值 12），但两轴投影都无重叠——不是接触，
+    // 关系无效。旧口径（两轴间隙取大者 ≤ 阈值）会误判有效。
+    assert!(!base_relation_valid(
+        true,
+        rect(0.0, 0.0),
+        rect(210.0, 110.0),
+        true,
+        12.0
+    ));
+}
+
 // ---------- 属性值解析 / 菜单出现条件 / 帧增量 ----------
 
 #[test]
@@ -212,10 +277,12 @@ fn base_prop_value_parsing() {
 }
 
 #[test]
-fn menu_detach_available_with_base_or_direct_contact() {
-    assert!(menu_detach_available(true, false));
-    assert!(menu_detach_available(false, true));
-    assert!(!menu_detach_available(false, false));
+fn snap_detach_available_with_base_or_direct_subordinate() {
+    // 审查修复 F5：出现条件是与本窗相关的属性关系——本窗有基
+    // 座，或有直接从属指向本窗；存量接触（无属性关系）不触发。
+    assert!(snap_detach_available(true, false));
+    assert!(snap_detach_available(false, true));
+    assert!(!snap_detach_available(false, false));
 }
 
 #[test]
