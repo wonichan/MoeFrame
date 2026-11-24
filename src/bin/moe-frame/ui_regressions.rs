@@ -168,6 +168,7 @@ fn test_app(test_id: &str) -> (super::FrameApp, std::path::PathBuf) {
         frame_art_path: host.frame_art.clone(),
         frame_art: super::FrameArtHost::NotSelected,
         window_level: egui::WindowLevel::Normal,
+        level_guard: moe_frame::level_guard::LevelGuard::new(),
         session: moe_frame::settings_session::SettingsSession::new(),
         debug_last_inner: None,
     };
@@ -240,6 +241,36 @@ fn choose_menu_item(app: &mut super::FrameApp, ctx: &Context, label: &str) -> eg
         ctx,
         vec![pointer_button(item, PointerButton::Primary, false)],
     )
+}
+
+/// 以指定焦点与时刻跑一帧（置顶守擂工单 01）：焦点经视口信息注入，
+/// 时刻经 RawInput.time 注入（宿主 now_ms 的来源），无指针事件。
+fn run_focus_frame(
+    app: &mut super::FrameApp,
+    ctx: &Context,
+    focused: bool,
+    time_secs: f64,
+) -> egui::FullOutput {
+    let mut viewports = egui::ViewportIdMap::default();
+    viewports.insert(
+        egui::ViewportId::ROOT,
+        egui::ViewportInfo {
+            focused: Some(focused),
+            ..Default::default()
+        },
+    );
+    let input = RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+        time: Some(time_secs),
+        viewports,
+        events: Vec::new(),
+        ..Default::default()
+    };
+    let mut output = ctx.run_ui(input, |ui| {
+        eframe::App::ui(app, ui, &mut eframe::Frame::_new_kittest());
+    });
+    output.textures_delta.clear();
+    output
 }
 
 fn has_window_level_command(output: &egui::FullOutput, level: egui::WindowLevel) -> bool {
@@ -385,5 +416,101 @@ fn real_frame_menu_controls_session_window_level_without_changing_playback_or_vi
     );
     assert_eq!(app.core.is_playing(), before_playing);
     assert_eq!(app.core.frame_visible(), before_visible);
+    let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn window_level_is_reasserted_on_focus_loss_for_non_normal_levels_only() {
+    // 置顶守擂（置顶守擂工单 01）：菜单设层级的发送点由既有测试钉
+    // 住；本测试钉守擂——非 Normal 层级在失焦边沿重申、节流压住的
+    // 重申到期补发、Normal 零重申。焦点与时刻经 RawInput 注入。
+    let (mut app, temp) = test_app("window-level-guard");
+    let ctx = Context::default();
+    let current = temp.join("images/current.png");
+    let other = temp.join("images/other.png");
+    app.core.handle(moe_frame::app_core::Intent::FolderPicked(
+        temp.join("images"),
+    ));
+    app.core
+        .handle(moe_frame::app_core::Intent::ScanCompleted(vec![
+            current.clone(),
+            other,
+        ]));
+    app.core.handle(moe_frame::app_core::Intent::LoadCompleted {
+        shown: Some(current.clone()),
+        now_ms: 100,
+    });
+    let seq = app
+        .pipeline
+        .begin_load(moe_frame::loading::DisplayMode::Fit, [400, 300]);
+    assert_eq!(
+        app.pipeline.nav_reply(seq, Some(&current)),
+        moe_frame::display_data::NavDecision::Accept
+    );
+    app.pipeline.promote_incoming();
+
+    open_context_menu(&mut app, &ctx);
+    let top = choose_menu_item(&mut app, &ctx, "置于顶层");
+    assert!(has_window_level_command(
+        &top,
+        egui::WindowLevel::AlwaysOnTop
+    ));
+
+    // 聚焦帧无重申；失焦边沿帧重申一次；持续失焦不重复发。
+    let focused = run_focus_frame(&mut app, &ctx, true, 10.0);
+    assert!(!has_window_level_command(
+        &focused,
+        egui::WindowLevel::AlwaysOnTop
+    ));
+    let lost = run_focus_frame(&mut app, &ctx, false, 10.1);
+    assert!(has_window_level_command(
+        &lost,
+        egui::WindowLevel::AlwaysOnTop
+    ));
+    let still = run_focus_frame(&mut app, &ctx, false, 10.2);
+    assert!(!has_window_level_command(
+        &still,
+        egui::WindowLevel::AlwaysOnTop
+    ));
+    // 间隔内再次失焦：本帧被节流压住；间隔到期后在失焦帧补发。
+    run_focus_frame(&mut app, &ctx, true, 10.3);
+    let throttled = run_focus_frame(&mut app, &ctx, false, 10.4);
+    assert!(!has_window_level_command(
+        &throttled,
+        egui::WindowLevel::AlwaysOnTop
+    ));
+    let deferred = run_focus_frame(&mut app, &ctx, false, 11.2);
+    assert!(has_window_level_command(
+        &deferred,
+        egui::WindowLevel::AlwaysOnTop
+    ));
+
+    // 置于底层同理：失焦边沿重申 AlwaysOnBottom。
+    open_context_menu(&mut app, &ctx);
+    let bottom = choose_menu_item(&mut app, &ctx, "置于底层");
+    assert!(has_window_level_command(
+        &bottom,
+        egui::WindowLevel::AlwaysOnBottom
+    ));
+    run_focus_frame(&mut app, &ctx, true, 20.0);
+    let lost = run_focus_frame(&mut app, &ctx, false, 20.1);
+    assert!(has_window_level_command(
+        &lost,
+        egui::WindowLevel::AlwaysOnBottom
+    ));
+
+    // Normal 零重申：切回普通层级后，失焦边沿不产生任何层级命令。
+    open_context_menu(&mut app, &ctx);
+    let normal = choose_menu_item(&mut app, &ctx, "✓ 置于底层");
+    assert!(has_window_level_command(&normal, egui::WindowLevel::Normal));
+    run_focus_frame(&mut app, &ctx, true, 30.0);
+    let lost = run_focus_frame(&mut app, &ctx, false, 30.1);
+    for level in [
+        egui::WindowLevel::AlwaysOnTop,
+        egui::WindowLevel::AlwaysOnBottom,
+        egui::WindowLevel::Normal,
+    ] {
+        assert!(!has_window_level_command(&lost, level));
+    }
     let _ = std::fs::remove_dir_all(temp);
 }

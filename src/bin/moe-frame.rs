@@ -215,6 +215,27 @@ fn startup_marker(event: &str, details: &str) {
     );
 }
 
+/// 置顶守擂日志（置顶守擂工单 01）：与启动标记同文件同格式、独立
+/// 前缀；只在重申分类变化时由 frame_ui 写一行，不参与行为。
+#[cfg(windows)]
+fn level_guard_record(event: &str, details: &str) {
+    let Some(directory) = app_directory() else {
+        return;
+    };
+    let path = directory.join("moe_frame.log");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let _ = writeln!(
+        file,
+        "[level-guard] unix_ms={unix_ms} pid={} event={event} {details}",
+        std::process::id()
+    );
+}
+
 #[cfg(windows)]
 fn resize_debug_record(event: &str, details: &str) {
     let Some(directory) = app_directory() else {
@@ -346,6 +367,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             }));
             let mut app = FrameApp {
                 window_level: egui::WindowLevel::Normal,
+                level_guard: moe_frame::level_guard::LevelGuard::new(),
                 core: FrameCore::new(
                     core_args,
                     system_gesture_thresholds(cc.egui_ctx.pixels_per_point()),

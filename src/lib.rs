@@ -15,6 +15,7 @@ pub mod frame_layout;
 pub mod gesture;
 pub mod global_sync;
 pub mod instance;
+pub mod level_guard;
 pub mod library;
 pub mod loading;
 pub mod playlist;

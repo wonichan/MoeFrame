@@ -124,6 +124,9 @@ pub(crate) struct FrameApp {
     pub(crate) session: SettingsSession,
     /// Window level requested during this process; intentionally not persisted.
     pub(crate) window_level: egui::WindowLevel,
+    /// 窗口层级守擂状态（置顶守擂工单 01）：纯判定在库 level_guard，
+    /// 宿主每帧采样焦点轮询；与 window_level 同口径，会话级、不落盘。
+    pub(crate) level_guard: moe_frame::level_guard::LevelGuard,
     pub(crate) debug_last_inner: Option<[f32; 2]>,
 }
 impl FrameApp {
