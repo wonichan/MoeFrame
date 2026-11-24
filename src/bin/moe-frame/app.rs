@@ -85,6 +85,29 @@ pub(crate) struct FrameApp {
     /// 参数、自定义相框图按分析结果缩放、回退时按内置默认画框）；
     /// 设置窗切换时更新本字段并经 config_sync 写回。
     pub(crate) appearance: AppearanceMode,
+    /// 窗口吸附全局开关的当前值（多实例吸附专题工单 02）：启动自
+    /// 配置全局段经 HostInit 读入，设置窗切换时更新本字段并经
+    /// config_sync 写回；WM_MOVING 子类化回调经静态镜像读同一
+    /// 值（关闭时不求解、不改矩形，见 snap_subclass）。
+    pub(crate) window_snap: bool,
+    /// 菜单「脱离吸附组」的出现条件（工单 06 审查修复 F5 改
+    /// 定）：本窗有基座属性，或有直接从属指向本窗；由 geometry
+    /// 的锚边刷新每帧更新。
+    pub(crate) snap_detach_available: bool,
+    /// 最近一轮派生的贴合边：喂几何机的锚边变尺寸接缝（邻居按
+    /// 属性关系 + 直接接触派生，工单 06）。
+    pub(crate) snap_anchor: Vec<moe_frame::snap_follow::AnchorEdge>,
+    /// 本次移动手势是 Shift 拖动（拖动开始时采样）：子类化层
+    /// 据此在拖动开始清本窗基座属性并独走（不带子树），且本次
+    /// 拖动不记录新基座（审查修复 F2 的会话禁记）。
+    pub(crate) solo_drag: bool,
+    /// 本进程的实例编号（多实例吸附专题工单 01/04）：托盘 tooltip
+    /// 与设置窗标题的编号来源，启动时自 HostInit 读入后不变。
+    pub(crate) instance_number: u32,
+    /// 全局同步轮询状态（多实例吸附专题工单 04）：纯判定在库
+    /// global_sync；宿主只在既有唤醒帧上 stat 配置修改时间、变化
+    /// 时经 config_sync 只读重读并应用，不新增任何唤醒。
+    pub(crate) global_sync: moe_frame::global_sync::GlobalSyncState,
     /// 内置画框参数（V2 相框外观专题工单 02）：框体预设与框宽 /
     /// 卡纸宽；内置模式的内距（框宽 + 卡纸宽）与三层绘制都读它，
     /// 设置窗调整时更新本字段并经 config_sync 整组写回。
@@ -205,6 +228,11 @@ impl FrameApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 Effect::Exit => {
+                    // 工单 05：退出前卸载相框窗口的子类化。
+                    super::snap_subclass::uninstall(self.hwnd);
+                    // 正常退出清除本实例的「在运行」标记（工单 04）：
+                    // 崩溃残留不清，是自启恢复的判定依据之一。
+                    self.sync.set_running_marker(false);
                     // 退出收尾归 config_sync：几何状态机交出（最近
                     // 观察值、落盘基准），shutdown 一次结清（工单 20
                     // 的退出冲刷、工单 04 的收尾职责）。
@@ -312,6 +340,81 @@ impl FrameApp {
             self.sync.save_autostart_mirror(value);
         }
     }
+    /// 窗口吸附开关值的落地（工单 04 抽共用）：设置窗切换与全局同步
+    /// 应用共用这份副作用——改当前值；关闭时清锚边与菜单条件。
+    /// 写回与否由调用方决定（设置窗路径经 config_sync 写回；同步
+    /// 路径只读应用、绝不写回）。工单 06 起无轮询可停摆/武装：
+    /// 子类化回调读的是同一开关值的静态镜像，关闭即不求解。
+    pub(crate) fn apply_window_snap_value(&mut self, target: bool) {
+        self.window_snap = target;
+        super::snap_subclass::set_enabled(target);
+        if !target {
+            self.snap_detach_available = false;
+            self.snap_anchor.clear();
+        }
+    }
+
+    /// 全局同步一轮（多实例吸附专题工单 04）：在既有唤醒帧上被调
+    /// 用——stat 配置修改时间，未变即返回；变了才经 config_sync 只
+    /// 读重读，全局段确有变化时只应用宿主 / 核心持有的那部分（外
+    /// 观、内置画框、相框图、窗口吸附开关、播放模式 / 间隔 / 动画）。
+    /// 核心三项经既有意图改值，但其 Save 系列效果被滤除：同步只读
+    /// 应用、绝不触发写回（对方已经写过了）。实例段不碰。
+    pub(crate) fn poll_global_sync(&mut self, ctx: &egui::Context, now: u64) {
+        let mtime = std::fs::metadata(self.sync.config_path())
+            .and_then(|meta| meta.modified())
+            .ok();
+        if !self.global_sync.mtime_changed(mtime) {
+            return;
+        }
+        let reloaded = self.sync.reload_globals();
+        let Some(globals) = self.global_sync.apply_reloaded(reloaded) else {
+            return;
+        };
+        if globals.appearance != self.appearance {
+            self.appearance = globals.appearance;
+            if globals.appearance == AppearanceMode::Custom {
+                self.reload_frame_art();
+            }
+        }
+        if globals.frame != self.frame {
+            self.frame = globals.frame;
+        }
+        let frame_art = globals.frame_art.as_ref().map(PathBuf::from);
+        if frame_art != self.frame_art_path {
+            self.frame_art_path = frame_art;
+            self.reload_frame_art();
+        }
+        if globals.window_snap != self.window_snap {
+            self.apply_window_snap_value(globals.window_snap);
+        }
+        // 核心播放三项：意图会回 Save 效果，同步路径逐项滤除后分发
+        // （间隔的截止重计等行为副作用保留，只是不落盘）。
+        let mut effects = Vec::new();
+        if globals.mode != self.core.playback_mode() {
+            effects.extend(self.core.handle(Intent::PlaybackModeSelected(globals.mode)));
+        }
+        if globals.interval_secs != self.core.interval_secs() {
+            effects.extend(self.core.handle(Intent::IntervalSelected {
+                secs: globals.interval_secs,
+                now_ms: now,
+            }));
+        }
+        if globals.animation != self.core.animation() {
+            effects.extend(
+                self.core
+                    .handle(Intent::AnimationSelected(globals.animation)),
+            );
+        }
+        effects.retain(|effect| {
+            !matches!(
+                effect,
+                Effect::SaveInterval(_) | Effect::SavePlaybackMode(_) | Effect::SaveAnimation(_)
+            )
+        });
+        self.dispatch(ctx, effects);
+    }
+
     pub(crate) fn drain_replies(&mut self, ctx: &egui::Context) {
         while let Ok(reply) = self.reply_rx.try_recv() {
             match reply {

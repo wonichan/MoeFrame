@@ -117,6 +117,7 @@ fn test_app(test_id: &str) -> (super::FrameApp, std::path::PathBuf) {
     let (menu_event_tx, menu_event_rx) = channel();
     drop(menu_event_tx);
     let host = package.host;
+    let global_sync = moe_frame::global_sync::GlobalSyncState::new(sync.global_settings(), None);
     let app = super::FrameApp {
         core: moe_frame::app_core::FrameCore::new(
             package.core,
@@ -157,6 +158,12 @@ fn test_app(test_id: &str) -> (super::FrameApp, std::path::PathBuf) {
         autostart: package.autostart,
         autostart_store: super::RegAutostartStore,
         appearance: host.appearance,
+        window_snap: host.window_snap,
+        snap_detach_available: false,
+        snap_anchor: Vec::new(),
+        solo_drag: false,
+        instance_number: host.instance_number,
+        global_sync,
         frame: host.frame,
         frame_art_path: host.frame_art.clone(),
         frame_art: super::FrameArtHost::NotSelected,

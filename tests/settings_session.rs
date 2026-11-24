@@ -18,6 +18,7 @@ fn effective() -> EffectiveValues {
         animation: Animation::Curl,
         appearance: AppearanceMode::Builtin,
         frame: BuiltinFrame::default(),
+        window_snap: true,
     }
 }
 
@@ -457,5 +458,40 @@ fn animation_pick_orders_after_mode_and_before_appearance() {
             SessionAction::ApplyAppearance(AppearanceMode::Custom),
             SessionAction::ApplyIntervalPreset(60),
         ]
+    );
+}
+
+#[test]
+fn window_snap_pick_applies_once_with_same_value_guard() {
+    // 窗口吸附开关（多实例吸附专题工单 02）：即时控件，与其他即时
+    // 控件同规——点选产出一次动作；宿主应用后快照变为新值，同值
+    // 点选被守卫吞掉。
+    let mut session = opened();
+    let picks = Picks {
+        window_snap: Some(false),
+        ..Default::default()
+    };
+    assert_eq!(
+        frame(&mut session, picks),
+        vec![SessionAction::ApplyWindowSnap(false)]
+    );
+    // 宿主已应用 false：下一帧快照为 false，同值点选无动作。
+    let applied = EffectiveValues {
+        window_snap: false,
+        ..effective()
+    };
+    session.begin_frame(&applied);
+    let picks = Picks {
+        window_snap: Some(false),
+        ..Default::default()
+    };
+    assert_eq!(session.end_frame(picks, true), vec![]);
+    let picks = Picks {
+        window_snap: Some(true),
+        ..Default::default()
+    };
+    assert_eq!(
+        session.end_frame(picks, true),
+        vec![SessionAction::ApplyWindowSnap(true)]
     );
 }

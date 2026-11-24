@@ -325,3 +325,125 @@ fn startup_package_carries_the_frame_art_path_and_saves_write_through() {
     let config = ConfigStore::load(&config_path).config().clone();
     assert_eq!(config.display.frame_art, None);
 }
+
+// ---------- 多实例吸附专题工单 01：实例贯通与级联 ----------
+
+#[test]
+fn two_instances_interleave_through_config_sync_without_rollback() {
+    let root = temp_root("config-sync", "two-instances");
+    let (config_path, log_path) = paths(&root);
+    let mut registry = FakeStore::default();
+    let (mut a, package_a) =
+        ConfigSync::startup_for_instance(&config_path, &log_path, &mut registry, 1);
+    let mut registry = FakeStore::default();
+    let (mut b, package_b) =
+        ConfigSync::startup_for_instance(&config_path, &log_path, &mut registry, 2);
+    assert_eq!(package_a.host.instance_number, 1);
+    assert_eq!(package_b.host.instance_number, 2);
+    // A 改图库、B 改几何、交错落盘，最终两处都在。
+    a.save_folder(Path::new(r"D:\A 图库"));
+    b.save_window_geometry((Some(700), Some(500), 640, 400));
+    a.save_window_geometry((Some(10), Some(20), 480, 320));
+    b.save_folder(Path::new(r"D:\B 图库"));
+    let a_config = ConfigStore::load_for_instance(&config_path, 1)
+        .config()
+        .clone();
+    assert_eq!(a_config.image_folder.as_deref(), Some(r"D:\A 图库"));
+    assert_eq!((a_config.window.x, a_config.window.y), (Some(10), Some(20)));
+    let b_config = ConfigStore::load_for_instance(&config_path, 2)
+        .config()
+        .clone();
+    assert_eq!(b_config.image_folder.as_deref(), Some(r"D:\B 图库"));
+    assert_eq!(
+        (b_config.window.x, b_config.window.y),
+        (Some(700), Some(500))
+    );
+    // 核心入参也按实例取数：B 的启动包不带 A 的图库。
+    assert_eq!(package_b.core.saved_folder, None);
+}
+
+#[test]
+fn a_new_instance_cascades_from_the_previous_saved_position() {
+    let root = temp_root("config-sync", "cascade");
+    let (config_path, log_path) = paths(&root);
+    {
+        let mut store = ConfigStore::load_for_instance(&config_path, 1);
+        store
+            .set_window_geometry(Some(100), Some(100), 640, 400)
+            .expect("seed");
+    }
+    let mut registry = FakeStore::default();
+    let (_sync, package) =
+        ConfigSync::startup_for_instance(&config_path, &log_path, &mut registry, 2);
+    assert_eq!(
+        package.host.saved_position,
+        Some([124.0, 124.0]),
+        "级联 +24/+24"
+    );
+    assert_eq!(package.host.saved_geom, (Some(124), Some(124), 480, 320));
+}
+
+#[test]
+fn a_new_instance_cascades_from_the_live_partner_when_available() {
+    // 审查修复 S4：有实时枚举基点时以它为准（已开相框的当前
+    // 位置），落盘段（100,100）只作兜底、本次不生效。
+    let root = temp_root("config-sync", "cascade-live");
+    let (config_path, log_path) = paths(&root);
+    {
+        let mut store = ConfigStore::load_for_instance(&config_path, 1);
+        store
+            .set_window_geometry(Some(100), Some(100), 640, 400)
+            .expect("seed");
+    }
+    let mut registry = FakeStore::default();
+    let (_sync, package) = ConfigSync::startup_for_instance_with_cascade(
+        &config_path,
+        &log_path,
+        &mut registry,
+        2,
+        Some([500.0, 300.0]),
+    );
+    assert_eq!(
+        package.host.saved_position,
+        Some([524.0, 324.0]),
+        "相对已开相框的当前位置级联 +24/+24"
+    );
+}
+
+#[test]
+fn an_instance_with_saved_geometry_opens_exactly_there_without_cascade() {
+    let root = temp_root("config-sync", "no-cascade");
+    let (config_path, log_path) = paths(&root);
+    {
+        let mut store = ConfigStore::load_for_instance(&config_path, 1);
+        store
+            .set_window_geometry(Some(100), Some(100), 640, 400)
+            .expect("seed");
+        let mut store = ConfigStore::load_for_instance(&config_path, 2);
+        store
+            .set_window_geometry(Some(50), Some(60), 480, 320)
+            .expect("seed");
+    }
+    let mut registry = FakeStore::default();
+    let (_sync, package) =
+        ConfigSync::startup_for_instance(&config_path, &log_path, &mut registry, 2);
+    assert_eq!(package.host.saved_position, Some([50.0, 60.0]));
+    assert_eq!(package.host.saved_geom, (Some(50), Some(60), 480, 320));
+}
+
+#[test]
+fn window_snap_flows_through_startup_and_mirror_writes() {
+    // 窗口吸附开关（多实例吸附专题工单 02）：全局段、默认开；启动包
+    // 携带初值，宿主切换经 save_window_snap 走既有写入纪律写回。
+    let root = temp_root("config-sync", "window-snap");
+    let (config_path, log_path) = paths(&root);
+    let mut registry = FakeStore::default();
+    let (mut sync, package) = ConfigSync::startup(&config_path, &log_path, &mut registry);
+    assert!(package.host.window_snap, "默认开");
+    sync.save_window_snap(false);
+    let config = ConfigStore::load(&config_path).config().clone();
+    assert!(!config.general.window_snap);
+    let mut registry = FakeStore::default();
+    let (_sync, package) = ConfigSync::startup(&config_path, &log_path, &mut registry);
+    assert!(!package.host.window_snap, "重读后按落盘值");
+}

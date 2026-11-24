@@ -20,7 +20,11 @@
 //! 相框所在屏尺寸，不提供屏幕原点与屏幕枚举；正式宿主会另外从
 //! Win32 取工作区（含原点），本状态机的启动钳制仍按旧口径执行。
 
-use crate::config_sync::GeometryRecord;
+use crate::{
+    config_sync::GeometryRecord,
+    snap::WindowRect,
+    snap_follow::{anchored_resize_position, AnchorEdge},
+};
 
 /// 窗口最小边（逻辑尺寸）：保持无黑边时仍满足宿主最小窗口约束。
 pub const MIN_WINDOW_SIDE: f32 = 120.0;
@@ -65,7 +69,7 @@ impl Insets {
 const SAVE_SETTLE_SECS: f64 = 0.6;
 
 /// 宿主每帧喂入的观察值：窗口矩形、显示器尺寸、工作区、指针与可见性。
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct GeomObservation {
     /// 窗口外矩形的位置（左上，逻辑坐标）；取不到时为 None。
     pub outer_pos: Option<[f32; 2]>,
@@ -88,6 +92,11 @@ pub struct GeomObservation {
     /// 当前外观的四边内距（逻辑像素）：外框尺寸推导的输入，
     /// 变化本身也会触发一次比例校正。
     pub insets: Insets,
+    /// 本窗当前的贴合边（多实例吸附专题工单 03）：宿主以跟随引擎
+    /// 最近一轮的接触派生供给；比例校正变尺寸时以这些边为锚（共
+    /// 享边不动、向空闲方向长/缩），随后工单 06 钳制照旧叠加。
+    /// 空 = 无贴合，变尺寸保持既有「位置不动」口径。
+    pub snap_anchor: Vec<AnchorEdge>,
 }
 
 /// 状态机返回的抽象命令：宿主翻译成 ViewportCommand 执行，保存类
@@ -227,7 +236,8 @@ impl GeometryMachine {
             }
             self.pointer_was_down = true;
         } else {
-            if self.pointer_was_down {
+            let released = self.pointer_was_down;
+            if released {
                 // 松手这一帧即使尺寸没再变，也要按名义高度做一次比例校正。
                 if cur_changed {
                     self.nominal_height = cur[1].max(MIN_WINDOW_SIDE);
@@ -262,9 +272,30 @@ impl GeometryMachine {
                                 target_size[0] + outer[0] - cur[0],
                                 target_size[1] + outer[1] - cur[1],
                             ];
-                            if let Some(clamped) =
-                                clamp_outer_position_into_work_area(pos, target_outer, work_area)
+                            // 先锚边、后钳制（工单 03 + 工单 06 叠
+                            // 加顺序，spec 第 7 节）：有贴合边时以共
+                            // 享边为锚算变尺寸位置，再把锚后位置交
+                            // 既有钳制判溢出平移；钳制口径不变。
+                            let base_pos = if obs.snap_anchor.is_empty() {
+                                pos
+                            } else {
+                                anchored_resize_position(
+                                    WindowRect::from_pos_size(pos, outer),
+                                    target_outer,
+                                    &obs.snap_anchor,
+                                )
+                            };
+                            if (base_pos[0] - pos[0]).abs() > 0.5
+                                || (base_pos[1] - pos[1]).abs() > 0.5
                             {
+                                commands.push(GeomCommand::SetOuterPosition(base_pos));
+                                effective_pos = Some(base_pos);
+                            }
+                            if let Some(clamped) = clamp_outer_position_into_work_area(
+                                base_pos,
+                                target_outer,
+                                work_area,
+                            ) {
                                 commands.push(GeomCommand::SetOuterPosition(clamped));
                                 effective_pos = Some(clamped);
                             }

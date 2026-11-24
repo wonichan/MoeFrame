@@ -30,6 +30,7 @@ fn obs_with_insets(pos: [f32; 2], inner: [f32; 2], now: f64, insets: Insets) -> 
         frame_visible: true,
         now_secs: now,
         insets,
+        snap_anchor: Vec::new(),
     }
 }
 
@@ -730,4 +731,110 @@ fn an_oversized_switch_that_still_overflows_shifts_to_the_work_area_edge() {
     let shown = sizes(&commands)[0];
     assert!((shown[0] - 988.0).abs() < 0.51, "先缩到可用宽：{shown:?}");
     assert_eq!(positions(&commands), vec![[6.0, 100.0]]);
+}
+
+// ---------- 多实例吸附专题工单 05：松手吸附拆除后 ----------
+// 几何机不再有松手吸附接缝（GeomObservation.snap 已移除）：拖动
+// 中的吸附由 WM_MOVING 子类化层实时完成，几何机松手帧只做既有
+// 重校正。原工单 02 的两条接缝测试（松手帧经吸附请求落位、无松
+// 手经历的请求被忽略）随路径拆除，见工单 05 Comments 交代。
+
+#[test]
+fn release_frame_keeps_nominal_position_without_a_target() {
+    let mut m = machine(SAVED, None, true);
+    m.observe(&obs([100.0, 100.0], [480.0, 320.0], 0.0));
+    let mut dragging = obs([588.0, 100.0], [480.0, 320.0], 0.1);
+    dragging.pointer_down = true;
+    m.observe(&dragging);
+    let commands = m.observe(&obs([588.0, 100.0], [480.0, 320.0], 0.2));
+    assert!(positions(&commands).is_empty(), "{commands:?}");
+}
+
+// ---------- 工单 03：锚边变尺寸（先锚边、后工单 06 钳制） ----------
+
+/// 切图变尺寸的锚边场景：先以 aspect 2.0 落稳 640x320，再切到
+/// aspect 1.0（目标 320x320，宽度收缩），观察带贴合边进场。
+fn resize_with_anchor(
+    anchor: Vec<moe_frame::snap_follow::AnchorEdge>,
+    work_area: Option<[f32; 4]>,
+) -> Vec<GeomCommand> {
+    let saved: GeometryRecord = (Some(100), Some(100), 640, 320);
+    let mut m = machine(saved, Some(2.0), true);
+    let mut first = obs([100.0, 100.0], [640.0, 320.0], 0.0);
+    first.work_area = work_area;
+    m.observe(&first);
+    m.set_image_aspect(Some(1.0));
+    let mut second = obs([100.0, 100.0], [640.0, 320.0], 0.1);
+    second.work_area = work_area;
+    second.snap_anchor = anchor;
+    m.observe(&second)
+}
+
+#[test]
+fn anchored_resize_keeps_the_right_edge_and_grows_left() {
+    // 右贴合：宽度 640→320 时右边（x=740）不动，左上移到 420。
+    let commands = resize_with_anchor(vec![moe_frame::snap_follow::AnchorEdge::Right], None);
+    assert_eq!(sizes(&commands), vec![[320.0, 320.0]]);
+    assert_eq!(positions(&commands), vec![[420.0, 100.0]]);
+}
+
+#[test]
+fn anchored_resize_keeps_the_left_edge_and_grows_right() {
+    // 左贴合：位置纹丝不动，只发尺寸命令。
+    let commands = resize_with_anchor(vec![moe_frame::snap_follow::AnchorEdge::Left], None);
+    assert_eq!(sizes(&commands), vec![[320.0, 320.0]]);
+    assert!(positions(&commands).is_empty(), "{commands:?}");
+}
+
+#[test]
+fn anchored_resize_is_followed_by_the_existing_work_area_clamp() {
+    // 先锚边、后钳制：左贴合向右长到 640 宽会溢出 800 宽工作区，
+    // 工单 06 钳制把窗口平移回界内（右界 800-6-640=154）。
+    let saved: GeometryRecord = (Some(500), Some(100), 320, 320);
+    let mut m = machine(saved, Some(1.0), true);
+    let area = [0.0, 0.0, 800.0, 600.0];
+    m.observe(&obs_in_work_area([500.0, 100.0], [320.0, 320.0], 0.0, area));
+    m.set_image_aspect(Some(2.0));
+    let mut second = obs_in_work_area([500.0, 100.0], [320.0, 320.0], 0.1, area);
+    second.snap_anchor = vec![moe_frame::snap_follow::AnchorEdge::Left];
+    let commands = m.observe(&second);
+    assert_eq!(sizes(&commands), vec![[640.0, 320.0]]);
+    assert_eq!(positions(&commands), vec![[154.0, 100.0]]);
+}
+
+#[test]
+fn resize_without_anchor_keeps_the_existing_position_rule() {
+    // 无贴合：与既有口径逐项一致——只发尺寸命令，位置不动。
+    let commands = resize_with_anchor(Vec::new(), None);
+    assert_eq!(sizes(&commands), vec![[320.0, 320.0]]);
+    assert!(positions(&commands).is_empty(), "{commands:?}");
+}
+
+// ---------- 工单 06：伙伴被外力移动的吸收审计 ----------
+
+#[test]
+fn external_position_only_move_is_absorbed_without_correction() {
+    // 审计回归（工单 06）：伙伴窗被领队 HDWP 搬走后，其进程的
+    // 几何机只观察到 outer_pos 变化——尺寸不变、无 pointer_down。
+    // 观察路径不得把纯位置变化误判为用户手势：不发 SetInnerSize、
+    // 不发位置校正；新位置经防抖后按实际观察落盘。
+    let mut m = machine(SAVED, Some(1.5), true);
+    // 先落稳一帧（480x320 与 aspect 1.5 自洽，比例校正不发命令）。
+    let first = m.observe(&obs([100.0, 100.0], [480.0, 320.0], 0.0));
+    assert!(sizes(&first).is_empty(), "{first:?}");
+    assert!(positions(&first).is_empty(), "{first:?}");
+    // 外力搬移：只有位置变到 (340,180)。
+    let moved = m.observe(&obs([340.0, 180.0], [480.0, 320.0], 0.1));
+    assert!(sizes(&moved).is_empty(), "{moved:?}");
+    assert!(positions(&moved).is_empty(), "{moved:?}");
+    // 防抖到期后落盘几何跟随新位置（落盘以实际观察为准）。
+    let settled = m.observe(&obs([340.0, 180.0], [480.0, 320.0], 1.0));
+    let saves: Vec<GeometryRecord> = settled
+        .iter()
+        .filter_map(|c| match c {
+            GeomCommand::SaveGeometry(record) => Some(*record),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(saves, vec![(Some(340), Some(180), 480, 320)]);
 }

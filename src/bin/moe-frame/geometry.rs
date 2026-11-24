@@ -1,4 +1,4 @@
-//! 窗口几何：拖动改尺寸、吸附与恢复默认。
+//! 窗口几何：拖动改尺寸与恢复默认。
 
 use super::*;
 
@@ -6,6 +6,75 @@ impl FrameApp {
     /// 返回本帧发出的内尺寸请求；调用者不能把请求视为已经落地。
     pub(crate) fn update_window_geometry(&mut self, ctx: &egui::Context) -> Option<[f32; 2]> {
         let pixels_per_point = ctx.pixels_per_point();
+        // 原生移动手势结束（模态循环已退出、主键已抬起）的这一帧：
+        // 清手势旗标，让本帧观察的 pointer_down 如实为假，几何机据
+        // 此在松手帧做既有重校正。拖动中的窗口吸附已由 WM_MOVING
+        // 子类化层在拖动过程中实时完成（工单 05），几何机不再有
+        // 松手吸附路径；松手位置以实际观察为准、防抖落盘照旧。
+        if self.native_gesture == Some(NativeGesture::Move) && !primary_button_down() {
+            self.native_gesture = None;
+            if self.solo_drag {
+                // Shift 拖动（工单 03 手势开始采样、工单 06 清
+                // 属性语义）：独走已由子类化层在拖动开始执行，
+                // 这里只收尾旗标。
+                self.solo_drag = false;
+            }
+        }
+        // 锚边邻居刷新（工单 06）：只在已唤醒的帧上枚举一次伙伴
+        // （含各伙伴与本窗的基座属性），按「属性关系 + 直接接
+        // 触」派生锚边与菜单脱离的出现条件；不新增任何唤醒——
+        // 静止零重绘口径回到无吸附专题轮询的基线（工单 03 的轮
+        // 询跟随已整段拆除，整组联动由子类化层领队搬运）。
+        if self.window_snap && self.core.frame_visible() {
+            let own_rect = ctx.input(|input| input.viewport().outer_rect).map(|rect| {
+                moe_frame::snap::WindowRect::from_pos_size(
+                    [rect.min.x, rect.min.y],
+                    [rect.width(), rect.height()],
+                )
+            });
+            if let (Some(rect), Some((monitor, work_area))) = (
+                own_rect,
+                super::snap_enum::own_monitor_work_area(self.hwnd, pixels_per_point),
+            ) {
+                let own_frame = moe_frame::snap::PartnerFrame {
+                    rect,
+                    monitor,
+                    work_area,
+                };
+                let partners = super::snap_enum::relation_partners(self.hwnd, pixels_per_point);
+                let own_id = self.hwnd as u64;
+                let mut relations: Vec<moe_frame::snap_group::SnapRelation> = partners
+                    .iter()
+                    .filter_map(|partner| {
+                        partner
+                            .base
+                            .map(|base| moe_frame::snap_group::SnapRelation {
+                                subordinate: partner.id,
+                                base,
+                            })
+                    })
+                    .collect();
+                let own_base = super::snap_enum::read_base(own_id);
+                if let Some(base) = own_base {
+                    relations.push(moe_frame::snap_group::SnapRelation {
+                        subordinate: own_id,
+                        base,
+                    });
+                }
+                let contacts = moe_frame::snap_group::direct_contact_ids(own_frame, &partners);
+                let neighbours =
+                    moe_frame::snap_group::anchor_neighbour_ids(own_id, &relations, &contacts);
+                self.snap_anchor =
+                    moe_frame::snap_group::anchor_edges(own_frame, &partners, &neighbours);
+                // 菜单脱离出现条件（审查修复 F5 改定）：本窗有基
+                // 座属性，或有直接从属指向本窗——存量接触无属性
+                // 关系不再触发该项。
+                self.snap_detach_available = moe_frame::snap_group::snap_detach_available(
+                    own_base.is_some(),
+                    partners.iter().any(|partner| partner.base == Some(own_id)),
+                );
+            }
+        }
         let native_gesture = self.native_gesture.is_some();
         let (observation, focused) = ctx.input(|input| {
             let viewport = input.viewport();
@@ -28,6 +97,7 @@ impl FrameApp {
                     insets: self.effective_insets(
                         viewport.inner_rect.map(|rect| rect.width()).unwrap_or(0.0),
                     ),
+                    snap_anchor: self.snap_anchor.clone(),
                 },
                 viewport.focused,
             )

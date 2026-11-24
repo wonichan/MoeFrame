@@ -17,6 +17,10 @@ impl eframe::App for FrameApp {
         self.drain_replies(&ctx);
         self.update_geometry_and_autoplay(&ctx, resizing);
         let now = now_ms(&ctx);
+        // 全局同步轮询（工单 04）：只在本帧（既有调度唤醒的帧）顺手
+        // stat 一次配置修改时间，不新增唤醒——静止零重绘口径不变，
+        // 多实例时由工单 03 的跟随心跳帧承载，延迟约一个心跳周期。
+        self.poll_global_sync(&ctx, now);
         let tick_effects = self.core.handle(Intent::Tick { now_ms: now });
         self.dispatch(&ctx, tick_effects);
         // 转场推进（工单 02）：到期回送完成并在此刻转正纹理；
@@ -26,10 +30,23 @@ impl eframe::App for FrameApp {
         // 左键单击按焦点三分支召回（tray-only 工单 01），菜单项走与相框菜单相同的核心意图，隐藏时同样有效。
         if !self.tray_tried {
             self.tray_tried = true;
-            self.tray = build_tray(self.core.frame_visible(), self.core.is_playing());
+            self.tray = build_tray(
+                self.core.frame_visible(),
+                self.core.is_playing(),
+                self.instance_number,
+            );
         }
         let mut tray_intents: Vec<Intent> = Vec::new();
         let mut tray_settings = false;
+        let mut tray_new_frame = false;
+        let mut tray_exit_all = false;
+        // 「退出全部相框」的接收侧（工单 04）：别的实例在给本窗置了
+        // 退出属性并投递 WM_CLOSE 后，本帧读到属性即走自身正常退出
+        // 路径（与托盘「退出」同一意图：几何冲刷、清在运行标记、
+        // 摘托盘）。普通关闭没有属性，仍走关闭即隐藏，不受影响。
+        if super::snap_enum::take_exit_all_request(self.hwnd) {
+            tray_intents.push(Intent::ExitRequested);
+        }
         while let Ok(event) = self.tray_event_rx.try_recv() {
             if let tray_icon::TrayIconEvent::Click {
                 button,
@@ -59,6 +76,10 @@ impl eframe::App for FrameApp {
                     tray_intents.push(Intent::NextRequested);
                 } else if id == tray.settings.id() {
                     tray_settings = true;
+                } else if id == tray.new_frame.id() {
+                    tray_new_frame = true;
+                } else if id == tray.exit_all.id() {
+                    tray_exit_all = true;
                 } else if id == tray.exit.id() {
                     tray_intents.push(Intent::ExitRequested);
                 }
@@ -70,6 +91,16 @@ impl eframe::App for FrameApp {
         }
         if tray_settings {
             self.request_settings(&ctx);
+        }
+        if tray_new_frame {
+            spawn_new_frame();
+        }
+        if tray_exit_all {
+            // 退出全部（工单 04）：先给全部伙伴发退出请求，各实例走
+            // 自身退出路径；本实例最后退出（同一意图收尾）。
+            super::snap_enum::exit_all_partners(self.hwnd, ctx.pixels_per_point());
+            let effects = self.core.handle(Intent::ExitRequested);
+            self.dispatch(&ctx, effects);
         }
         // 关闭只隐藏（工单 17）：拦截窗口关闭请求（含 Alt+F4）改走核心的
         // 关闭即隐藏；明确退出已置 exiting 时不拦截，关窗即结束进程。
@@ -83,6 +114,7 @@ impl eframe::App for FrameApp {
         let requested_window_level = self.window_level;
         let mut menu_intent: Option<Intent> = None;
         let mut menu_settings = false;
+        let mut menu_detach = false;
         // 窗口永远透明创建（V2 相框外观专题工单 01）：画哪一层、
         // 面板铺不铺底、空状态提示怎么落，由布局接缝的绘制计划
         // 一次裁决（frame_layout::paint_plan，工单 04）——极简靠
@@ -176,6 +208,12 @@ impl eframe::App for FrameApp {
                 }
             });
         let playing = self.core.is_playing();
+        // 相框右键菜单的最终形态（工单 04 定死，守菜单瘦身口径——
+        // 本专题只加「脱离吸附组」一项）：上一张 / 下一张 / 播放·暂
+        // 停 / 脱离吸附组（仅当本窗有基座属性或有直接从属指向本
+        // 窗时出现，审查修复 F5）/ 置于顶层 / 置于底层 / 设置 /
+        // 退出，共 7 项、无属性关系时 6 项（脱离项不出现）。
+        // 「退出」只退本实例，与托盘「退出全部相框」分工。
         panel
             .response
             .interact(egui::Sense::click())
@@ -190,6 +228,14 @@ impl eframe::App for FrameApp {
                 }
                 if ui.button(if playing { "暂停" } else { "播放" }).clicked() {
                     menu_intent = Some(Intent::PlayPauseToggled { now_ms: now });
+                    ui.close();
+                }
+                // 脱离吸附组（工单 06，审查修复 F5 改定）：出现
+                // 条件为「本窗有基座属性，或有直接从属指向本
+                // 窗」（守菜单瘦身口径）；点击双向清属性（清本
+                // 窗基座 + 清直接从属指向本窗的基座），位置不变。
+                if self.snap_detach_available && ui.button("脱离吸附组").clicked() {
+                    menu_detach = true;
                     ui.close();
                 }
                 if ui
@@ -253,6 +299,21 @@ impl eframe::App for FrameApp {
         if menu_settings {
             self.request_settings(&ctx);
         }
+        if menu_detach {
+            // 双向清属性（审查修复 F5）：清本窗基座属性 + 枚举
+            // 伙伴逐个比对、清直接从属窗上指向本窗的基座属性；
+            // 与本窗相关的属性关系全清才算脱离（基座窗点此项同
+            // 样生效）。锚边下一帧按新关系 + 直接接触重新派生，
+            // 不在此清。
+            let own_id = self.hwnd as u64;
+            super::snap_enum::clear_base(own_id);
+            for partner in super::snap_enum::relation_partners(self.hwnd, ctx.pixels_per_point()) {
+                if partner.base == Some(own_id) {
+                    super::snap_enum::clear_base(partner.id);
+                }
+            }
+            self.snap_detach_available = false;
+        }
         if self.settings_open {
             self.show_settings(&ctx, now);
         }
@@ -293,7 +354,10 @@ impl eframe::App for FrameApp {
 /// 帧尾的下一帧唤醒裁决（纯函数，回归测试钉住），优先级从高到低：
 /// 隐藏低频心跳 → 导航加载轮询 → 转场动画帧（≤16ms，截止已过为
 /// 0）→ 治愈保活 → 几何落盘结算与轮播截止取更早者；都不命中则
-/// 不唤醒（None），避免空转重绘。
+/// 不唤醒（None），避免空转重绘。工单 06 起本裁决不再含任何
+/// 吸附轮询间隔——轮询跟随已整段拆除，静止零重绘回到基线。
+// 参数即裁决的全部输入事实，逐项平铺便于回归测试逐项钉住。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn next_frame_delay(
     frame_visible: bool,
     load_in_flight: bool,
@@ -327,10 +391,7 @@ pub(crate) fn next_frame_delay(
             geom_settle_ms.map(|deadline| Duration::from_millis(deadline.saturating_sub(now_ms)));
         // 几何还没停稳 0.6 秒：结算时刻前必须再出一帧，否则要等下一次
         // 轮播唤醒才写盘，"移动后随手退出"就会丢位置。
-        match (rotation, settle) {
-            (Some(rotation), Some(settle)) => Some(rotation.min(settle)),
-            (rotation, settle) => rotation.or(settle),
-        }
+        [rotation, settle].into_iter().flatten().min()
     }
 }
 
@@ -427,6 +488,20 @@ mod tests {
         assert_eq!(
             next_frame_delay(true, false, 0, None, Some(11_000), Some(1_500), 1_000),
             Some(Duration::from_millis(500))
+        );
+    }
+
+    #[test]
+    fn no_snap_poll_wake_remains_after_follow_removal() {
+        // 工单 06：轮询跟随拆除后，唤醒裁决不再含吸附轮询间隔——
+        // 无截止时不唤醒（静止零重绘基线）；有轮播截止时只按它走。
+        assert_eq!(
+            next_frame_delay(true, false, 0, None, None, None, 1_000),
+            None
+        );
+        assert_eq!(
+            next_frame_delay(true, false, 0, None, None, Some(60_000), 1_000),
+            Some(Duration::from_millis(59_000))
         );
     }
 }

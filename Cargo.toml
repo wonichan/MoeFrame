@@ -1,6 +1,6 @@
 [package]
 name = "moe_frame"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.95"
 
@@ -40,7 +40,7 @@ winreg = "=0.55.0"
 # raw-window-handle/windows-sys 只服务诊断日志的 Win32 观测：客户区、DPI 感知、窗口样式、前台窗口、
 # 以及工单 09 的进程内存采样（GetProcessMemoryInfo）。
 raw-window-handle = "=0.6.2"
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Wdk_System_SystemServices"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Wdk_System_SystemServices"] }
 
 # exe 资源图标嵌入（build.rs 使用）：仅 Windows 目标的构建依赖，
 # 运行时零成本；图标是外观项，不值得为它引入运行时依赖。

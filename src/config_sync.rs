@@ -23,6 +23,7 @@ use crate::{
     app_core::{CoreArgs, ResumeData},
     autostart::{AutostartStore, AutostartSync},
     config::{Animation, AppearanceMode, BuiltinFrame, ConfigStore, PlaybackMode, WindowConfig},
+    instance::initial_position,
 };
 use std::{
     io,
@@ -50,6 +51,13 @@ pub struct HostInit {
     /// 自定义相框图的路径（V2 相框外观专题工单 03）：宿主持有，
     /// 启动时据此分析一次；设置窗选新图经 save_frame_art_path 写回。
     pub frame_art: Option<PathBuf>,
+    /// 本进程的实例编号（多实例吸附专题工单 01）：宿主装配与日志
+    /// 辨识用；几何与图库的读写段由 ConfigStore 按此编号定位。
+    pub instance_number: u32,
+    /// 窗口吸附全局开关（多实例吸附专题工单 02）：宿主持有当前值，
+    /// 设置窗切换经 save_window_snap 写回；判定逻辑只读本进程这份
+    /// 启动值与自身切换（跨实例实时同步归工单 04）。
+    pub window_snap: bool,
 }
 
 /// 启动包：run() 拿到后只分发，不再逐字段翻译配置。
@@ -66,16 +74,53 @@ pub struct ConfigSync {
 }
 
 impl ConfigSync {
-    /// 启动装配：加载并修复配置、完成开机自启的注册表↔镜像对账
-    /// （实际状态优先，不一致时回写镜像，回写也走统一失败口径），
-    /// 再把配置翻译成启动包。
+    /// 启动装配（1 号实例口径）：见 startup_for_instance。
     pub fn startup(
         config_path: &Path,
         log_path: &Path,
         autostart_store: &mut dyn AutostartStore,
     ) -> (Self, StartupPackage) {
+        Self::startup_for_instance(config_path, log_path, autostart_store, 1)
+    }
+
+    /// 启动装配：按实例编号加载并修复配置（图库与几何取该编号的
+    /// 实例段）、完成开机自启的注册表↔镜像对账（实际状态优先，
+    /// 不一致时回写镜像，回写也走统一失败口径），再把配置翻译成
+    /// 启动包。初始位置口径（多实例吸附专题工单 01）：本实例段有
+    /// 落盘位置时严格按落盘开；没有时相对上一扇 +24/+24 级联，
+    /// 级联结果只作初始放置（saved_geom 的位置部分），落盘仍等
+    /// 本实例自己的几何变化经既有防抖/退出冲刷写回，钳制走几何
+    /// 机既有工作区口径。「上一扇」的来源见
+    /// [`Self::startup_for_instance_with_cascade`]。
+    pub fn startup_for_instance(
+        config_path: &Path,
+        log_path: &Path,
+        autostart_store: &mut dyn AutostartStore,
+        instance_number: u32,
+    ) -> (Self, StartupPackage) {
+        Self::startup_for_instance_with_cascade(
+            config_path,
+            log_path,
+            autostart_store,
+            instance_number,
+            None,
+        )
+    }
+
+    /// 带实时级联基点的启动装配（审查修复 S4）：`live_cascade_base`
+    /// 是宿主启动瞬间枚举到的「上一扇已开相框」的当前位置（选择
+    /// 规则在 `instance::cascade_base_position`）。有实时基点时以
+    /// 它为准；为 None（无活伙伴/枚举失败）时兜底回工单 01 的落
+    /// 盘段口径（编号小于本实例且有落盘位置的最大编号段）。
+    pub fn startup_for_instance_with_cascade(
+        config_path: &Path,
+        log_path: &Path,
+        autostart_store: &mut dyn AutostartStore,
+        instance_number: u32,
+        live_cascade_base: Option<[f32; 2]>,
+    ) -> (Self, StartupPackage) {
         let mut sync = Self {
-            store: ConfigStore::load(config_path),
+            store: ConfigStore::load_for_instance(config_path, instance_number),
             log_path: log_path.to_path_buf(),
         };
         let config = sync.store.config();
@@ -94,16 +139,43 @@ impl ConfigSync {
             resume: resume_data(config),
         };
         let window = config.window.clone();
+        let saved_position = match (window.x, window.y) {
+            (Some(x), Some(y)) => Some([x as f32, y as f32]),
+            _ => None,
+        };
+        // 上一扇的位置：实时枚举基点优先；没有时兜底用落盘段
+        // （编号小于本实例、有落盘位置的最大编号段）。
+        let previous_position = live_cascade_base.or_else(|| {
+            config
+                .instances
+                .iter()
+                .filter(|instance| instance.number < instance_number)
+                .filter_map(|instance| match (instance.window.x, instance.window.y) {
+                    (Some(x), Some(y)) => Some((instance.number, [x as f32, y as f32])),
+                    _ => None,
+                })
+                .max_by_key(|(number, _)| *number)
+                .map(|(_, position)| position)
+        });
+        let initial = initial_position(saved_position, previous_position);
+        let saved_geom = match (saved_position, initial) {
+            (None, Some(position)) => (
+                Some(position[0] as i64),
+                Some(position[1] as i64),
+                window.width,
+                window.height,
+            ),
+            _ => (window.x, window.y, window.width, window.height),
+        };
         let host = HostInit {
-            saved_geom: (window.x, window.y, window.width, window.height),
-            saved_position: match (window.x, window.y) {
-                (Some(x), Some(y)) => Some([x as f32, y as f32]),
-                _ => None,
-            },
+            saved_geom,
+            saved_position: initial,
             appearance: config.display.appearance,
             frame: config.display.frame,
             frame_art: config.display.frame_art.as_ref().map(PathBuf::from),
             window,
+            instance_number,
+            window_snap: config.general.window_snap,
         };
         (
             sync,
@@ -177,12 +249,50 @@ impl ConfigSync {
         self.note_write_result("builtin_frame", result);
     }
 
+    /// 窗口吸附开关写回（多实例吸附专题工单 02）：宿主切换即落盘，
+    /// 只改全局段的 window_snap 一个键。
+    pub fn save_window_snap(&mut self, enabled: bool) {
+        let result = self.store.set_window_snap(enabled);
+        self.note_write_result("window_snap", result);
+    }
+
     /// 相框图路径写回（V2 相框外观专题工单 03）：宿主选定即落盘，
     /// 只存路径不复制文件。
     pub fn save_frame_art_path(&mut self, path: Option<&Path>) {
         let text = path.map(|path| path.to_string_lossy().into_owned());
         let result = self.store.set_frame_art_path(text.as_deref());
         self.note_write_result("frame_art", result);
+    }
+
+    // ---- 多实例收口（工单 04）：在运行标记、全局同步与恢复裁决 ----
+
+    /// 「在运行」标记写回（工单 04）：启动置位、正常退出清除，走
+    /// ConfigStore 的写入纪律通道只改本实例段的 running 键。
+    pub fn set_running_marker(&mut self, running: bool) {
+        let result = self.store.set_instance_running(running);
+        self.note_write_result("running_marker", result);
+    }
+
+    /// 全部实例段的当前快照（工单 04 自启恢复裁决的输入）：取内存
+    /// 视图——启动时即磁盘口径，恢复裁决只在启动瞬间做一次。
+    pub fn instance_sections(&self) -> Vec<crate::config::InstanceConfig> {
+        self.store.config().instances.clone()
+    }
+
+    /// 当前全局段快照（工单 04）：同步状态机的启动基线取它。
+    pub fn global_settings(&self) -> crate::global_sync::GlobalSettings {
+        crate::global_sync::GlobalSettings::from_config(self.store.config())
+    }
+
+    /// 全局同步的只读重读（工单 04）：只换全局段、不碰实例段、
+    /// 不写回，口径在 ConfigStore::reload_globals。
+    pub fn reload_globals(&mut self) -> crate::global_sync::GlobalSettings {
+        self.store.reload_globals()
+    }
+
+    /// 配置文件路径（工单 04）：宿主按它 stat 修改时间驱动同步轮询。
+    pub fn config_path(&self) -> &Path {
+        self.store.path()
     }
 
     // ---- 注册表反向对齐的镜像落盘 ----

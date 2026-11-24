@@ -34,8 +34,17 @@ mod geometry;
 #[path = "moe-frame/input.rs"]
 mod input;
 #[cfg(windows)]
+#[path = "moe-frame/instance_launch.rs"]
+mod instance_launch;
+#[cfg(windows)]
 #[path = "moe-frame/settings_ui.rs"]
 mod settings_ui;
+#[cfg(windows)]
+#[path = "moe-frame/snap_enum.rs"]
+mod snap_enum;
+#[cfg(windows)]
+#[path = "moe-frame/snap_subclass.rs"]
+mod snap_subclass;
 #[cfg(windows)]
 #[path = "moe-frame/texture.rs"]
 mod texture;
@@ -230,9 +239,41 @@ fn run() -> Result<(), Box<dyn Error>> {
     let directory = app_directory().ok_or_else(|| io::Error::other("APPDATA is unavailable"))?;
     let config_path = directory.join("config.toml");
     let log_path = directory.join("moe_frame.log");
+    // 实例编号认领（多实例吸附专题工单 01）：认领守卫活到 run()
+    // 返回（即进程退出）才释放；配置的图库与几何按这个编号读写
+    // 自己的实例段。认领/级联基点/自启恢复的装配细节在
+    // instance_launch 模块，run() 只分发（审查修复 J3）。
+    // 指定编号已被存活进程持有时安静退出（恢复幂等）。
+    let Some(_instance_claim) = instance_launch::claim_from_args(&directory)? else {
+        return Ok(());
+    };
+    let instance_number = _instance_claim.number();
+    startup_marker("instance-claimed", &format!("instance={instance_number}"));
+    // 级联基点：趁本窗尚未创建，先枚举活伙伴的当前位置（S4）。
+    let live_cascade_base = instance_launch::live_cascade_base(&directory);
     // 启动装配（工单 04 深挖）：配置加载/修复、自启对账与全部初值
     // 翻译归 config_sync，run() 只分发启动包。
-    let (sync, package) = ConfigSync::startup(&config_path, &log_path, &mut RegAutostartStore);
+    let (mut sync, package) = ConfigSync::startup_for_instance_with_cascade(
+        &config_path,
+        &log_path,
+        &mut RegAutostartStore,
+        instance_number,
+        live_cascade_base,
+    );
+    // 「在运行」标记置位（工单 04）：走工单 01 写入通道只改本实例
+    // 段；正常退出时在 Effect::Exit 落地处清除，崩溃残留不清。
+    sync.set_running_marker(true);
+    // 自启恢复（工单 04）：1 号实例启动时幂等拉起残留的在运行
+    // 编号，裁决与拉起在 instance_launch。
+    if instance_number == 1 {
+        instance_launch::recover_marked_instances(&directory, &sync);
+    }
+    // 全局同步基线（工单 04）：启动已应用的全局值 + 此刻的文件修改
+    // 时间，同步状态机据此只报基线之后的变化。
+    let sync_baseline_mtime = std::fs::metadata(&config_path)
+        .and_then(|meta| meta.modified())
+        .ok();
+    let sync_applied = sync.global_settings();
     let core_args = package.core;
     let host_init = package.host;
     let autostart_sync = package.autostart;
@@ -287,6 +328,9 @@ fn run() -> Result<(), Box<dyn Error>> {
                     _ => None,
                 })
                 .unwrap_or(0);
+            // 工单 05：只给相框窗口挂 WM_MOVING 子类化（拖动中实时
+            // 吸附）；设置窗是另一个 HWND，不在此处、不挂。
+            snap_subclass::install(hwnd, host_init.window_snap);
             let (command_tx, reply_rx) = worker::spawn(log_path);
             let (tray_event_tx, tray_event_rx) = channel();
             let tray_ctx = cc.egui_ctx.clone();
@@ -337,6 +381,15 @@ fn run() -> Result<(), Box<dyn Error>> {
                 autostart: autostart_sync,
                 autostart_store: RegAutostartStore,
                 appearance: host_init.appearance,
+                window_snap: host_init.window_snap,
+                snap_detach_available: false,
+                snap_anchor: Vec::new(),
+                solo_drag: false,
+                instance_number,
+                global_sync: moe_frame::global_sync::GlobalSyncState::new(
+                    sync_applied,
+                    sync_baseline_mtime,
+                ),
                 frame: host_init.frame,
                 frame_art_path: host_init.frame_art.clone(),
                 frame_art: FrameArtHost::NotSelected,
