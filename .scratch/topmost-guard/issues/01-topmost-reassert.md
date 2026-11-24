@@ -49,7 +49,11 @@ WS_EX_TOPMOST 标记是否还在，并记一行日志区分「标记被摘」与
   Windows-only 限制，在本 VM 只能编译校验，实际运行在 CI
   （windows-latest 跑 scripts/check.sh）。
 - 笔记校验门：tree 与 archived 通过；format 门本笔记无问题，但仓
-  库整体有一处既有失败（implemented/feature/2026-11-24-wm-moving-
-  snap.md，吸附线 af4d696 引入、非本票范围），未代为修改。
+  库整体有 4 篇既有失败——吸附线 3 篇（implemented/feature/
+  2026-11-23-multi-instance-snap-review-fixes.md、2026-11-24-
+  leader-driven-group.md、2026-11-24-wm-moving-snap.md）与切换动
+  画线 1 篇（2026-11-23-crossfade-merge.md），均与本分支无关、
+  本分支新笔记不在名单，未代为修改。（本条计数与名单于评审修
+  复时按 format 门实测更正，原记「一处」不准。）
 - Status 置 needs-info：待用户按实机清单新增「置顶守擂」一节实机
   验收后回填。
