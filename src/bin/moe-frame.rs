@@ -43,6 +43,9 @@ mod settings_ui;
 #[path = "moe-frame/snap_enum.rs"]
 mod snap_enum;
 #[cfg(windows)]
+#[path = "moe-frame/snap_subclass.rs"]
+mod snap_subclass;
+#[cfg(windows)]
 #[path = "moe-frame/texture.rs"]
 mod texture;
 #[cfg(windows)]
@@ -325,6 +328,9 @@ fn run() -> Result<(), Box<dyn Error>> {
                     _ => None,
                 })
                 .unwrap_or(0);
+            // 工单 05：只给相框窗口挂 WM_MOVING 子类化（拖动中实时
+            // 吸附）；设置窗是另一个 HWND，不在此处、不挂。
+            snap_subclass::install(hwnd, host_init.window_snap);
             let (command_tx, reply_rx) = worker::spawn(log_path);
             let (tray_event_tx, tray_event_rx) = channel();
             let tray_ctx = cc.egui_ctx.clone();

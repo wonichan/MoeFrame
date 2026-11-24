@@ -30,7 +30,6 @@ fn obs_with_insets(pos: [f32; 2], inner: [f32; 2], now: f64, insets: Insets) -> 
         frame_visible: true,
         now_secs: now,
         insets,
-        snap: None,
         snap_anchor: Vec::new(),
     }
 }
@@ -734,69 +733,14 @@ fn an_oversized_switch_that_still_overflows_shifts_to_the_work_area_edge() {
     assert_eq!(positions(&commands), vec![[6.0, 100.0]]);
 }
 
-// ---------- 多实例吸附专题工单 02：松手吸附接缝 ----------
-
-use moe_frame::snap::{SnapPartner, SnapRequest, WindowRect};
-
-fn snap_request(partner_rect: [f32; 4]) -> SnapRequest {
-    SnapRequest {
-        partners: vec![SnapPartner {
-            rect: WindowRect {
-                left: partner_rect[0],
-                top: partner_rect[1],
-                right: partner_rect[2],
-                bottom: partner_rect[3],
-            },
-            monitor: WindowRect {
-                left: 0.0,
-                top: 0.0,
-                right: MONITOR[0],
-                bottom: MONITOR[1],
-            },
-        }],
-        own_monitor: WindowRect {
-            left: 0.0,
-            top: 0.0,
-            right: MONITOR[0],
-            bottom: MONITOR[1],
-        },
-    }
-}
+// ---------- 多实例吸附专题工单 05：松手吸附拆除后 ----------
+// 几何机不再有松手吸附接缝（GeomObservation.snap 已移除）：拖动
+// 中的吸附由 WM_MOVING 子类化层实时完成，几何机松手帧只做既有
+// 重校正。原工单 02 的两条接缝测试（松手帧经吸附请求落位、无松
+// 手经历的请求被忽略）随路径拆除，见工单 05 Comments 交代。
 
 #[test]
-fn release_frame_applies_snap_target_via_position_command() {
-    // 无比例（无图）机器：拖到伙伴右边 8px 处松手，松手帧经既有
-    // SetOuterPosition 命令贴合到间隙为零。
-    let mut m = machine(SAVED, None, true);
-    m.observe(&obs([100.0, 100.0], [480.0, 320.0], 0.0));
-    let mut dragging = obs([588.0, 100.0], [480.0, 320.0], 0.1);
-    dragging.pointer_down = true;
-    dragging.snap = Some(snap_request([100.0, 100.0, 580.0, 420.0]));
-    let during = m.observe(&dragging);
-    assert!(
-        positions(&during).is_empty(),
-        "拖动进行中不发任何吸附落位：{during:?}"
-    );
-    let mut release = obs([588.0, 100.0], [480.0, 320.0], 0.2);
-    release.snap = Some(snap_request([100.0, 100.0, 580.0, 420.0]));
-    let commands = m.observe(&release);
-    assert_eq!(positions(&commands), vec![[580.0, 100.0]]);
-}
-
-#[test]
-fn snap_request_without_a_release_is_ignored() {
-    // 没有经历按下 → 松手的帧：即使观察里带了吸附请求也不落位
-    //（吸附只挂在松手帧上，静止帧零打扰）。
-    let mut m = machine(SAVED, None, true);
-    m.observe(&obs([100.0, 100.0], [480.0, 320.0], 0.0));
-    let mut still = obs([588.0, 100.0], [480.0, 320.0], 0.1);
-    still.snap = Some(snap_request([100.0, 100.0, 580.0, 420.0]));
-    let commands = m.observe(&still);
-    assert!(positions(&commands).is_empty(), "{commands:?}");
-}
-
-#[test]
-fn release_without_snap_request_keeps_nominal_position() {
+fn release_frame_keeps_nominal_position_without_a_target() {
     let mut m = machine(SAVED, None, true);
     m.observe(&obs([100.0, 100.0], [480.0, 320.0], 0.0));
     let mut dragging = obs([588.0, 100.0], [480.0, 320.0], 0.1);

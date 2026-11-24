@@ -1,4 +1,4 @@
-//! 窗口几何：拖动改尺寸、吸附与恢复默认。
+//! 窗口几何：拖动改尺寸与恢复默认。
 
 use super::*;
 
@@ -6,27 +6,21 @@ impl FrameApp {
     /// 返回本帧发出的内尺寸请求；调用者不能把请求视为已经落地。
     pub(crate) fn update_window_geometry(&mut self, ctx: &egui::Context) -> Option<[f32; 2]> {
         let pixels_per_point = ctx.pixels_per_point();
-        // 松手吸附（多实例吸附专题工单 02）：原生移动手势结束（模态
-        // 循环已退出、主键已抬起）的这一帧才组装吸附请求——先清手势
-        // 旗标，让本帧观察的 pointer_down 如实为假，几何机据此在松手
-        // 帧消费请求。开关关闭时不枚举、不组装。缩放手势不吸附。
-        let snap = if self.native_gesture == Some(NativeGesture::Move) && !primary_button_down() {
+        // 原生移动手势结束（模态循环已退出、主键已抬起）的这一帧：
+        // 清手势旗标，让本帧观察的 pointer_down 如实为假，几何机据
+        // 此在松手帧做既有重校正。拖动中的窗口吸附已由 WM_MOVING
+        // 子类化层在拖动过程中实时完成（工单 05），几何机不再有
+        // 松手吸附路径；松手位置以实际观察为准、防抖落盘照旧。
+        if self.native_gesture == Some(NativeGesture::Move) && !primary_button_down() {
             self.native_gesture = None;
             // 拖动结束是轮询调度的重新武装事件之一（工单 03）。
             self.poll_schedule.wake();
             if self.solo_drag {
-                // Shift 拖动（工单 03）：被拖窗 solo，松手不做松手
-                // 吸附把它拉回组里；松手后组关系按新几何重新派生。
+                // Shift 拖动（工单 03）：被拖窗 solo，松手后组关系
+                // 按新几何重新派生。
                 self.solo_drag = false;
-                None
-            } else if self.window_snap {
-                super::snap_enum::release_snap_request(self.hwnd, pixels_per_point)
-            } else {
-                None
             }
-        } else {
-            None
-        };
+        }
         // 组联动跟随轮询（工单 03）：调度到期、相框可见且无原生手
         // 势时才枚举一次伙伴喂跟随引擎；无伙伴即休眠（零唤醒、
         // 零枚举），静止时只有心跳级检查且不发命令。开关关闭时
@@ -102,7 +96,6 @@ impl FrameApp {
                     insets: self.effective_insets(
                         viewport.inner_rect.map(|rect| rect.width()).unwrap_or(0.0),
                     ),
-                    snap,
                     snap_anchor: self.snap_anchor.clone(),
                 },
                 viewport.focused,

@@ -1,28 +1,34 @@
-//! 窗口吸附的纯逻辑（多实例吸附专题工单 02）：伙伴判定、接触派生
-//! 与松手吸附求解。宿主在拖动松手瞬间用 Win32 枚举窗口、把窗口事
-//! 实（标题、所属进程 exe、矩形、所在屏）喂进来，本模块只做判定
-//! 与求解，不碰任何系统调用；吸附关系不落盘、不存储，任意时刻都
-//! 由窗口边缘的几何接触实时派生（spec 第 7 节）。
+//! 窗口吸附的纯逻辑（多实例吸附专题工单 02 / 05）：伙伴判定、
+//! 接触派生与拖动中吸附求解。宿主把窗口事实（标题、所属进程
+//! exe、矩形、所在屏）喂进来，本模块只做判定与求解，不碰任何系
+//! 统调用；吸附关系不落盘、不存储，任意时刻都由窗口边缘的几何
+//! 接触实时派生（spec 第 7 节）。
 //!
-//! 坐标口径：本模块的一切矩形都是**逻辑像素**。宿主枚举拿到的
-//! Win32 矩形是物理像素，按各窗口自身的 DPI 比例（GetDpiForWindow
-//! ÷ 96）换算成逻辑像素后才喂进来；阈值 12 也是逻辑 px。所在屏以
-//! 带原点的显示器矩形标识——同屏判定比较显示器矩形本身，不用只
-//! 有尺寸的退化口径（两块同尺寸的屏会被误判成同一块）。
+//! 坐标口径：伙伴判定与接触派生用**逻辑像素**（宿主枚举拿到的
+//! Win32 矩形按各窗口自身的 DPI 比例换算后才喂进来）；拖动中求
+//! 解（工单 05）用**物理像素**——拟拖矩形、伙伴矩形与工作区同源
+//! 于 Win32 物理坐标，阈值由逻辑 12px 按本窗 DPI 换算（见
+//! [`physical_snap_threshold`]）。[`WindowRect`] 只是数值容器，
+//! 单位由调用路径决定。所在屏以带原点的显示器矩形标识——同屏判
+//! 定比较显示器矩形本身，不用只有尺寸的退化口径（两块同尺寸的
+//! 屏会被误判成同一块）。
 //!
-//! 松手求解的选择规则（定死，spec 第 3 节形态 + 工单 02 定案）：
-//! 横、纵两轴各自独立裁决后组合落位。单轴内先按被拖窗的边分组
-//! （左边组/右边组、顶边组/底边组——作用于不同边的候选互不压
-//! 制：一边已贴合不挡另一边被吸过去），组内优先级：
-//! 1. 贴合（边对边、工作区边缘）优先于同名边对齐；
-//! 2. 同类候选中间隙小者优先（最近优先）；
-//! 3. 间隙相同者按候选生成顺序取先者——生成顺序即伙伴的枚举顺
-//!    序（工作区边缘候选在全部伙伴候选之后生成，故同距时伙伴贴
-//!    合优先于工作区贴合），结果稳定可复现。
-//!    两组赢家再决胜：目标与现位一致的赢家（该边已贴合/已对齐）
-//!    不参与，只在真能移动窗口的赢家里取一——类别先行（贴合压
-//!    过对齐，跨组亦然），同类再按间隙小者、生成在先者。贴合候
-//!    选要求两窗在另一轴上的投影重叠；对齐不要求投影重叠。
+//! 拖动中求解的评分规则（定死，spec 第 15 节 + 工单 05）：横、
+//! 纵两轴各自独立裁决后组合落位（两轴可吸向不同伙伴）。单轴内
+//! 全部候选（伙伴贴合、伙伴同名边对齐、工作区边缘贴合）按同一
+//! 把尺子比成本，成本小者赢、同成本按生成顺序取先者（伙伴候选
+//! 先于工作区候选生成）：
+//! - 贴合成本 = 间隙绝对值 + (1 − 另一轴投影重叠比例) × 阈值。
+//!   仅擦边投影的伙伴成本被重叠项抬高，压不过正对的伙伴；
+//! - 对齐成本 = 间隙绝对值 + 另一轴相距距离 + 阈值 ÷ 2（类别罚
+//!   分：同等邻近程度下贴合优先于对齐，但明显更近的对齐可以赢
+//!   过更远的贴合——工作区贴合也不凭类别压过更近的伙伴）；
+//! - 对齐另加另一轴邻近约束：另一轴投影不重叠且相距超过阈值
+//!   时不产生对齐候选；贴合要求另一轴投影真重叠。
+//!
+//! 求解是当前拟拖矩形的纯函数、无状态：同一拖动内反复进出阈值
+//! 结果只由当前矩形决定，已在目标位时目标与现位一致（幂等），
+//! 不存在黏滞或漂移。
 //!
 //! 与工单 06 的 6px 钳制保留距离互不引用：那是切图溢出平移时窗
 //! 口与工作区边缘保留的距离；这里的工作区贴合是主动贴到边缘本
@@ -232,205 +238,234 @@ pub fn snap_groups(frames: &[PartnerFrame]) -> Vec<Vec<usize>> {
     groups
 }
 
-/// 松手吸附的一位伙伴：矩形与所在屏（求解只需要这两项）。
+/// 拖动中吸附的一位伙伴（工单 05）：窗口句柄值与物理像素矩形。
+/// 句柄只作身份标识随求解结果透传给工单 06 的接缝，本模块不解
+/// 引用它。同屏过滤由宿主在组装时完成（拟拖窗所在屏的伙伴才进
+/// 列表），故这里不再带显示器矩形。
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SnapPartner {
+pub struct DragSnapPartner {
+    pub hwnd: u64,
     pub rect: WindowRect,
-    pub monitor: WindowRect,
 }
 
-/// 几何机松手帧的吸附请求：宿主只在拖动松手那一帧组装并随观察
-/// 递交（开关关闭时宿主不组装，几何机也无从计算）。`own_monitor`
-/// 是被拖窗所在显示器的矩形（带原点），同屏判定以它为准。
+/// 被拖窗的哪条边贴合到伙伴（工单 05 给工单 06 的接缝词汇）：
+/// `Right` = 被拖窗右边贴到伙伴左边，余类推。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapEdge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+/// 一次贴合命中（工单 05 给工单 06 的接缝）：命中伙伴、贴合边与
+/// 求解给出的目标矩形（物理像素）。工单 06 据此在拖动会话里记
+/// 录关系、搬运从属子树；本票只产出与保存，不设窗口属性、不搬
+/// 伙伴。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SnapHit {
+    pub partner_hwnd: u64,
+    pub edge: SnapEdge,
+    pub target: WindowRect,
+}
+
+/// 拖动中求解的结论：目标矩形（物理像素）+ 全部贴合命中（两轴
+/// 可各命中一位伙伴）。对齐与工作区贴合不产出 [`SnapHit`]。
 #[derive(Clone, Debug, PartialEq)]
-pub struct SnapRequest {
-    pub partners: Vec<SnapPartner>,
-    pub own_monitor: WindowRect,
+pub struct DragSnapOutcome {
+    pub target: WindowRect,
+    pub hits: Vec<SnapHit>,
 }
 
-/// 单轴候选的类别：贴合优先于对齐——枚举声明序即优先级序
-/// （`Attach < Align`），组内与跨组裁决共用这条序（审查修复
-/// 工单 02：原 u8 类别常量改真枚举，跨组也按类别先行）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum SnapCandidateKind {
-    Attach,
-    Align,
+/// 逻辑阈值 → 物理阈值（工单 05）：12 逻辑 px 按本窗 DPI 换算，
+/// `dpi` 为 GetDpiForWindow 的返回值（96 = 100%）；取不到（0）时
+/// 退回逻辑值本身。
+pub fn physical_snap_threshold(dpi: u32) -> f32 {
+    if dpi == 0 {
+        SNAP_THRESHOLD
+    } else {
+        SNAP_THRESHOLD * dpi as f32 / 96.0
+    }
 }
 
-/// 一条单轴候选：类别、间隙绝对值、目标坐标与生成序号（同距
-/// 决胜的稳定次序）。
+/// 对齐候选的类别罚分系数：成本里加阈值的这一比例，使同等邻近
+/// 程度下贴合优先于对齐（见文件头评分规则）。
+const ALIGN_KIND_PENALTY: f32 = 0.5;
+
+/// 单轴上的一条候选：成本、目标坐标与贴合命中来源（伙伴贴合
+/// 才有：伙伴句柄 + 贴合边）。
 #[derive(Clone, Copy, Debug)]
-struct AxisCandidate {
-    kind: SnapCandidateKind,
-    gap: f32,
+struct DragCandidate {
+    cost: f32,
     target: f32,
-    order: usize,
+    hit: Option<(u64, SnapEdge)>,
 }
 
-/// 单轴求解器：按被拖窗的两条边分两组收录候选（见文件头的选择
-/// 规则），最后在两组赢家里裁决出本轴目标。
+/// 单轴评分求解器：收录全部候选，取成本最小者；替换只在成本严
+/// 格更小时发生，故同成本时先生成者胜出（生成顺序稳定可复现）。
 #[derive(Default)]
-struct AxisSolver {
-    min_best: Option<AxisCandidate>,
-    max_best: Option<AxisCandidate>,
-    order: usize,
+struct DragAxisSolver {
+    best: Option<DragCandidate>,
 }
 
-impl AxisSolver {
-    /// 收录一条作用于 min 边（左/顶）或 max 边（右/底）的候选：
-    /// 间隙在阈值内才收；组内比较类别先行、间隙次之、同距保留先
-    /// 生成的（稳定决胜，不替换）。
-    fn consider(&mut self, on_min_edge: bool, kind: SnapCandidateKind, gap: f32, target: f32) {
-        let order = self.order;
-        self.order += 1;
-        if gap.abs() > SNAP_THRESHOLD {
+impl DragAxisSolver {
+    fn consider(&mut self, cost: f32, target: f32, hit: Option<(u64, SnapEdge)>) {
+        let candidate = DragCandidate { cost, target, hit };
+        match self.best {
+            None => self.best = Some(candidate),
+            Some(current) if candidate.cost < current.cost => self.best = Some(candidate),
+            _ => {}
+        }
+    }
+
+    /// 贴合候选：间隙在阈值内且另一轴投影真重叠才收。`overlap_ratio`
+    /// 是另一轴投影重叠量 ÷ 两窗该轴长度的较小者。
+    fn consider_attach(
+        &mut self,
+        gap: f32,
+        overlap_ratio: f32,
+        threshold: f32,
+        target: f32,
+        hit: Option<(u64, SnapEdge)>,
+    ) {
+        if gap.abs() > threshold || overlap_ratio <= 0.0 {
             return;
         }
-        let candidate = AxisCandidate {
-            kind,
-            gap: gap.abs(),
-            target,
-            order,
-        };
-        let best = if on_min_edge {
-            &mut self.min_best
-        } else {
-            &mut self.max_best
-        };
-        match best {
-            None => *best = Some(candidate),
-            Some(current) => {
-                if candidate.kind < current.kind
-                    || (candidate.kind == current.kind && candidate.gap < current.gap)
-                {
-                    *best = Some(candidate);
-                }
-            }
-        }
+        let cost = gap.abs() + (1.0 - overlap_ratio.min(1.0)) * threshold;
+        self.consider(cost, target, hit);
     }
 
-    /// 本轴目标：两组赢家里只取真能移动窗口的（目标与现位之差超
-    /// 过 MIN_MOVE），类别先行（贴合无条件压过对齐，跨组亦然——
-    /// 审查修复 S6：原实现跨组只比间隙，对边的小间隙对齐会压过
-    /// 本边的贴合），同类间隙小者优先、同距生成在先者优先；
-    /// 都没有时保持现位。
-    fn target(&self, current: f32) -> f32 {
-        let mut winner: Option<AxisCandidate> = None;
-        for candidate in [self.min_best, self.max_best].into_iter().flatten() {
-            if (candidate.target - current).abs() <= MIN_MOVE {
-                continue;
-            }
-            match winner {
-                None => winner = Some(candidate),
-                Some(chosen) => {
-                    if candidate.kind < chosen.kind
-                        || (candidate.kind == chosen.kind
-                            && (candidate.gap < chosen.gap
-                                || (candidate.gap == chosen.gap && candidate.order < chosen.order)))
-                    {
-                        winner = Some(candidate);
-                    }
-                }
-            }
+    /// 对齐候选：间隙在阈值内且另一轴邻近（投影重叠或相距不超
+    /// 阈值）才收。
+    fn consider_align(&mut self, gap: f32, other_axis_distance: f32, threshold: f32, target: f32) {
+        if gap.abs() > threshold || other_axis_distance > threshold {
+            return;
         }
-        winner.map_or(current, |candidate| candidate.target)
+        let cost = gap.abs() + other_axis_distance + ALIGN_KIND_PENALTY * threshold;
+        self.consider(cost, target, None);
     }
 }
 
-/// 松手吸附求解（spec 第 3、5 节）：对被拖窗当前矩形，按文件头定
-/// 死的选择规则逐轴裁决，返回目标左上位置；两轴都没有生效候选
-/// （或目标与现位一致）时返回 None，调用方不发落位命令。
-pub fn solve_snap(
+/// 两矩形在某一轴上的相距距离：投影重叠（或恰好相接）为 0，
+/// 否则为投影之间的间隙。`horizontal` 为真看横轴，否则看纵轴。
+fn axis_distance(a: &WindowRect, b: &WindowRect, horizontal: bool) -> f32 {
+    let (a_min, a_max, b_min, b_max) = if horizontal {
+        (a.left, a.right, b.left, b.right)
+    } else {
+        (a.top, a.bottom, b.top, b.bottom)
+    };
+    (b_min - a_max).max(a_min - b_max).max(0.0)
+}
+
+/// 拖动中吸附求解（工单 05，spec 第 15 节）：以拟拖矩形（物理
+/// 像素）为被拖窗矩形，按文件头评分规则逐轴裁决，返回目标矩形
+/// 与贴合命中；两轴都没有候选时返回 None。纯函数、无状态：同
+/// 一输入恒得同一输出，宿主在 WM_MOVING 每帧重复调用即可。
+pub fn solve_drag_snap(
     moving: WindowRect,
-    partners: &[SnapPartner],
-    own_monitor: WindowRect,
+    partners: &[DragSnapPartner],
     work_area: Option<WindowRect>,
-) -> Option<[f32; 2]> {
-    let mut axis_x = AxisSolver::default();
-    let mut axis_y = AxisSolver::default();
+    threshold: f32,
+) -> Option<DragSnapOutcome> {
+    let mut axis_x = DragAxisSolver::default();
+    let mut axis_y = DragAxisSolver::default();
     for partner in partners {
-        if partner.monitor != own_monitor {
-            continue;
-        }
         let p = &partner.rect;
-        // 横轴：贴合要求纵向投影重叠；对齐不要求。候选按被拖窗的
-        // 边分组（true = 左边组，false = 右边组）。
-        if moving.overlap_y(p) > 0.0 {
-            axis_x.consider(
-                false,
-                SnapCandidateKind::Attach,
-                p.left - moving.right,
-                p.left - moving.width(),
-            );
-            axis_x.consider(
-                true,
-                SnapCandidateKind::Attach,
-                moving.left - p.right,
-                p.right,
-            );
-        }
-        axis_x.consider(true, SnapCandidateKind::Align, p.left - moving.left, p.left);
-        axis_x.consider(
-            false,
-            SnapCandidateKind::Align,
+        let ratio_y = moving.overlap_y(p) / moving.height().min(p.height());
+        let ratio_x = moving.overlap_x(p) / moving.width().min(p.width());
+        // 横轴：右边贴伙伴左边 / 左边贴伙伴右边（要求纵向重叠）。
+        axis_x.consider_attach(
+            p.left - moving.right,
+            ratio_y,
+            threshold,
+            p.left - moving.width(),
+            Some((partner.hwnd, SnapEdge::Right)),
+        );
+        axis_x.consider_attach(
+            moving.left - p.right,
+            ratio_y,
+            threshold,
+            p.right,
+            Some((partner.hwnd, SnapEdge::Left)),
+        );
+        // 横轴对齐：同名边（左对左、右对右），另一轴（纵）须邻近。
+        let dist_y = axis_distance(&moving, p, false);
+        axis_x.consider_align(p.left - moving.left, dist_y, threshold, p.left);
+        axis_x.consider_align(
             p.right - moving.right,
+            dist_y,
+            threshold,
             p.right - moving.width(),
         );
-        // 纵轴：贴合要求横向投影重叠；对齐不要求（true = 顶边组）。
-        if moving.overlap_x(p) > 0.0 {
-            axis_y.consider(
-                false,
-                SnapCandidateKind::Attach,
-                p.top - moving.bottom,
-                p.top - moving.height(),
-            );
-            axis_y.consider(
-                true,
-                SnapCandidateKind::Attach,
-                moving.top - p.bottom,
-                p.bottom,
-            );
-        }
-        axis_y.consider(true, SnapCandidateKind::Align, p.top - moving.top, p.top);
-        axis_y.consider(
-            false,
-            SnapCandidateKind::Align,
+        // 纵轴：下边贴伙伴上边 / 上边贴伙伴下边（要求横向重叠）。
+        axis_y.consider_attach(
+            p.top - moving.bottom,
+            ratio_x,
+            threshold,
+            p.top - moving.height(),
+            Some((partner.hwnd, SnapEdge::Bottom)),
+        );
+        axis_y.consider_attach(
+            moving.top - p.bottom,
+            ratio_x,
+            threshold,
+            p.bottom,
+            Some((partner.hwnd, SnapEdge::Top)),
+        );
+        let dist_x = axis_distance(&moving, p, true);
+        axis_y.consider_align(p.top - moving.top, dist_x, threshold, p.top);
+        axis_y.consider_align(
             p.bottom - moving.bottom,
+            dist_x,
+            threshold,
             p.bottom - moving.height(),
         );
     }
     if let Some(area) = work_area {
-        // 工作区边缘贴合（间隙归零）：在全部伙伴候选之后生成。
-        axis_x.consider(
-            true,
-            SnapCandidateKind::Attach,
-            moving.left - area.left,
-            area.left,
-        );
-        axis_x.consider(
-            false,
-            SnapCandidateKind::Attach,
+        // 工作区边缘贴合（间隙归零）：在全部伙伴候选之后生成，
+        // 同成本时伙伴优先。重叠比例按被拖窗与工作区在另一轴的
+        // 投影算（通常全重叠 = 1）。
+        let ratio_y = moving.overlap_y(&area) / moving.height().min(area.height());
+        let ratio_x = moving.overlap_x(&area) / moving.width().min(area.width());
+        axis_x.consider_attach(moving.left - area.left, ratio_y, threshold, area.left, None);
+        axis_x.consider_attach(
             area.right - moving.right,
+            ratio_y,
+            threshold,
             area.right - moving.width(),
+            None,
         );
-        axis_y.consider(
-            true,
-            SnapCandidateKind::Attach,
-            moving.top - area.top,
-            area.top,
-        );
-        axis_y.consider(
-            false,
-            SnapCandidateKind::Attach,
+        axis_y.consider_attach(moving.top - area.top, ratio_x, threshold, area.top, None);
+        axis_y.consider_attach(
             area.bottom - moving.bottom,
+            ratio_x,
+            threshold,
             area.bottom - moving.height(),
+            None,
         );
     }
-    let target_x = axis_x.target(moving.left);
-    let target_y = axis_y.target(moving.top);
-    if (target_x - moving.left).abs() > MIN_MOVE || (target_y - moving.top).abs() > MIN_MOVE {
-        Some([target_x, target_y])
-    } else {
-        None
+    if axis_x.best.is_none() && axis_y.best.is_none() {
+        return None;
     }
+    let mut target = moving;
+    if let Some(best) = axis_x.best {
+        target.left = best.target;
+        target.right = best.target + moving.width();
+    }
+    if let Some(best) = axis_y.best {
+        target.top = best.target;
+        target.bottom = best.target + moving.height();
+    }
+    // 命中在目标矩形完整定下后组装（两轴可各命中一位伙伴）。
+    let mut hits = Vec::new();
+    for best in [axis_x.best, axis_y.best].into_iter().flatten() {
+        if let Some((partner_hwnd, edge)) = best.hit {
+            hits.push(SnapHit {
+                partner_hwnd,
+                edge,
+                target,
+            });
+        }
+    }
+    Some(DragSnapOutcome { target, hits })
 }

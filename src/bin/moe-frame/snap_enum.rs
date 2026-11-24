@@ -3,9 +3,11 @@
 //! 全部组装成库 snap 的候选事实后交给纯判定筛伙伴。本层不含判定
 //! 逻辑（标题与 exe 两层过滤、同屏、求解都在库里）。
 //!
-//! 调用时机：拖动松手瞬间组装吸附请求（工单 02），以及工单 03
-//! 跟随轮询按调度到期时枚举伙伴——无伙伴即休眠、零枚举（轮询
-//! 成本口径在库 snap 的 PollSchedule），桌面静止时不打扰。
+//! 调用时机：工单 05 的 WM_MOVING 子类化层在拖动开始时枚举一
+//! 次物理伙伴、拖动中逐帧刷新伙伴矩形；以及工单 03 跟随轮询按
+//! 调度到期时枚举伙伴——无伙伴即休眠、零枚举（轮询成本口径在
+//! 库 snap 的 PollSchedule），桌面静止时不打扰。工单 02 的松手
+//! 吸附请求组装已随工单 05 拆除。
 //!
 //! 坐标换算口径：Win32 返回的矩形是物理像素；每扇窗口按**它自己
 //! 的** DPI（GetDpiForWindow ÷ 96）换算成逻辑像素后才进候选事实
@@ -15,16 +17,15 @@
 
 use moe_frame::{
     instance::process_alive,
-    snap::{
-        is_partner_frame, partner_frames, CandidateWindow, PartnerFrame, SnapPartner, SnapRequest,
-        WindowRect,
-    },
+    snap::{is_partner_frame, CandidateWindow, DragSnapPartner, PartnerFrame, WindowRect},
     snap_follow::FollowPartner,
 };
 use windows_sys::core::BOOL;
 use windows_sys::Win32::{
     Foundation::{HANDLE, HWND, LPARAM, RECT},
-    Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST},
+    Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromRect, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    },
     System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     },
@@ -36,32 +37,6 @@ use windows_sys::Win32::{
         },
     },
 };
-
-/// 松手瞬间组装吸附请求：枚举 → 纯判定筛伙伴 → 带上被拖窗所在屏。
-/// 没有伙伴或取不到自身所在屏时返回 None（几何机不做任何落位）。
-pub(crate) fn release_snap_request(own_hwnd: isize, own_scale: f32) -> Option<SnapRequest> {
-    if own_hwnd == 0 {
-        return None;
-    }
-    let own_exe = std::env::current_exe().ok()?;
-    let own_exe = own_exe.to_string_lossy().into_owned();
-    let candidates = enumerate_candidates(own_hwnd, own_scale);
-    let partners: Vec<SnapPartner> = partner_frames(&candidates, &own_exe)
-        .into_iter()
-        .map(|frame| SnapPartner {
-            rect: frame.rect,
-            monitor: frame.monitor,
-        })
-        .collect();
-    if partners.is_empty() {
-        return None;
-    }
-    let own_monitor = monitor_rects(own_hwnd as HWND, own_scale)?.0;
-    Some(SnapRequest {
-        partners,
-        own_monitor,
-    })
-}
 
 /// 工单 03 的跟随轮询枚举：筛出带窗口身份标识（句柄值）的伙伴
 /// 相框，供跟随引擎按身份键控历史与抑制标记。判定仍在库里。
@@ -76,7 +51,7 @@ pub(crate) fn follow_partners(own_hwnd: isize, own_scale: f32) -> Vec<FollowPart
         return Vec::new();
     };
     let mut hwnds: Vec<HWND> = Vec::new();
-    // SAFETY: 同 enumerate_candidates 的回调口径。
+    // SAFETY: 同 collect_window 的回调口径。
     unsafe {
         let _ = EnumWindows(Some(collect_window), &mut hwnds as *mut Vec<HWND> as LPARAM);
     }
@@ -113,7 +88,7 @@ pub(crate) fn startup_partner_positions(app_dir: &std::path::Path) -> Vec<(u32, 
         return Vec::new();
     };
     let mut hwnds: Vec<HWND> = Vec::new();
-    // SAFETY: 同 enumerate_candidates 的回调口径。
+    // SAFETY: 同 collect_window 的回调口径。
     unsafe {
         let _ = EnumWindows(Some(collect_window), &mut hwnds as *mut Vec<HWND> as LPARAM);
     }
@@ -163,7 +138,7 @@ pub(crate) fn exit_all_partners(own_hwnd: isize, own_scale: f32) -> usize {
         return 0;
     };
     let mut hwnds: Vec<HWND> = Vec::new();
-    // SAFETY: 同 enumerate_candidates 的回调口径。
+    // SAFETY: 同 collect_window 的回调口径。
     unsafe {
         let _ = EnumWindows(Some(collect_window), &mut hwnds as *mut Vec<HWND> as LPARAM);
     }
@@ -219,21 +194,105 @@ pub(crate) fn own_monitor_work_area(
     monitor_rects(own_hwnd as HWND, own_scale)
 }
 
-/// 枚举全部顶层可见窗口为候选事实（判定在库里，本层只取事实）。
-fn enumerate_candidates(own_hwnd: isize, own_scale: f32) -> Vec<CandidateWindow> {
+/// 工单 05 的拖动伙伴（物理像素口径）：拖动开始时枚举一次——
+/// 校验判定复用逻辑口径的候选事实（标题 + exe + 存活 + 非自己），
+/// 矩形另取 GetWindowRect 的物理像素原值并带上句柄身份，供
+/// WM_MOVING 求解与工单 06 的命中接缝消费。
+pub(crate) fn drag_partners(own_hwnd: isize) -> Vec<DragSnapPartner> {
+    if own_hwnd == 0 {
+        return Vec::new();
+    }
+    let Some(own_exe) = std::env::current_exe()
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+    else {
+        return Vec::new();
+    };
     let mut hwnds: Vec<HWND> = Vec::new();
-    // SAFETY: 回调只把句柄推进 LPARAM 指向的 Vec，不持有、不解引用其他指针。
+    // SAFETY: 同 collect_window 的回调口径。
     unsafe {
         let _ = EnumWindows(Some(collect_window), &mut hwnds as *mut Vec<HWND> as LPARAM);
     }
     hwnds
         .into_iter()
-        .filter_map(|hwnd| candidate_for_window(hwnd, own_hwnd, own_scale, true))
+        .filter_map(|hwnd| {
+            let candidate = candidate_for_window(hwnd, own_hwnd, 1.0, true)?;
+            if !is_partner_frame(&candidate, &own_exe) {
+                return None;
+            }
+            let rect = partner_rect_physical((hwnd as usize) as u64)?;
+            Some(DragSnapPartner {
+                hwnd: (hwnd as usize) as u64,
+                rect,
+            })
+        })
         .collect()
 }
 
+/// 一扇窗口当前的物理像素矩形（GetWindowRect 原值，不做 DPI
+/// 换算）：WM_MOVING 每帧刷新伙伴位置用；窗口已销毁时返回 None。
+pub(crate) fn partner_rect_physical(hwnd_value: u64) -> Option<WindowRect> {
+    if hwnd_value == 0 {
+        return None;
+    }
+    let mut rect = RECT::default();
+    // SAFETY: hwnd_value 是枚举/会话里记录的窗口句柄值；GetWindowRect
+    // 只写出矩形，窗口已销毁时按失败返回处理。
+    if unsafe { GetWindowRect(hwnd_value as usize as HWND, &mut rect) } == 0 {
+        return None;
+    }
+    Some(WindowRect {
+        left: rect.left as f32,
+        top: rect.top as f32,
+        right: rect.right as f32,
+        bottom: rect.bottom as f32,
+    })
+}
+
+/// 拟拖矩形所在显示器的工作区（物理像素）：MonitorFromRect 取
+/// 与拟拖矩形交叠最多的显示器，rcWork 原值返回。
+pub(crate) fn work_area_for_physical_rect(rect: WindowRect) -> Option<WindowRect> {
+    let raw = RECT {
+        left: rect.left as i32,
+        top: rect.top as i32,
+        right: rect.right as i32,
+        bottom: rect.bottom as i32,
+    };
+    // SAFETY: MonitorFromRect 对任意矩形返回最近显示器或 null；
+    // GetMonitorInfoW 要求 cbSize 先行填好。
+    unsafe {
+        let monitor = MonitorFromRect(&raw, MONITOR_DEFAULTTONEAREST);
+        if monitor.is_null() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return None;
+        }
+        let work = info.rcWork;
+        Some(WindowRect {
+            left: work.left as f32,
+            top: work.top as f32,
+            right: work.right as f32,
+            bottom: work.bottom as f32,
+        })
+    }
+}
+
+/// 本窗 DPI（GetDpiForWindow 原值，96 = 100%）：阈值物理换算用。
+pub(crate) fn own_dpi(own_hwnd: isize) -> u32 {
+    if own_hwnd == 0 {
+        return 0;
+    }
+    // SAFETY: 只读本窗 DPI。
+    unsafe { GetDpiForWindow(own_hwnd as HWND) }
+}
+
 unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    // SAFETY: lparam 由 enumerate_candidates 传入，指向其栈上的 Vec，
+    // SAFETY: lparam 由各枚举调用方传入，指向其栈上的 Vec，
     // 枚举期间始终存活。
     let hwnds = unsafe { &mut *(lparam as *mut Vec<HWND>) };
     hwnds.push(hwnd);

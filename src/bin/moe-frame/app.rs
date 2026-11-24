@@ -87,8 +87,8 @@ pub(crate) struct FrameApp {
     pub(crate) appearance: AppearanceMode,
     /// 窗口吸附全局开关的当前值（多实例吸附专题工单 02）：启动自
     /// 配置全局段经 HostInit 读入，设置窗切换时更新本字段并经
-    /// config_sync 写回；松手组装吸附请求前读它（关闭时不枚举、
-    /// 不计算、不落位）。
+    /// config_sync 写回；WM_MOVING 子类化回调经静态镜像读同一
+    /// 值（关闭时不求解、不改矩形，见 snap_subclass）。
     pub(crate) window_snap: bool,
     /// 组联动跟随引擎（多实例吸附专题工单 03）：纯逻辑在库 snap，
     /// 宿主按轮询调度枚举伙伴喂入、执行它返回的位置；含菜单脱离
@@ -232,6 +232,8 @@ impl FrameApp {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 Effect::Exit => {
+                    // 工单 05：退出前卸载相框窗口的子类化。
+                    super::snap_subclass::uninstall(self.hwnd);
                     // 正常退出清除本实例的「在运行」标记（工单 04）：
                     // 崩溃残留不清，是自启恢复的判定依据之一。
                     self.sync.set_running_marker(false);
@@ -348,6 +350,8 @@ impl FrameApp {
     /// （设置窗路径经 config_sync 写回；同步路径只读应用、绝不写回）。
     pub(crate) fn apply_window_snap_value(&mut self, target: bool) {
         self.window_snap = target;
+        // 工单 05：子类化回调读的是同一开关值的静态镜像。
+        super::snap_subclass::set_enabled(target);
         if target {
             self.poll_schedule.wake();
         } else {

@@ -22,7 +22,7 @@
 
 use crate::{
     config_sync::GeometryRecord,
-    snap::{solve_snap, SnapRequest, WindowRect},
+    snap::WindowRect,
     snap_follow::{anchored_resize_position, AnchorEdge},
 };
 
@@ -69,7 +69,6 @@ impl Insets {
 const SAVE_SETTLE_SECS: f64 = 0.6;
 
 /// 宿主每帧喂入的观察值：窗口矩形、显示器尺寸、工作区、指针与可见性。
-/// 自工单 02 起带吸附请求（内含伙伴列表），不再是 Copy。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GeomObservation {
     /// 窗口外矩形的位置（左上，逻辑坐标）；取不到时为 None。
@@ -93,11 +92,6 @@ pub struct GeomObservation {
     /// 当前外观的四边内距（逻辑像素）：外框尺寸推导的输入，
     /// 变化本身也会触发一次比例校正。
     pub insets: Insets,
-    /// 松手吸附请求（多实例吸附专题工单 02）：宿主只在拖动松手那
-    /// 一帧组装递交（枚举伙伴 + 开关已开才组装）；本状态机只在松
-    /// 手帧消费它求解落位，按下帧与静止帧一律忽略——拖动进行中
-    /// 不发吸附命令、静止时不因它产生任何命令。
-    pub snap: Option<SnapRequest>,
     /// 本窗当前的贴合边（多实例吸附专题工单 03）：宿主以跟随引擎
     /// 最近一轮的接触派生供给；比例校正变尺寸时以这些边为锚（共
     /// 享边不动、向空闲方向长/缩），随后工单 06 钳制照旧叠加。
@@ -309,26 +303,6 @@ impl GeometryMachine {
                     }
                     effective_inner = target_size;
                     self.aspect_applied = true;
-                }
-            }
-            // 松手吸附（多实例吸附专题工单 02）：只在松手帧、且宿主
-            // 本帧递交了吸附请求时求解一次——以校正后的有效位置与
-            // 外尺寸为被拖窗矩形，伙伴与工作区边缘的贴合/对齐目标经
-            // 既有 SetOuterPosition 命令落位，并成为本帧落盘观察的
-            // 位置。按下帧的请求在上面的按下分支里从未被读，拖动
-            // 进行中不发任何吸附命令。
-            if released {
-                if let Some(request) = &obs.snap {
-                    if let (Some(pos), Some(outer)) = (effective_pos, obs.outer_size) {
-                        let moving = WindowRect::from_pos_size(pos, outer);
-                        let area = work_area.map(WindowRect::from_edges);
-                        if let Some(target) =
-                            solve_snap(moving, &request.partners, request.own_monitor, area)
-                        {
-                            commands.push(GeomCommand::SetOuterPosition(target));
-                            effective_pos = Some(target);
-                        }
-                    }
                 }
             }
             // 指针释放后（或程序化尺寸落地后）以实际尺寸为新基准，
