@@ -291,6 +291,25 @@ impl eframe::App for FrameApp {
             self.window_level = level;
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
         }
+        // 置顶守擂（置顶守擂工单 01）：层级命令只有上面菜单一处发送
+        // 点，扰动后无人恢复——非 Normal 层级在失焦边沿（置顶带内排
+        // 序变化的时刻）由守擂判定重申一次。判定在库 level_guard，
+        // 宿主只采样焦点、发命令；重申前自检置顶标记并按分类变化
+        // 记一行日志，区分「标记被摘」与「带内重排」。重申只走
+        // viewport 命令：不新增 SetWindowPos 直调、不激活窗口。
+        if self
+            .level_guard
+            .poll(self.window_level, frame_focused(&ctx), now)
+        {
+            let cause = self.level_guard.note_reassert(topmost_mark(self.hwnd));
+            if let Some(cause) = cause {
+                level_guard_record(
+                    "reassert",
+                    &format!("level={:?} cause={cause:?}", self.window_level),
+                );
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(self.window_level));
+        }
         self.handle_pointer(&ctx);
         if let Some(intent) = menu_intent {
             let effects = self.core.handle(intent);
@@ -348,6 +367,36 @@ impl eframe::App for FrameApp {
         ) {
             ctx.request_repaint_after(delay);
         }
+    }
+}
+
+/// 重申前自检：读本窗扩展样式里的置顶标记（WS_EX_TOPMOST），
+/// 口径与 window-validation 的 window_long 观测一致（SetLastError
+/// 清零后读、真错误才算失败）。句柄未就绪或读取失败按 Unknown：
+/// 只影响守擂日志的分类，不影响重申本身。
+fn topmost_mark(hwnd: isize) -> moe_frame::level_guard::TopmostMark {
+    use moe_frame::level_guard::TopmostMark;
+    use windows_sys::Win32::{
+        Foundation::{GetLastError, SetLastError, HWND},
+        UI::WindowsAndMessaging::{GetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TOPMOST},
+    };
+    if hwnd == 0 {
+        return TopmostMark::Unknown;
+    }
+    // SAFETY: hwnd 是本进程相框窗口的句柄，在 UI 线程上读其扩展
+    // 样式是纯查询，不改窗口状态。
+    let ex_style = unsafe {
+        SetLastError(0);
+        let value = GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE);
+        if value == 0 && GetLastError() != 0 {
+            return TopmostMark::Unknown;
+        }
+        value
+    };
+    if ex_style & WS_EX_TOPMOST as isize != 0 {
+        TopmostMark::Present
+    } else {
+        TopmostMark::Missing
     }
 }
 
