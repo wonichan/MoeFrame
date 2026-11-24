@@ -4,7 +4,7 @@
 
 **Blocked by:** 无（地基票）
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -39,3 +39,4 @@
 - 边界检查（safe_code_edits_and_commits）：最终 diff 专项复读无劈裂/孤儿文档注释、无重复属性；GLOSSARY Avoid 词（窗口号/进程号/磁吸/窗口组/编组/贴边停靠）对 diff 与新文件 grep 零命中。代码与文档分两笔提交，暂存清单逐笔核对一致。
 - 遗留风险：load 修复/迁移写回仍是整文档写回，两实例同瞬间 load 有极窄互覆窗口（setter 路径已收拢，发生条件苛刻，工单 04 可再收）；pid 复用理论上可让残锁误判存活（只跳号、无数据风险）；级联基点为上一扇的落盘位置而非其实时位置（工单 02 实例发现落地后复核）。
 - 双轴审查修复（2026-11-24，分支 impl/multi-instance-snap-review-fixes）：S2——load 的修复/迁移写回已收拢到与 setter 相同的 update 唯一通道（空改动调用，借其重读-重解析把修复落到磁盘当前文档上；修复与迁移幂等），不再凭首次读入文档整表覆写；新增测试 load_repair_write_back_preserves_other_instances_current_data 锁住「修复写回不回滚其他实例当前数据」。残余窗口与 setter 路径同级（重读→写回之间无文件锁，是本专题既定设计口径，不再单列风险）。S4——级联基点改实时枚举：宿主启动瞬间枚举活伙伴、按锁文件 pid→编号定身份，纯规则 cascade_base_position（编号最大者）定基点，落盘段口径降为无活伙伴/枚举失败时的兜底（startup_for_instance_with_cascade）；本票原「级联基点为落盘位置」的遗留风险据此关闭。
+- 2026-11-24 发布收官：用户已用新路线验收包（集成分支 c95b17d）在 Windows 真机整体验收通过（原话「可以了」），Status 置 resolved；随 v0.2.0 发布。

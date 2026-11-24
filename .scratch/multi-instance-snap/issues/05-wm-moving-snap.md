@@ -4,7 +4,7 @@
 
 **Blocked by:** [02: 实例发现与松手吸附](02-window-discovery-snap.md)（枚举校验层与接触派生保留复用；其松手吸附路径由本票取代）
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -51,3 +51,4 @@
   - **S3（低）Avoid 词记录口径**：原 Comments 的「grep 全 diff 零命中」已在原文处改述为「磁吸作功能名零命中」，不冒充全 diff 对「磁吸」二字零命中（与工单 06 口径一致）。
   - **S4/F8（低）死代码拆除**：src/snap.rs 的 snap_groups / derive_contacts / Contact 整簇删除（生产已无调用方；pair_in_contact 保留——snap_group 的临时成树/锚边/卫生在用，并已成为唯一的接触判定，见工单 06 的 S5）；tests/snap.rs 对应 7 条接触派生用例一并删除（contact_single_shared_edge、contact_chain_of_three_forms_one_group、contact_l_shape_two_edges、contact_none_when_apart、contact_gap_beyond_tolerance_does_not_count、contact_across_monitors_does_not_count、contact_requires_projection_overlap）——其接触几何语义由 tests/snap_group.rs 的临时成树/直接触/锚边用例继续覆盖。删后 lib 公共面无其他引用跟不上（Windows check/clippy 全过为证）。
   - **检查数字**：Linux 测试副本 cargo test --all-targets = 424 passed / 0 failed；Windows 目标 cargo check --all-targets、cargo clippy --all-targets -- -D warnings、cargo fmt --all -- --check 三项全过。scripts/check.sh 本体未运行（Windows 专用，本 VM 跑不了，不冒充）。测试对账（与工单 06 合并记账）：基线 424 − 删 7（本条 S4）+ 增 7（F3 本票 1 条 + 工单 06 的 F1/F2 5 条、F4 对角反例 1 条）= 424，另 F5 菜单判定用例改名改义 1 条（净零）。逐项明细见工单 06 同日 Comments。
+- 2026-11-24 发布收官：用户已用新路线验收包（集成分支 c95b17d）在 Windows 真机整体验收通过（原话「可以了」），Status 置 resolved；随 v0.2.0 发布。

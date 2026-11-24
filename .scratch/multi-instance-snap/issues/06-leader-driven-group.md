@@ -4,7 +4,7 @@
 
 **Blocked by:** [05: WM_MOVING 实时磁吸](05-wm-moving-snap.md)
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -70,3 +70,4 @@
   - **F3 / S3 / S4 的落地**记在工单 05 同日 Comments（求解同屏过滤、Avoid 词口径、snap 死代码簇拆除），此处不重复。
   - **测试对账**：基线 424。删除 7（S4：tests/snap.rs 接触派生用例簇，逐条名单见工单 05 同日 Comments）；新增 7（F1/F2 记录裁决 5 条：base_update_skips_partner_inside_carry、base_update_records_partner_outside_exclusions、base_update_never_rewrites_detached_base_within_same_drag、base_update_solo_session_records_nothing_and_next_drag_recovers、base_update_keeps_recorded_base_when_hit_repeats_or_empty；F4 对角反例 1 条：hygiene_rejects_diagonal_without_projection_overlap；F3 同屏过滤 1 条：drag_partners_filtered_to_proposed_monitor，在 tests/snap.rs）；改写净零 1 条（F5：menu_detach_available_with_base_or_direct_contact 改名改义为 snap_detach_available_with_base_or_direct_subordinate）。最终 424 − 7 + 7 = 424，Linux 测试副本 cargo test --all-targets = 424 passed / 0 failed。
   - **检查**：scripts/check.sh 本体未运行（Windows 专用，本 VM 跑不了，不冒充）；替代三件套全绿——Linux 测试副本 cargo test --all-targets（424/0，见上）、Windows 目标 cargo check --all-targets、cargo clippy --all-targets -- -D warnings、cargo fmt --all -- --check。边界检查（safe_code_edits_and_commits）：最终 diff 专项复读无劈裂/孤儿文档注释；GLOSSARY Avoid 词口径同工单 05 S3 改述（磁吸作功能名零命中）。
+- 2026-11-24 发布收官：用户已用新路线验收包（集成分支 c95b17d）在 Windows 真机整体验收通过（原话「可以了」），Status 置 resolved；随 v0.2.0 发布。

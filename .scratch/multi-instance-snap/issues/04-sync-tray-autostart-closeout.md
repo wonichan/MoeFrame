@@ -4,7 +4,7 @@
 
 **Blocked by:** [01: 实例身份与配置隔离](01-instance-identity-config.md)、[02: 实例发现与松手吸附](02-window-discovery-snap.md)、[03: 组联动跟随与拆组](03-group-follow-detach.md)
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -46,3 +46,4 @@
 - 文档核对结论：GLOSSARY 三词条（窗口吸附 / 吸附组 / 实例编号）与最终实现逐项一致、无需改词条；ADR-0004 后果描述与最终实现一致、无需改 ADR；spec 出入两处（自启存活口径、退出全部落地形态）与补注一处（同步成本口径）已写入 spec 第 14 节注记段。README 已补多实例吸附一节、操作表与实例段说明；仓库外需求文档 ~/workspace/moe-frame/REQUIREMENTS.md 已对齐 v0.4（FR-506 改写、新增 FR-507～512、配置示例补实例段与 window_snap、第 2.2 / 12 节注记）——该文件不在 git 内，只改内容、不进提交。实现笔记：.agents/notes/implemented/feature/2026-11-23-sync-tray-autostart-closeout.md。
 - 边界检查（safe_code_edits_and_commits）：最终 diff 专项复读无劈裂 / 孤儿文档注释、无重复属性；GLOSSARY Avoid 词（磁吸 / 贴边停靠 / 窗口组 / 编组 / 窗口号 / 进程号 / 设置窗口 / 播放器 / 壁纸 / 皮肤 / 主题）对代码与测试的 diff grep 零命中（实现笔记里的检查记录列名本身不算命中）。代码与文档分两笔提交，暂存清单逐笔核对。
 - 遗留风险：宿主层（托盘菜单、退出属性通路、恢复拉起、同步应用）未实机验证，待 31 条实机清单；单实例完全静止时同步等 incidental 帧（零重绘口径的既定取舍，多实例由跟随心跳兜住）；`--instance` 指定认领与手动启动精确撞号时败者安静退出（极窄窗口）。
+- 2026-11-24 发布收官：用户已用新路线验收包（集成分支 c95b17d）在 Windows 真机整体验收通过（原话「可以了」），Status 置 resolved；随 v0.2.0 发布。
