@@ -47,8 +47,10 @@ pub struct LevelGuard {
     pending: bool,
     /// 上次实际发出重申的时刻；None 表示还没重申过。
     last_reassert_ms: Option<u64>,
-    /// 上次记入日志的重申分类（去重用）。
+    /// 上次记入日志的重申分类（去重用；层级变化时由 poll 重置）。
     last_cause: Option<ReassertCause>,
+    /// 上一帧轮询到的层级；与本帧不同即层级发生了变化。
+    last_level: Option<egui::WindowLevel>,
 }
 
 impl LevelGuard {
@@ -61,6 +63,12 @@ impl LevelGuard {
     pub fn poll(&mut self, level: egui::WindowLevel, focused: bool, now_ms: u64) -> bool {
         let focus_lost = self.was_focused == Some(true) && !focused;
         self.was_focused = Some(focused);
+        if self.last_level != Some(level) {
+            // 层级切换开启新的守擂纪元：旧层级下记过的分类不再
+            // 去重，否则切回置顶后同类真事件会被陈旧记录吞掉。
+            self.last_level = Some(level);
+            self.last_cause = None;
+        }
         if level == egui::WindowLevel::Normal {
             // Normal 无守擂：挂起一并清掉，避免切回非 Normal 时
             // 补发陈旧重申。
@@ -89,8 +97,18 @@ impl LevelGuard {
     }
 
     /// 重申已发出后记账：按自检标记分类，分类与上次记录不同才
-    /// 返回 Some（宿主据此记一行日志）；Unknown 不记。
-    pub fn note_reassert(&mut self, mark: TopmostMark) -> Option<ReassertCause> {
+    /// 返回 Some（宿主据此记一行日志）。分类只对置顶有意义：
+    /// 非置顶层级（置底）本就没有置顶标记，读到「不在」不是被
+    /// 摘——一律按 Unknown 处理，不分类、不记、也不动去重状态；
+    /// Unknown 同样不记。
+    pub fn note_reassert(
+        &mut self,
+        level: egui::WindowLevel,
+        mark: TopmostMark,
+    ) -> Option<ReassertCause> {
+        if level != egui::WindowLevel::AlwaysOnTop {
+            return None;
+        }
         let cause = match mark {
             TopmostMark::Missing => ReassertCause::MarkMissing,
             TopmostMark::Present => ReassertCause::BandReorder,
@@ -195,23 +213,60 @@ mod tests {
     #[test]
     fn reassert_cause_is_classified_by_the_mark_and_deduplicated() {
         let mut guard = LevelGuard::new();
+        let top = egui::WindowLevel::AlwaysOnTop;
         // 标记被摘：记一次；连续同类不重复记。
         assert_eq!(
-            guard.note_reassert(TopmostMark::Missing),
+            guard.note_reassert(top, TopmostMark::Missing),
             Some(ReassertCause::MarkMissing)
         );
-        assert_eq!(guard.note_reassert(TopmostMark::Missing), None);
+        assert_eq!(guard.note_reassert(top, TopmostMark::Missing), None);
         // 标记还在、带内重排：分类切换，记一次。
         assert_eq!(
-            guard.note_reassert(TopmostMark::Present),
+            guard.note_reassert(top, TopmostMark::Present),
             Some(ReassertCause::BandReorder)
         );
-        assert_eq!(guard.note_reassert(TopmostMark::Present), None);
+        assert_eq!(guard.note_reassert(top, TopmostMark::Present), None);
         // Unknown 不记、也不动上次分类。
-        assert_eq!(guard.note_reassert(TopmostMark::Unknown), None);
-        assert_eq!(guard.note_reassert(TopmostMark::Present), None);
+        assert_eq!(guard.note_reassert(top, TopmostMark::Unknown), None);
+        assert_eq!(guard.note_reassert(top, TopmostMark::Present), None);
         assert_eq!(
-            guard.note_reassert(TopmostMark::Missing),
+            guard.note_reassert(top, TopmostMark::Missing),
+            Some(ReassertCause::MarkMissing)
+        );
+    }
+
+    #[test]
+    fn bottom_level_never_produces_a_cause() {
+        let mut guard = LevelGuard::new();
+        let bottom = egui::WindowLevel::AlwaysOnBottom;
+        // 置底窗本无置顶标记：读到「不在」恒不分类，绝不产出
+        // MarkMissing；「在」同样不产出 BandReorder。
+        assert_eq!(guard.note_reassert(bottom, TopmostMark::Missing), None);
+        assert_eq!(guard.note_reassert(bottom, TopmostMark::Missing), None);
+        assert_eq!(guard.note_reassert(bottom, TopmostMark::Present), None);
+        // 置底的记账不污染去重状态：切回置顶后真遇摘标记仍可记录。
+        assert_eq!(
+            guard.note_reassert(egui::WindowLevel::AlwaysOnTop, TopmostMark::Missing),
+            Some(ReassertCause::MarkMissing)
+        );
+    }
+
+    #[test]
+    fn level_change_resets_cause_dedup() {
+        let mut guard = LevelGuard::new();
+        let top = egui::WindowLevel::AlwaysOnTop;
+        // 建立层级基线并记一次「标记被摘」；同类第二次被去重吞掉。
+        assert!(!guard.poll(top, true, 0));
+        assert_eq!(
+            guard.note_reassert(top, TopmostMark::Missing),
+            Some(ReassertCause::MarkMissing)
+        );
+        assert_eq!(guard.note_reassert(top, TopmostMark::Missing), None);
+        // 切到置底再切回置顶：层级变化重置去重，同类事件重新记录。
+        assert!(!guard.poll(egui::WindowLevel::AlwaysOnBottom, true, 10));
+        assert!(!guard.poll(top, true, 20));
+        assert_eq!(
+            guard.note_reassert(top, TopmostMark::Missing),
             Some(ReassertCause::MarkMissing)
         );
     }

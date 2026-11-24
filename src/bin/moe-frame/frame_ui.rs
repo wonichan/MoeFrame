@@ -295,13 +295,21 @@ impl eframe::App for FrameApp {
         // 点，扰动后无人恢复——非 Normal 层级在失焦边沿（置顶带内排
         // 序变化的时刻）由守擂判定重申一次。判定在库 level_guard，
         // 宿主只采样焦点、发命令；重申前自检置顶标记并按分类变化
-        // 记一行日志，区分「标记被摘」与「带内重排」。重申只走
+        // 记一行日志，区分「标记被摘」与「带内重排」。自检只对置
+        // 顶有意义：置底窗本无置顶标记，读到「不在」不是被摘——
+        // 非置顶层级传 Unknown，不分类、不记日志（重申照常发；
+        // 判定层对非置顶同样一律不分类，双保险）。重申只走
         // viewport 命令：不新增 SetWindowPos 直调、不激活窗口。
         if self
             .level_guard
             .poll(self.window_level, frame_focused(&ctx), now)
         {
-            let cause = self.level_guard.note_reassert(topmost_mark(self.hwnd));
+            let mark = if self.window_level == egui::WindowLevel::AlwaysOnTop {
+                topmost_mark(self.hwnd)
+            } else {
+                moe_frame::level_guard::TopmostMark::Unknown
+            };
+            let cause = self.level_guard.note_reassert(self.window_level, mark);
             if let Some(cause) = cause {
                 level_guard_record(
                     "reassert",
