@@ -6,6 +6,8 @@
 
 **Status:** needs-info
 
+> **路线修订注记（2026-11-24）**：本票的「轮询跟随」整套（FollowEngine/PollSchedule/抑制标记/松手吸附挂接）已被工单 06（领队驱动整组 + 方向关系）取代并拆除，见 spec 第 15 节与 ADR-0005。本票保留有效的成果：**锚边变尺寸**口径与实现（邻居判定改按关系树 + 直接接触，见工单 06）、跨屏的工作区钳制纯逻辑、菜单瘦身口径。Shift 拆组与菜单脱离改由工单 06 以清属性方式实现（跨进程精确成立，本票 Comments 里的无 IPC 边界记录随之作废）。
+
 ## Acceptance criteria
 
 代码项：
@@ -45,3 +47,4 @@
 - 开关：与工单 02 共用 general.window_snap；关闭时宿主不枚举、引擎整体停摆并清状态、调度休眠；打开时重新武装探活，首轮只建历史不跳变。
 - 验证：scripts/check.sh 本体未运行（Windows 专用，本 VM 跑不了），沿用替代口径如实记录：Linux 测试副本（~/workspace/tmp/refresh-moeframe-test-snap03.sh 刷新）cargo test --all-targets 全绿（数字见实现笔记）；Windows 目标 check/clippy/fmt 三项全过。实机项不勾、留工单 04；Status 置 needs-info。
 - 双轴审查修复（2026-11-24）：S3——抑制与锚边解耦：锚边派生改按原始接触（新增 raw_contact_ids，不减抑制边），跟随/成组派生保持减抑制边；菜单脱离只断拖动联动、不再连带解除切图锚边（spec 第 4 节脱离定义只管拖动联动）；新增测试 detached_partner_still_anchors_resize_but_never_pulls。H1——check 验收项措辞已改述为与 01/02/04 同口径。H3——本票文本与代码注释中的 Avoid 词「延时」已全量改「间隔」（GLOSSARY「间隔」条目）。J2——跟随引擎/抑制/轮询调度/锚边已拆到库模块 snap_follow.rs，本票测试改指新模块。
+- 路线修订（2026-11-24）：用户实机否决路线 (b)，轮询跟随整套被工单 06 取代并拆除（见票首注记与 spec 第 15 节、ADR-0005）；本票实机项（链式整组同移、Shift 独走、菜单脱离、跨屏脱组）由工单 06 的新实机项接管验收，汇总清单在返工收尾时统一重写；锚边变尺寸实机项继续有效。
