@@ -13,17 +13,17 @@
 
 **Blocked by:** None（基线 main @ 50687a8，含 PR #12 置顶守擂）。
 
-**Status:** ready-for-agent
+**Status:** needs-info
 
 ## Acceptance criteria
 
-- [ ] 相框窗口启动后 DWM 非客户区渲染被禁用（DwmSetWindowAttribute 调用落在相框窗口 HWND 上、仅 Windows、仅一次），设置窗不被触碰
-- [ ] 调用结果记一行日志（成功/失败及错误码，走 moe_frame.log 既有口径），失败不影响启动与任何既有行为
-- [ ] 不与既有窗口机制冲突：透明窗口、8px 缩放带（应用自绘命中测试）、WM_MOVING 吸附子类化、置顶守擂自检、托盘隐藏/召回既有测试全绿
-- [ ] 三种外观模式行为不回归：极简/内置画框原本靠绘制层内侧阴影（FR-313），不依赖原生投影，关掉后观感口径不变（实机清单确认）
-- [ ] `scripts/check.sh` 口径全绿（fmt / clippy -D warnings / test --all-targets；VM 代偿口径如实记入 Comments）
-- [ ] 实机清单新增「窗口投影」一节：自定义异形框贴桌面无矩形影带；切换极简/内置画框无异常；设置窗外观如常（保留其窗口投影）；重启应用后仍无影带
-- [ ] 实现笔记落 `.agents/notes/implemented/` 并通过三道校验门
+- [x] 相框窗口启动后 DWM 非客户区渲染被禁用（DwmSetWindowAttribute 调用落在相框窗口 HWND 上、仅 Windows、仅一次），设置窗不被触碰
+- [x] 调用结果记一行日志（成功/失败及错误码，走 moe_frame.log 既有口径），失败不影响启动与任何既有行为
+- [x] 不与既有窗口机制冲突：透明窗口、8px 缩放带（应用自绘命中测试）、WM_MOVING 吸附子类化、置顶守擂自检、托盘隐藏/召回既有测试全绿
+- [x] 三种外观模式行为不回归：极简/内置画框原本靠绘制层内侧阴影（FR-313），不依赖原生投影，关掉后观感口径不变（实机清单确认）
+- [x] `scripts/check.sh` 口径全绿（fmt / clippy -D warnings / test --all-targets；VM 代偿口径如实记入 Comments）
+- [x] 实机清单新增「窗口投影」一节：自定义异形框贴桌面无矩形影带；切换极简/内置画框无异常；设置窗外观如常（保留其窗口投影）；重启应用后仍无影带
+- [x] 实现笔记落 `.agents/notes/implemented/` 并通过三道校验门
 
 ## Context
 
@@ -33,4 +33,35 @@
 
 ## Comments
 
-（暂无）
+- 2026-11-27 实现完成（分支 fix/window-shadow）：库层新增纯判定
+  `src/dwm_shadow.rs`——与 Win32 文档对齐的常量
+  （DWMWA_NCRENDERING_POLICY=2、DWMNCRP_DISABLED=1）与 HRESULT
+  日志口径（result=ok/failed + 十六进制码），单测以文档值为独立
+  真值钉住；宿主新增 `src/bin/moe-frame/dwm_shadow.rs` 接线模块，
+  在装配处（创建闭包取得相框 HWND、挂完吸附子类化之后）对相框
+  窗口调一次 DwmSetWindowAttribute，结果经新增的
+  `dwm_shadow_record` 以 `[dwm-shadow]` 前缀记一行 moe_frame.log；
+  句柄未就绪记 event=skipped，失败/跳过均不影响启动。设置窗未碰。
+  windows-sys 新增 Win32_Graphics_Dwm 特性，无新增依赖。
+- 诊断补正（主会话排查口径修正）：创建闭包里自工单 10 起已有
+  winit 的 `set_undecorated_shadow(false)`，并非「宿主无任何
+  shadow 处理」——主会话 grep 范围漏了 src/bin/moe-frame.rs 本
+  体。该开关只让 winit 不主动索取投影（不扩边框进客户区），挡
+  不住 DWM 给可缩放无边框窗口画的投影，用户截图即取自含该调
+  用的构建；本票的 DWMNCRP_DISABLED 在 DWM 层面关闭，与之互
+  补、不替代（详见实现笔记）。
+- 验证（VM 代偿口径，如实记录）：库层单测 6 个 TDD 红→绿在
+  Linux 刮擦副本真跑；刮擦副本 `cargo test --all-targets` 440
+  个全绿（基线 434 + 新增 6）；Windows 目标在 worktree 直跑
+  `cargo check --all-targets`、`cargo clippy --all-targets --
+  -D warnings`、`cargo fmt --check` 全绿。宿主 Dwm 调用是
+  Windows 一次性接线，本 VM 无法运行其实效，由实机清单「窗口
+  投影」一节验收，本票置 needs-info。
+- 实现笔记 `.agents/notes/implemented/bug-fix/2026-11-27-dwm-
+  shadow.md` 三道校验门：tree 通过、archived 通过、format 门
+  失败名单恰为仓库既有 4 篇（crossfade-merge、
+  multi-instance-snap-review-fixes、leader-driven-group、
+  wm-moving-snap），本笔记不在名单、未代改。
+- 后备路线待议（本票不预先实现）：若实机确认 DWMNCRP_DISABLED
+  不足以去掉投影（日志 result=ok 但影带仍在），下一步候选为摘
+  除 WS_THICKFRAME 等样式位，须另票评估对缩放/吸附的影响。
