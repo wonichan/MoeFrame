@@ -402,6 +402,24 @@ impl eframe::App for FrameApp {
             ctx.request_repaint_after(delay);
         }
     }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        transparent_clear_color()
+    }
+}
+
+/// 相框窗的清屏色（窗口投影工单 04）：恒为全透明。eframe 的默认
+/// clear_color 返回 (12,12,12,180) 的半透明深灰——其源码自陈是给
+/// 未处理透明选项的应用留的占位缺省，glow 集成每帧以此清屏；本应
+/// 用从未覆盖它，于是窗口表面每个未被绘制覆盖的像素（正是异形相
+/// 框图轮廓外的透明区）都带着这层深灰被 DWM 合成到桌面，呈与窗口
+/// 矩形严丝合缝、1px 硬边、等效 black @ ≈150/255 的均匀暗带（归
+/// 因链见工单 04 与工单 03 Comments 的探针定案）。透明窗必须清为
+/// 全透明，透明区才回归真透明；不透明绘制逐像素覆盖清屏，不受
+/// 影响。独立成自由函数是为让回归测试钉死全零，防后人误改回非
+/// 透明。
+pub(crate) fn transparent_clear_color() -> [f32; 4] {
+    [0.0, 0.0, 0.0, 0.0]
 }
 
 /// 重申前自检：读本窗扩展样式里的置顶标记（WS_EX_TOPMOST），

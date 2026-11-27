@@ -515,3 +515,14 @@ fn window_level_is_reasserted_on_focus_loss_for_non_normal_levels_only() {
     }
     let _ = std::fs::remove_dir_all(temp);
 }
+
+#[test]
+fn the_frame_clear_color_is_fully_transparent() {
+    // 窗口投影工单 04：清屏色恒为全透明——自由函数本身与 FrameApp
+    // 的 trait 覆盖两头都钉死，防 eframe 默认深灰清屏层回归。
+    assert_eq!(super::frame_ui::transparent_clear_color(), [0.0; 4]);
+    let (app, temp) = test_app("clear-color");
+    let via_trait = <super::FrameApp as eframe::App>::clear_color(&app, &egui::Visuals::default());
+    assert_eq!(via_trait, [0.0; 4]);
+    let _ = std::fs::remove_dir_all(temp);
+}
