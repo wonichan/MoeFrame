@@ -60,6 +60,9 @@ mod tray;
 #[cfg(test)]
 #[path = "moe-frame/ui_regressions.rs"]
 mod ui_regressions;
+#[cfg(windows)]
+#[path = "moe-frame/window_style.rs"]
+mod window_style;
 
 #[cfg(windows)]
 use eframe::egui;
@@ -261,6 +264,28 @@ fn dwm_shadow_record(event: &str, details: &str) {
     );
 }
 
+/// 窗口样式日志（窗口投影工单 02）：与启动标记同文件同格式、
+/// 独立前缀；窗口创建时剥边框样式的前后值与成败只写一行，
+/// 不参与行为。
+#[cfg(windows)]
+fn window_style_record(event: &str, details: &str) {
+    let Some(directory) = app_directory() else {
+        return;
+    };
+    let path = directory.join("moe_frame.log");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let _ = writeln!(
+        file,
+        "[window-style] unix_ms={unix_ms} pid={} event={event} {details}",
+        std::process::id()
+    );
+}
+
 #[cfg(windows)]
 fn resize_debug_record(event: &str, details: &str) {
     let Some(directory) = app_directory() else {
@@ -377,6 +402,12 @@ fn run() -> Result<(), Box<dyn Error>> {
             // 工单 05：只给相框窗口挂 WM_MOVING 子类化（拖动中实时
             // 吸附）；设置窗是另一个 HWND，不在此处、不挂。
             snap_subclass::install(hwnd, host_init.window_snap);
+            // 窗口投影工单 02：剥掉 winit 恒置的边框样式，根除
+            // DWM 按带框窗口画的整圈框架影（只给本窗、只此一
+            // 次；子类化已挂好，其自研模态环接管剥样式后失效
+            // 的原生拖动/缩放环）；设置窗是另一个 HWND，不在
+            // 此处、不动。
+            window_style::strip(hwnd);
             // 窗口投影工单 01：关掉 DWM 给相框窗口加的系统投影
             // （只给本窗、只此一次）；设置窗是另一个 HWND，不
             // 在此处、不动。
