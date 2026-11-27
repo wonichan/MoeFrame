@@ -129,6 +129,17 @@ pub fn drag_rect(
     rect
 }
 
+/// Esc 取消的按下沿判定（工单 02 评审补记）：模态环逐轮把
+/// GetAsyncKeyState 的当前键态喂进来，只认「上一轮松开、这
+/// 一轮按住」的新按下。进入环时已按住的 Esc 以入环键态为基
+/// 线（宿主把入环采样作首轮的 `was_down`），持续按住不触发
+/// ——拖动开始前的残留按键不该取消本次拖动；松开再按才算
+/// 一次新的取消意图。与 DefWindowProc 原生环逐轮轮询键态
+/// 的语义对齐，且不依赖本窗是否持有焦点。
+pub fn esc_press_edge(was_down: bool, is_down: bool) -> bool {
+    is_down && !was_down
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +264,37 @@ mod tests {
         let rect = drag_rect(DragHit::Left, START, [100.0, 150.0], [250.0, 150.0], MIN);
         assert_eq!(rect.left, 180.0);
         assert_eq!(rect.right, 300.0);
+    }
+
+    #[test]
+    fn esc_edge_only_on_new_press() {
+        // 真值表：只有松开 → 按下这一跳算取消触发。
+        assert!(!esc_press_edge(false, false));
+        assert!(esc_press_edge(false, true));
+        assert!(!esc_press_edge(true, true));
+        assert!(!esc_press_edge(true, false));
+    }
+
+    #[test]
+    fn esc_held_at_entry_does_not_trigger_until_repressed() {
+        // 入环时已按住：以入环键态为基线，持续按住不触发；
+        // 松开后再按，才是一次新的取消。
+        let mut was_down = true;
+        let script = [
+            (true, false),
+            (true, false),
+            (false, false),
+            (false, false),
+            (true, true),
+        ];
+        for (is_down, expected) in script {
+            assert_eq!(
+                esc_press_edge(was_down, is_down),
+                expected,
+                "is_down={is_down}"
+            );
+            was_down = is_down;
+        }
     }
 
     #[test]

@@ -41,7 +41,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use moe_frame::modal_drag::{drag_rect, DragHit};
+use moe_frame::modal_drag::{drag_rect, esc_press_edge, DragHit};
 use moe_frame::snap::{
     drag_partners_on_monitor, physical_snap_threshold, solve_drag_snap, DragSnapPartner,
     PartnerFrame, SnapHit, WindowRect,
@@ -53,14 +53,15 @@ use moe_frame::snap_group::{
 use moe_frame::window_geom::MIN_WINDOW_SIDE;
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-    UI::Input::KeyboardAndMouse::{GetCapture, ReleaseCapture, SetCapture, VK_ESCAPE},
+    UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, GetCapture, ReleaseCapture, SetCapture, VK_ESCAPE,
+    },
     UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
     UI::WindowsAndMessaging::{
         BeginDeferWindowPos, DeferWindowPos, DispatchMessageW, EndDeferWindowPos, GetCursorPos,
         GetMessageW, PostQuitMessage, SendMessageW, SetWindowPos, TranslateMessage, MSG,
         SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WM_CANCELMODE, WM_CAPTURECHANGED,
-        WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVING,
-        WM_NCLBUTTONDOWN,
+        WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVING, WM_NCLBUTTONDOWN,
     },
 };
 
@@ -471,12 +472,15 @@ fn run_modal_drag(hwnd: HWND, hit: DragHit) {
 /// 拟议矩形（库 modal_drag）、流经吸附调整（开关启用且会话
 /// 在时）、SetWindowPos 落位。终止条件与 DefWindowProc 语
 /// 义对齐：本窗 WM_LBUTTONUP 落位结束（消息被消费，松手通
-/// 知由收尾的 WM_EXITSIZEMOVE 触发 winit 合成）；Esc 与
-/// WM_CANCELMODE 恢复起始矩形后结束（消息被消费）；捕获被
-/// 夺（WM_CAPTURECHANGED）按现位结束（消息照常分发）。其
-/// 余消息一律翻译 + 分发，设置窗与定时器/绘制消息照常流
-/// 转——与原生环在同一线程泵消息同构。捕获没拿到手就直接
-/// 放弃本次环（鼠标消息不会投向本窗，环无从推进）。
+/// 知由收尾的 WM_EXITSIZEMOVE 触发 winit 合成）；Esc 恢复
+/// 起始矩形后结束——不走 WM_KEYDOWN 消息（那依赖本窗持有
+/// 焦点），改逐轮轮询 GetAsyncKeyState 的新按下沿，与原生
+/// 环逐轮查键态同构；WM_CANCELMODE 同样恢复起始矩形后结
+/// 束（消息被消费）；捕获被夺（WM_CAPTURECHANGED）按现位
+/// 结束（消息照常分发）。其余消息一律翻译 + 分发，设置窗
+/// 与定时器/绘制消息照常流转——与原生环在同一线程泵消息
+/// 同构。捕获没拿到手就直接放弃本次环（鼠标消息不会投向
+/// 本窗，环无从推进）。
 fn modal_drag_loop(hwnd: HWND, hit: DragHit) {
     let own_id = hwnd as usize as u64;
     // 起始矩形与起始光标（物理像素）：环内所有拟议矩形都从
@@ -502,6 +506,10 @@ fn modal_drag_loop(hwnd: HWND, hit: DragHit) {
             // 没拿到手：捕获在别人手里，不碰它，直接放弃。
             return;
         }
+        // Esc 轮询的基线：入环这一刻的键态作首轮的 was_down
+        // ——入环前已按住的 Esc 不触发取消（按下沿判定在库
+        // esc_press_edge）。
+        let mut esc_was_down = esc_is_down();
         let mut restore = false;
         let mut finished = false;
         while !finished {
@@ -517,12 +525,18 @@ fn modal_drag_loop(hwnd: HWND, hit: DragHit) {
                 PostQuitMessage(msg.wParam as i32);
                 break;
             }
+            // Esc 取消逐轮轮询：命中新按下沿即恢复起始矩形结
+            // 束，本条消息随环结束被消费、不再分发。Esc 的键
+            // 消息本身会唤醒 GetMessageW，光标静止时按下也能
+            // 在本轮命中，不必等下一条鼠标消息。
+            let esc_down = esc_is_down();
+            if esc_press_edge(esc_was_down, esc_down) {
+                restore = true;
+                break;
+            }
+            esc_was_down = esc_down;
             match msg.message {
                 WM_LBUTTONUP if msg.hwnd == hwnd => {
-                    finished = true;
-                }
-                WM_KEYDOWN if msg.hwnd == hwnd && msg.wParam as u16 == VK_ESCAPE => {
-                    restore = true;
                     finished = true;
                 }
                 WM_CANCELMODE if msg.hwnd == hwnd => {
@@ -535,6 +549,9 @@ fn modal_drag_loop(hwnd: HWND, hit: DragHit) {
                     finished = true;
                 }
                 WM_MOUSEMOVE if msg.hwnd == hwnd => {
+                    // 先翻译 + 分发再算落位：让 egui 经自身
+                    // WndProc 先同步到最新指针位置，后续帧的
+                    // 命中判定与光标形状不滞后一帧。
                     TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                     if let Some(cursor) = cursor_pos() {
@@ -559,6 +576,15 @@ fn modal_drag_loop(hwnd: HWND, hit: DragHit) {
         }
         ReleaseCapture();
     }
+}
+
+/// Esc 当前是否按住（GetAsyncKeyState 返回值的高位即当前
+/// 键态）；模态环逐轮轮询用。低位「上次查询以来是否按过」
+/// 不读——取消只认按下沿，按键基线由环维护（库
+/// esc_press_edge）。
+fn esc_is_down() -> bool {
+    // SAFETY: 纯读全局键态，无指针参数。
+    unsafe { GetAsyncKeyState(VK_ESCAPE as i32) < 0 }
 }
 
 /// 当前光标位置（物理像素，屏幕坐标）；取不到返回 None。
