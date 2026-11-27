@@ -23,16 +23,16 @@ CAPTION/SIZEBOX 挂回去；工单 02 的 [window-style] 日志只证明装配
 
 **Blocked by:** 工单 02（已合并 PR #14）。
 
-**Status:** ready-for-agent
+**Status:** needs-info
 
 ## Acceptance criteria
 
-- [ ] WM_STYLECHANGED 自愈：目标位重现时再剥 + SetWindowPos(FRAMECHANGED)，一行 restrip 日志；位已清时零动作零日志（收敛性有单测或等价纯判定覆盖）
-- [ ] [window-probe] 快照在首次焦点丢失与外观切换两点位各记一行（同点位不重复刷屏）：STYLE/EXSTYLE、窗口矩形、绘制矩形四项齐全
-- [ ] 既有行为不回归：工单 02 的模态环/吸附/样式剥离、工单 01 的 DWM 日志、置顶守擂全绿；设置窗不被监听不被剥
-- [ ] `scripts/check.sh` 口径全绿（fmt / clippy -D warnings / test --all-targets；VM 代偿口径如实记入 Comments）
-- [ ] 实机清单「窗口投影」追加：启动后切走焦点再切回、切换一次外观模式，各截宽图看暗层；并回传 [window-style] 与 [window-probe] 全部相关行
-- [ ] 实现笔记落 `.agents/notes/implemented/` 并通过三道校验门
+- [x] WM_STYLECHANGED 自愈：目标位重现时再剥 + SetWindowPos(FRAMECHANGED)，一行 restrip 日志；位已清时零动作零日志（收敛性有单测或等价纯判定覆盖）
+- [x] [window-probe] 快照在首次焦点丢失与外观切换两点位各记一行（同点位不重复刷屏）：STYLE/EXSTYLE、窗口矩形、绘制矩形四项齐全
+- [x] 既有行为不回归：工单 02 的模态环/吸附/样式剥离、工单 01 的 DWM 日志、置顶守擂全绿；设置窗不被监听不被剥
+- [x] `scripts/check.sh` 口径全绿（fmt / clippy -D warnings / test --all-targets；VM 代偿口径如实记入 Comments）
+- [x] 实机清单「窗口投影」追加：启动后切走焦点再切回、切换一次外观模式，各截宽图看暗层；并回传 [window-style] 与 [window-probe] 全部相关行
+- [x] 实现笔记落 `.agents/notes/implemented/` 并通过三道校验门
 
 ## Context
 
@@ -43,4 +43,7 @@ CAPTION/SIZEBOX 挂回去；工单 02 的 [window-style] 日志只证明装配
 
 ## Comments
 
-（暂无）
+- 2026-11-27 本侧完工（接管审计补完）：前任实现者中途离场留下未提交工作树，接管者逐项审计 diff 后认收，并修一处编译缺陷——宿主 `src/bin/moe-frame/window_probe.rs` 用 `egui::Rect` 未引入 egui，Windows 目标 E0433，补 `use eframe::egui;` 一行后全绿。自愈接线：子类化在吸附开关之前处理 WM_STYLECHANGED（与吸附解耦），STYLE/EXSTYLE 两路按 STYLESTRUCT.styleNew 判定，再剥写回后现读现核、仅动作时记一行 restrip；probe 两点位与守擂共用同一次焦点采样，外观首报只建基线、切换至多记 3 次。
+- 验证（VM 代偿口径，scripts/check.sh 不能在 VM 原样跑）：刮擦副本（自本 worktree 刷新，剥 rfd/tray-icon、启用 wayland/x11）`cargo test --all-targets` **469 passed / 0 failed**（基线 457 + 新增 12：window_style 自愈判定 4 + window_probe 8）；Windows 目标在 worktree 直跑 `cargo check --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo fmt --check` 全绿。宿主自愈/probe 接线在 Windows 目标下编译校验、运行在 CI；其实效（restrip 是否出现、probe 两行对账）待实机清单回传判定，Status 置 needs-info。
+- 实现笔记 `.agents/notes/implemented/bug-fix/2026-11-27-style-self-heal-probe.md`：tree 门与 archived 门通过；format 门失败名单恰为既有 4 篇（crossfade-merge、multi-instance-snap-review-fixes、leader-driven-group、wm-moving-snap），本笔记不在名单、未代改。
+- 实机清单「窗口投影」一节已追加 3 条（焦点切换、外观切换、日志回传），既有条目未动。

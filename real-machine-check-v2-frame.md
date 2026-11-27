@@ -148,3 +148,14 @@
       event=strip 一行，style 剥后值中 0x00C40000 掩码位已
       清、result=ok；若暗层仍在或拖动/缩放异常，把该行回填
       窗口投影工单 02 的 Comments
+- [ ] 焦点切换后暗层不回（工单 03）：启动后点其他窗口切走焦
+      点、再切回相框，亮色壁纸宽幅截图看窗口矩形暗层；期间
+      若设过「置于顶层」，守擂重申后同样再看一眼
+- [ ] 外观切换后暗层不回（工单 03）：切换一次外观模式（如自
+      定义相框图 → 内置画框 → 切回），宽幅截图看暗层
+- [ ] 日志回传（工单 03）：把 moe_frame.log 中 [window-style]
+      与 [window-probe] 的全部相关行回填窗口投影工单 03 的
+      Comments——重点是 event=restrip 有没有出现、[window-probe]
+      event=focus-loss 与 event=appearance 两行里 style 的
+      0x00C40000 掩码位是否已清、win_rect 与 draw_rect 是否
+      一致
