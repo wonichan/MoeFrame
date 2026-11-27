@@ -169,6 +169,7 @@ fn test_app(test_id: &str) -> (super::FrameApp, std::path::PathBuf) {
         frame_art: super::FrameArtHost::NotSelected,
         window_level: egui::WindowLevel::Normal,
         level_guard: moe_frame::level_guard::LevelGuard::new(),
+        window_probe: moe_frame::window_probe::WindowProbe::new(),
         session: moe_frame::settings_session::SettingsSession::new(),
         debug_last_inner: None,
     };

@@ -206,4 +206,5 @@ pub fn resize_direction(rect: egui::Rect, pos: egui::Pos2) -> Option<egui::Resiz
 }
 
 pub mod window_geom;
+pub mod window_probe;
 pub mod window_style;

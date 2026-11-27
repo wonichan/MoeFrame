@@ -37,6 +37,14 @@
 //! dragging 旗标复位与其合成 WM_LBUTTONUP（应用层的松手
 //! 感知来源）也原样发生；真实的 WM_LBUTTONUP 被环消费、
 //! 不分发，与 DefWindowProc 消费真实抬键同构。
+//!
+//! 窗口投影工单 03 再加样式自愈：winit 的 setter 经
+//! set_window_flags 整词重写样式，装配时剥掉的边框位会被挂
+//! 回来——本层监听 WM_STYLECHANGED（子类链先于 winit 自有
+//! 过程看到），目标位在 STYLESTRUCT.styleNew 里重现就当场
+//! 再剥并记一行 [window-style] event=restrip；再剥触发的二
+//! 次 STYLECHANGED 因位已清在判定处零动作收敛。自愈与吸附
+//! 开关无关，开关关时同样工作；消息处理完照常转发。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -59,13 +67,16 @@ use windows_sys::Win32::{
     UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
     UI::WindowsAndMessaging::{
         BeginDeferWindowPos, DeferWindowPos, DispatchMessageW, EndDeferWindowPos, GetCursorPos,
-        GetMessageW, PostQuitMessage, SendMessageW, SetWindowPos, TranslateMessage, MSG,
-        SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WM_CANCELMODE, WM_CAPTURECHANGED,
+        GetMessageW, GetWindowLongPtrW, PostQuitMessage, SendMessageW, SetWindowLongPtrW,
+        SetWindowPos, TranslateMessage, GWL_EXSTYLE, GWL_STYLE, MSG, STYLESTRUCT, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WM_CANCELMODE, WM_CAPTURECHANGED,
         WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVING, WM_NCLBUTTONDOWN,
+        WM_STYLECHANGED,
     },
 };
 
 use super::snap_enum;
+use super::window_style_record;
 
 /// 子类化标识（本进程内固定一份）。
 const SUBCLASS_ID: usize = 1;
@@ -151,7 +162,8 @@ pub(crate) fn uninstall(hwnd: isize) {
 /// 子类化窗口过程：WM_ENTERSIZEMOVE / WM_MOVING / WM_EXITSIZEMOVE
 /// 三条消息做吸附处理；WM_NCLBUTTONDOWN 的拖动/缩放命中码被
 /// 拦截跑自研模态环（工单 02，吞掉不转发——转发给
-/// DefWindowProc 正是要避开的失效原生环）；其余一律转发。
+/// DefWindowProc 正是要避开的失效原生环）；WM_STYLECHANGED
+/// 做样式自愈（工单 03，处理完照常转发）；其余一律转发。
 unsafe extern "system" fn snap_subclass_proc(
     hwnd: HWND,
     msg: u32,
@@ -165,6 +177,9 @@ unsafe extern "system" fn snap_subclass_proc(
             run_modal_drag(hwnd, hit);
             return 0;
         }
+    }
+    if msg == WM_STYLECHANGED {
+        handle_style_changed(hwnd, wparam, lparam);
     }
     if SNAP_ENABLED.load(Ordering::Relaxed) {
         match msg {
@@ -198,6 +213,74 @@ fn end_drag_session() {
         *session = None;
     }
     SOLO_DRAG.store(false, Ordering::Relaxed);
+}
+
+/// WM_STYLECHANGED 样式自愈（窗口投影工单 03）：wParam 指明
+/// 被改的索引（GWL_STYLE / GWL_EXSTYLE 两路），LPARAM 的
+/// STYLESTRUCT.styleNew 里工单 02 的剥离位重现就当场再剥：
+/// SetWindowLongPtrW 写回剥后值 + SetWindowPos(FRAMECHANGED)
+/// 生效，前后值与成败以 [window-style] event=restrip 记一
+/// 行。再剥的写回会同步再触发一次 WM_STYLECHANGED，其
+/// styleNew 已清——在库 window_style 的判定处零动作、零日
+/// 志，自然收敛，不设递归计数。位未重现（含本层装配剥离与
+/// 自愈写回触发的消息）一律零动作。判定与日志口径在库
+/// window_style，本函数只接线。
+fn handle_style_changed(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) {
+    if lparam == 0 {
+        return;
+    }
+    // SAFETY: WM_STYLECHANGED 的 lparam 按 Win32 约定指向系
+    // 统持有的 STYLESTRUCT，在本次回调内只读合法。
+    let style_new = unsafe { (*(lparam as *const STYLESTRUCT)).styleNew };
+    let index = wparam as i32;
+    let (needed, stripped, label) = if index == GWL_STYLE {
+        let new_style = style_new as i32 as isize;
+        (
+            moe_frame::window_style::style_restrip_needed(new_style),
+            moe_frame::window_style::stripped_style(new_style),
+            "style",
+        )
+    } else if index == GWL_EXSTYLE {
+        let new_ex_style = style_new as i32 as isize;
+        (
+            moe_frame::window_style::exstyle_restrip_needed(new_ex_style),
+            moe_frame::window_style::stripped_ex_style(new_ex_style),
+            "exstyle",
+        )
+    } else {
+        return;
+    };
+    if !needed {
+        return;
+    }
+    let before = style_new as i32 as isize;
+    // SAFETY: hwnd 是本进程相框窗口，写回的是本窗自己的样式
+    // 位；SetWindowPos 只以 SWP_FRAMECHANGED 让新样式生效，
+    // 不移动、不改尺寸、不动 Z 序、不激活。写回同步触发的
+    // 二次 STYLECHANGED 重入本函数时位已清，在上面判定处
+    // 返回（见函数头）。写回后现读现核，日志记实际值。
+    unsafe {
+        SetWindowLongPtrW(hwnd, index, stripped);
+        let applied = SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        ) != 0;
+        let now = GetWindowLongPtrW(hwnd, index);
+        window_style_record(
+            "restrip",
+            &moe_frame::window_style::restrip_log_details(
+                label,
+                before,
+                now,
+                applied && now == stripped,
+            ),
+        );
+    }
 }
 
 /// WM_ENTERSIZEMOVE：枚举伙伴组装本地关系表（各伙伴的基座属

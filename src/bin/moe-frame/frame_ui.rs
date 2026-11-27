@@ -5,6 +5,11 @@ use super::*;
 impl eframe::App for FrameApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // 本帧相框绘制矩形（视口逻辑坐标）：下方 CentralPanel 以
+        // Frame::NONE 无边距铺满本 Ui，面板内的绘制矩形与此同
+        // 值；窗口实况快照（窗口投影工单 03）的 draw_rect 取这
+        // 一份，换算口径在库 window_probe。
+        let draw_rect = ui.max_rect();
         if !self.started {
             self.started = true;
             startup_marker("first-frame", "phase=egui-first-ui");
@@ -124,6 +129,17 @@ impl eframe::App for FrameApp {
         // 桌面，宿主只画画面区域的插画与九宫格八区。
         self.ensure_frame_art_texture(&ctx);
         let effective = self.effective_appearance();
+        // 窗口实况快照（窗口投影工单 03）：外观模式切换生效的这
+        // 一帧记一行快照（每进程至多 3 次、首报只建基线，判定
+        // 在库 window_probe）——样式与窗口/绘制矩形的实况对账。
+        if self.window_probe.note_appearance(effective) {
+            super::window_probe::snapshot(
+                self.hwnd,
+                "appearance",
+                draw_rect,
+                ctx.pixels_per_point(),
+            );
+        }
         let plan = moe_frame::frame_layout::paint_plan(effective, self.texture.is_some());
         let panel_fill = if plan.panel_opaque {
             egui::Color32::BLACK
@@ -300,10 +316,20 @@ impl eframe::App for FrameApp {
         // 非置顶层级传 Unknown，不分类、不记日志（重申照常发；
         // 判定层对非置顶同样一律不分类，双保险）。重申只走
         // viewport 命令：不新增 SetWindowPos 直调、不激活窗口。
-        if self
-            .level_guard
-            .poll(self.window_level, frame_focused(&ctx), now)
-        {
+        let focused_now = frame_focused(&ctx);
+        // 窗口实况快照（窗口投影工单 03）：首次失焦与守擂自检同
+        // 点位搭车——同一次焦点采样、同一帧判定；每进程只记一
+        // 次，判定在库 window_probe。样式若在失焦前后被 winit
+        // 写回，自愈的 restrip 行与本行在日志里正好对账。
+        if self.window_probe.poll_focus(focused_now) {
+            super::window_probe::snapshot(
+                self.hwnd,
+                "focus-loss",
+                draw_rect,
+                ctx.pixels_per_point(),
+            );
+        }
+        if self.level_guard.poll(self.window_level, focused_now, now) {
             let mark = if self.window_level == egui::WindowLevel::AlwaysOnTop {
                 topmost_mark(self.hwnd)
             } else {
