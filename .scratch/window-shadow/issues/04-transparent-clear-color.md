@@ -11,16 +11,16 @@
 
 **Blocked by:** 无（工单 03 的探针已排除样式写回与几何错位两个嫌疑，本票是定案后的修复）
 
-**Status:** ready-for-agent
+**Status:** needs-info
 
 ## Acceptance criteria
 
-- [ ] FrameApp 覆盖 clear_color 恒返回 [0.0; 4]，注释写清为什么（eframe 默认 (12,12,12,180) 占位清屏 + 透明窗必须清为全透明，链回本工单）；返回值经一个可单测的自由函数/常量给出并有回归测试钉住全零（防后人误改回非透明）
-- [ ] 设置窗外观与行为不变（其面板不透明、逐像素覆盖清屏）；内置画框与极简模式绘制路径零改动
-- [ ] 工单 01/02/03 的既有代码与日志零改动
-- [ ] 全套验证通过：刮擦副本 cargo test --all-targets、Windows 目标 check / clippy -D warnings / fmt（scripts/check.sh 本机不可跑，如实记录替代口径）
-- [ ] 实现笔记落 .agents/notes/implemented/ 并过三道校验门（format 门既有 4 篇失败不代改）；工单 03 Comments 补记探针定案（甲/乙 两嫌疑排除、win_rect=draw_rect、样式在探针时刻干净）
-- [ ] 实机清单「窗口投影」节追加验收条目：PR 合并构建下自定义哥特相框四周暗带消失（亮壁纸宽幅截图）、极简模式窗口透明区无暗带、设置窗外观正常；本票 Status 置 needs-info 待该轮实机确认
+- [x] FrameApp 覆盖 clear_color 恒返回 [0.0; 4]，注释写清为什么（eframe 默认 (12,12,12,180) 占位清屏 + 透明窗必须清为全透明，链回本工单）；返回值经一个可单测的自由函数/常量给出并有回归测试钉住全零（防后人误改回非透明）
+- [x] 设置窗外观与行为不变（其面板不透明、逐像素覆盖清屏）；内置画框与极简模式绘制路径零改动
+- [x] 工单 01/02/03 的既有代码与日志零改动
+- [x] 全套验证通过：刮擦副本 cargo test --all-targets、Windows 目标 check / clippy -D warnings / fmt（scripts/check.sh 本机不可跑，如实记录替代口径）
+- [x] 实现笔记落 .agents/notes/implemented/ 并过三道校验门（format 门既有 4 篇失败不代改）；工单 03 Comments 补记探针定案（甲/乙 两嫌疑排除、win_rect=draw_rect、样式在探针时刻干净）
+- [x] 实机清单「窗口投影」节追加验收条目：PR 合并构建下自定义哥特相框四周暗带消失（亮壁纸宽幅截图）、极简模式窗口透明区无暗带、设置窗外观正常；本票 Status 置 needs-info 待该轮实机确认
 
 ## Context
 
@@ -39,3 +39,7 @@
   即定案；若暗带原样仍在，清屏色嫌疑排除，回报中如实记录并停手待议。
 
 ## Comments
+
+- 2026-11-28 本侧完工：`FrameApp` 覆盖 `clear_color` 转调宿主 `frame_ui.rs` 自由函数 `transparent_clear_color()`（恒 `[0.0; 4]`，注释链回本工单与工单 03 探针定案）；`ui_regressions.rs` 新增回归测试 `the_frame_clear_color_is_fully_transparent`，自由函数本体与 trait 分发两头钉死。设置窗与内置/极简绘制路径零改动，工单 01/02/03 代码与日志零改动。
+- 验证（VM 代偿口径，scripts/check.sh 不能在 VM 原样跑）：刮擦副本（自本 worktree 刷新）`cargo test --all-targets` **469 passed / 0 failed**（与工单 03 基线持平——本票改动全在宿主侧；新回归测试在产品 bin 内、不入刮擦计数，已在 Windows 目标 check/clippy --all-targets 下编译校验，运行在 CI）；Windows 目标在 worktree 直跑 `cargo check --all-targets`、`cargo clippy --all-targets -- -D warnings`、`cargo fmt --check` 全绿。
+- 实现笔记 `.agents/notes/implemented/bug-fix/2026-11-28-transparent-clear-color.md`：tree 门与 archived 门通过；format 门失败名单恰为既有 4 篇（crossfade-merge、multi-instance-snap-review-fixes、leader-driven-group、wm-moving-snap），本笔记不在名单、未代改。实机清单「窗口投影」一节已追加 3 条（工单 04：暗带消失、极简无暗带、设置窗如常），既有条目未动。工单 03 的 Comments 已补记探针定案段，其 Status 保持 needs-info 不动。alpha 呈现链（默认 180 → 量测等效 ≈150）未逐环追认，以实机为最终判据：暗带消失即定案；若原样仍在，清屏色嫌疑排除、停手待议。Status 置 needs-info 待该轮实机确认。
