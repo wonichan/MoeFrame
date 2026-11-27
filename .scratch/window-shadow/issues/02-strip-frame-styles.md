@@ -82,3 +82,15 @@ HT 码，自行跑模态环（SetCapture + 跟随光标 + SetWindowPos），并�
   过、format 门失败名单恰为仓库既有 4 篇（crossfade-merge、
   multi-instance-snap-review-fixes、leader-driven-group、
   wm-moving-snap），本笔记不在名单、未代改。
+- 2026-11-27 评审 judgement 两项已处理（提交 698dd46）：
+  ①模态环 Esc 取消改走逐轮轮询 GetAsyncKeyState 的新按下
+  沿（库 `modal_drag::esc_press_edge` 纯判定 + 2 单测，
+  TDD 先红后绿）——不再依赖 WM_KEYDOWN/本窗焦点，与
+  DefWindowProc 原生环逐轮查键态同构；入环键态作基线，
+  入环前已按住的 Esc 不触发，WM_KEYDOWN 旧路径已移除
+  （Esc 键消息本身会唤醒消息泵，轮询在本轮即命中，无需
+  冗余）。②环内 WM_MOUSEMOVE 分支补注释：先 Translate/
+  Dispatch 再算落位，是为让 egui 经自身 WndProc 先同步指
+  针位置。验证：刮擦副本 `cargo test --all-targets` 457
+  全绿（455 + 新增 2）；Windows 目标 fmt --check /
+  check / clippy -D warnings 全绿。
