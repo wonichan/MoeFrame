@@ -19,6 +19,7 @@ pub mod instance;
 pub mod level_guard;
 pub mod library;
 pub mod loading;
+pub mod modal_drag;
 pub mod playlist;
 pub mod settings_session;
 pub mod snap;
@@ -205,3 +206,4 @@ pub fn resize_direction(rect: egui::Rect, pos: egui::Pos2) -> Option<egui::Resiz
 }
 
 pub mod window_geom;
+pub mod window_style;

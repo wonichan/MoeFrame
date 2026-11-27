@@ -23,10 +23,25 @@
 //! HDWP 搬走的伙伴进程不跑任何跟随逻辑，其几何机按「位置变
 //! 了、尺寸没变」自然吸收（工单 06 审计，见库 window_geom
 //! 的回归测试）。
+//!
+//! 窗口投影工单 02 起本层多一项接管：相框窗口的边框样式在装
+//! 配时被剥掉后，DefWindowProc 的移动/缩放模态环随之失效，
+//! 本层拦截 WM_NCLBUTTONDOWN 的 HTCAPTION 与八个 HT 缩放
+//! 码（egui 的 StartDrag / BeginResize 经 winit 投递至此），
+//! 吞掉消息自行跑模态环：SetCapture 后泵消息、按光标位移算
+//! 拟议矩形（库 modal_drag 纯判定）、每帧流经与 WM_MOVING
+//! 同一条吸附调整、SetWindowPos 落位；Esc 恢复起始矩形，
+//! WM_CANCELMODE 同样恢复，捕获被夺按现位结束。环的进入与
+//! 退出经子类链送 WM_ENTERSIZEMOVE / WM_EXITSIZEMOVE，与
+//! 原生环同构——吸附会话的组装/收尾走既有分支，winit 的
+//! dragging 旗标复位与其合成 WM_LBUTTONUP（应用层的松手
+//! 感知来源）也原样发生；真实的 WM_LBUTTONUP 被环消费、
+//! 不分发，与 DefWindowProc 消费真实抬键同构。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+use moe_frame::modal_drag::{drag_rect, esc_press_edge, DragHit};
 use moe_frame::snap::{
     drag_partners_on_monitor, physical_snap_threshold, solve_drag_snap, DragSnapPartner,
     PartnerFrame, SnapHit, WindowRect,
@@ -35,12 +50,18 @@ use moe_frame::snap_group::{
     base_relation_valid, base_update_decision, frame_delta, plan_drag_start, temporary_contact_ids,
     SnapPartner, SnapRelation,
 };
+use moe_frame::window_geom::MIN_WINDOW_SIDE;
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, GetCapture, ReleaseCapture, SetCapture, VK_ESCAPE,
+    },
     UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
     UI::WindowsAndMessaging::{
-        BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos, SWP_NOACTIVATE, SWP_NOSIZE,
-        SWP_NOZORDER, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOVING,
+        BeginDeferWindowPos, DeferWindowPos, DispatchMessageW, EndDeferWindowPos, GetCursorPos,
+        GetMessageW, PostQuitMessage, SendMessageW, SetWindowPos, TranslateMessage, MSG,
+        SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WM_CANCELMODE, WM_CAPTURECHANGED,
+        WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOVING, WM_NCLBUTTONDOWN,
     },
 };
 
@@ -58,6 +79,11 @@ static SOLO_DRAG: AtomicBool = AtomicBool::new(false);
 
 /// 当前拖动会话（WM_ENTERSIZEMOVE 建、WM_EXITSIZEMOVE 清）。
 static DRAG_SESSION: Mutex<Option<DragSession>> = Mutex::new(None);
+
+/// 自研模态环进行中旗标（工单 02）：环内再来的
+/// WM_NCLBUTTONDOWN 直接忽略，与 DefWindowProc 模态环不
+/// 重入同构。访问都在 UI 线程，AtomicBool 只为静态可 Sync。
+static MODAL_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// 一次原生拖动的会话状态：开始时枚举一次的伙伴（矩形每帧经
 /// GetWindowRect 刷新，与伙伴各自的显示器矩形事实成对保存，
@@ -96,11 +122,13 @@ pub(crate) fn install(hwnd: isize, enabled: bool) {
     }
     set_enabled(enabled);
     // SAFETY: hwnd 是本进程相框窗口的句柄（装配处经 raw-window-
-    // handle 取得）。snap_subclass_proc 只处理三条拖动消息
-    // （WM_ENTERSIZEMOVE / WM_MOVING / WM_EXITSIZEMOVE），其余
-    // 消息一律经 DefSubclassProc 转发给 winit 自有链；整体安全
-    // 性不来自回调本身无 unsafe，而来自各 unsafe 点的局部论证
-    // （RECT 改写、HDWP、属性读写各自的 SAFETY 注记）。
+    // handle 取得）。snap_subclass_proc 处理拖动消息
+    // （WM_ENTERSIZEMOVE / WM_MOVING / WM_EXITSIZEMOVE）并
+    // 拦截 WM_NCLBUTTONDOWN 的拖动/缩放命中码跑自研模态环
+    // （工单 02），其余消息一律经 DefSubclassProc 转发给
+    // winit 自有链；整体安全性不来自回调本身无 unsafe，而来
+    // 自各 unsafe 点的局部论证（RECT 改写、HDWP、属性读写、
+    // 模态环泵消息各自的 SAFETY 注记）。
     unsafe {
         SetWindowSubclass(hwnd as HWND, Some(snap_subclass_proc), SUBCLASS_ID, 0);
     }
@@ -121,8 +149,9 @@ pub(crate) fn uninstall(hwnd: isize) {
 }
 
 /// 子类化窗口过程：WM_ENTERSIZEMOVE / WM_MOVING / WM_EXITSIZEMOVE
-/// 三条消息做吸附处理，其余一律转发。无论是否处理，所有消息最
-/// 终都经 DefSubclassProc 交回 winit 自有链。
+/// 三条消息做吸附处理；WM_NCLBUTTONDOWN 的拖动/缩放命中码被
+/// 拦截跑自研模态环（工单 02，吞掉不转发——转发给
+/// DefWindowProc 正是要避开的失效原生环）；其余一律转发。
 unsafe extern "system" fn snap_subclass_proc(
     hwnd: HWND,
     msg: u32,
@@ -131,6 +160,12 @@ unsafe extern "system" fn snap_subclass_proc(
     _uid: usize,
     _ref_data: usize,
 ) -> LRESULT {
+    if msg == WM_NCLBUTTONDOWN {
+        if let Some(hit) = DragHit::from_hit_code(wparam as i32) {
+            run_modal_drag(hwnd, hit);
+            return 0;
+        }
+    }
     if SNAP_ENABLED.load(Ordering::Relaxed) {
         match msg {
             WM_ENTERSIZEMOVE => {
@@ -147,14 +182,22 @@ unsafe extern "system" fn snap_subclass_proc(
         // Shift 独走旗标（审查修复 F6——旗标只活在一次拖动内，
         // 不复位会污染下一次拖动的独走判定）。关系属性留在窗
         // 上（卫生规则在拖动开始与拖动中校验），不在此清。
-        if let Ok(mut session) = DRAG_SESSION.lock() {
-            *session = None;
-        }
-        SOLO_DRAG.store(false, Ordering::Relaxed);
+        end_drag_session();
     }
     // SAFETY: 转发参数原样来自系统分发；DefSubclassProc 是子类化
     // 链的标准下一环（winit 自有过程）。
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+/// 拖动会话收尾（WM_EXITSIZEMOVE 分支专用）：清会话并复位
+/// Shift 独走旗标，语义见 proc 的 EXITSIZEMOVE 注记。自研模
+/// 态环不直接调本函数——它在收尾时送 WM_EXITSIZEMOVE 走同
+/// 一分支，保持单一收尾路径。
+fn end_drag_session() {
+    if let Ok(mut session) = DRAG_SESSION.lock() {
+        *session = None;
+    }
+    SOLO_DRAG.store(false, Ordering::Relaxed);
 }
 
 /// WM_ENTERSIZEMOVE：枚举伙伴组装本地关系表（各伙伴的基座属
@@ -270,19 +313,47 @@ fn begin_drag_session(hwnd: HWND) {
     }
 }
 
-/// WM_MOVING 一帧：刷新伙伴矩形、按拟拖矩形所在显示器过滤
-/// 伙伴后求解吸附并改写拟拖 RECT、逐帧卫生校验已记录基座、
-/// 按命中记录关系，最后以帧增量用 HDWP 搬运搬运集合。
+/// WM_MOVING 一帧：读 lParam 的拟拖 RECT、走吸附调整、把
+/// 最终矩形写回（原生模态循环据此落位）。
 fn handle_moving(hwnd: HWND, lparam: LPARAM) {
     if lparam == 0 {
         return;
     }
-    let Ok(mut guard) = DRAG_SESSION.lock() else {
+    // SAFETY: WM_MOVING 的 lparam 按 Win32 约定指向系统持有
+    // 的 RECT（拟拖窗口矩形，物理像素），在本次回调内读写
+    // 合法。
+    let rect_ptr = lparam as *mut RECT;
+    let proposed = unsafe {
+        WindowRect {
+            left: (*rect_ptr).left as f32,
+            top: (*rect_ptr).top as f32,
+            right: (*rect_ptr).right as f32,
+            bottom: (*rect_ptr).bottom as f32,
+        }
+    };
+    let Some(final_rect) = adjust_drag_frame(hwnd, proposed) else {
         return;
     };
-    let Some(session) = guard.as_mut() else {
-        return;
-    };
+    if final_rect != proposed {
+        // SAFETY: 同上，改写拟拖矩形即改写模态循环将采用的
+        // 位置。
+        unsafe {
+            (*rect_ptr).left = final_rect.left as i32;
+            (*rect_ptr).top = final_rect.top as i32;
+            (*rect_ptr).right = final_rect.right as i32;
+            (*rect_ptr).bottom = final_rect.bottom as i32;
+        }
+    }
+}
+
+/// 一帧拖动的吸附调整（WM_MOVING 路径与自研模态环共用）：
+/// 刷新伙伴矩形、按拟拖矩形所在显示器过滤伙伴后求解吸附、
+/// 逐帧卫生校验已记录基座、按命中记录关系，最后以帧增量用
+/// HDWP 搬运搬运集合。返回最终落位矩形；无拖动会话时返回
+/// None（调用方按未调整处理）。
+fn adjust_drag_frame(hwnd: HWND, proposed: WindowRect) -> Option<WindowRect> {
+    let mut guard = DRAG_SESSION.lock().ok()?;
+    let session = guard.as_mut()?;
     let own_id = hwnd as usize as u64;
     // 本窗当前实际左上（帧首以自家 HWND 的 GetWindowRect 取得，
     // 物理像素）：帧增量的减数。
@@ -296,17 +367,6 @@ fn handle_moving(hwnd: HWND, lparam: LPARAM) {
             None => false,
         }
     });
-    // SAFETY: WM_MOVING 的 lparam 按 Win32 约定指向系统持有的
-    // RECT（拟拖窗口矩形，物理像素），在本次回调内读写合法。
-    let rect_ptr = lparam as *mut RECT;
-    let proposed = unsafe {
-        WindowRect {
-            left: (*rect_ptr).left as f32,
-            top: (*rect_ptr).top as f32,
-            right: (*rect_ptr).right as f32,
-            bottom: (*rect_ptr).bottom as f32,
-        }
-    };
     let work_area = snap_enum::work_area_for_physical_rect(proposed);
     let threshold = physical_snap_threshold(snap_enum::own_dpi(hwnd as isize));
     // 同屏过滤（F3）：只让与拟拖矩形同屏的伙伴参与本帧求解；
@@ -373,15 +433,6 @@ fn handle_moving(hwnd: HWND, lparam: LPARAM) {
             proposed
         }
     };
-    if final_rect != proposed {
-        // SAFETY: 同上，改写拟拖矩形即改写模态循环将采用的位置。
-        unsafe {
-            (*rect_ptr).left = final_rect.left as i32;
-            (*rect_ptr).top = final_rect.top as i32;
-            (*rect_ptr).right = final_rect.right as i32;
-            (*rect_ptr).bottom = final_rect.bottom as i32;
-        }
-    }
     // 子树搬运：增量 = 最终落位左上 − 本窗当前实际左上；增量
     // 为零不调 HDWP。单帧一次 Begin/End 原子提交，不激活、
     // 不改尺寸、不改 Z 序。
@@ -390,6 +441,176 @@ fn handle_moving(hwnd: HWND, lparam: LPARAM) {
         if (delta[0] != 0.0 || delta[1] != 0.0) && !session.carry.is_empty() {
             move_carry_by(&session.carry, delta);
         }
+    }
+    Some(final_rect)
+}
+
+/// 拦截到的拖动/缩放自研模态环入口（工单 02）：环内重入直
+/// 接忽略；进入与退出经子类链送 WM_ENTERSIZEMOVE /
+/// WM_EXITSIZEMOVE——前者让吸附会话按既有分支组装、winit
+/// 置 IN_SIZE_MOVE 旗标，后者让会话按既有分支收尾、winit
+/// 复位 dragging 旗标并合成 WM_LBUTTONUP（应用层的松手感
+/// 知来源），与 DefWindowProc 原生环的进入/退出通知同构。
+fn run_modal_drag(hwnd: HWND, hit: DragHit) {
+    if MODAL_DRAG_ACTIVE.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    // SAFETY: hwnd 是本进程相框窗口。SendMessageW 在本线程同
+    // 步走子类链送达这两条通知：回调会以不同消息重入本
+    // proc，无状态冲突（会话锁只在各分支内短暂持有）；模态
+    // 环本体在两条通知之间运行，期间本 proc 只经消息分发以
+    // 其他消息重入。
+    unsafe {
+        SendMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
+        modal_drag_loop(hwnd, hit);
+        SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+    }
+    MODAL_DRAG_ACTIVE.store(false, Ordering::Relaxed);
+}
+
+/// 模态环本体：SetCapture 后泵线程消息，光标移动时按位移算
+/// 拟议矩形（库 modal_drag）、流经吸附调整（开关启用且会话
+/// 在时）、SetWindowPos 落位。终止条件与 DefWindowProc 语
+/// 义对齐：本窗 WM_LBUTTONUP 落位结束（消息被消费，松手通
+/// 知由收尾的 WM_EXITSIZEMOVE 触发 winit 合成）；Esc 恢复
+/// 起始矩形后结束——不走 WM_KEYDOWN 消息（那依赖本窗持有
+/// 焦点），改逐轮轮询 GetAsyncKeyState 的新按下沿，与原生
+/// 环逐轮查键态同构；WM_CANCELMODE 同样恢复起始矩形后结
+/// 束（消息被消费）；捕获被夺（WM_CAPTURECHANGED）按现位
+/// 结束（消息照常分发）。其余消息一律翻译 + 分发，设置窗
+/// 与定时器/绘制消息照常流转——与原生环在同一线程泵消息
+/// 同构。捕获没拿到手就直接放弃本次环（鼠标消息不会投向
+/// 本窗，环无从推进）。
+fn modal_drag_loop(hwnd: HWND, hit: DragHit) {
+    let own_id = hwnd as usize as u64;
+    // 起始矩形与起始光标（物理像素）：环内所有拟议矩形都从
+    // 这组初值按光标位移推导，不累积帧间误差。
+    let Some(start_rect) = snap_enum::partner_rect_physical(own_id) else {
+        return;
+    };
+    let Some(start_cursor) = cursor_pos() else {
+        return;
+    };
+    // 最小尺寸（物理像素）：库的逻辑常量 MIN_WINDOW_SIDE 按
+    // 本窗 DPI 换算——DefWindowProc 曾以最小跟踪尺寸代劳的
+    // 钳制在环里按此补齐；最大跟踪尺寸仓库无既有常量，不复
+    // 刻（拟议矩形本就只是提议，应用层派生在后续帧收敛）。
+    let min_side = MIN_WINDOW_SIDE * snap_enum::own_dpi(hwnd as isize) as f32 / 96.0;
+    let snap_enabled = SNAP_ENABLED.load(Ordering::Relaxed);
+    // SAFETY: 本回调运行在窗口所在线程。SetCapture 后鼠标消
+    // 息都投本窗；环的每条退出路径都 ReleaseCapture。泵消息
+    // 的 GetMessageW 以空窗口句柄取本线程全部消息。
+    unsafe {
+        SetCapture(hwnd);
+        if GetCapture() != hwnd {
+            // 没拿到手：捕获在别人手里，不碰它，直接放弃。
+            return;
+        }
+        // Esc 轮询的基线：入环这一刻的键态作首轮的 was_down
+        // ——入环前已按住的 Esc 不触发取消（按下沿判定在库
+        // esc_press_edge）。
+        let mut esc_was_down = esc_is_down();
+        let mut restore = false;
+        let mut finished = false;
+        while !finished {
+            let mut msg: MSG = std::mem::zeroed();
+            let ret = GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0);
+            if ret == -1 {
+                // 取消息出错：按现位结束，不恢复。
+                break;
+            }
+            if ret == 0 {
+                // WM_QUIT：把退出消息重新投回队列，让外层事件
+                // 循环照常收尾；拖动按现位结束。
+                PostQuitMessage(msg.wParam as i32);
+                break;
+            }
+            // Esc 取消逐轮轮询：命中新按下沿即恢复起始矩形结
+            // 束，本条消息随环结束被消费、不再分发。Esc 的键
+            // 消息本身会唤醒 GetMessageW，光标静止时按下也能
+            // 在本轮命中，不必等下一条鼠标消息。
+            let esc_down = esc_is_down();
+            if esc_press_edge(esc_was_down, esc_down) {
+                restore = true;
+                break;
+            }
+            esc_was_down = esc_down;
+            match msg.message {
+                WM_LBUTTONUP if msg.hwnd == hwnd => {
+                    finished = true;
+                }
+                WM_CANCELMODE if msg.hwnd == hwnd => {
+                    restore = true;
+                    finished = true;
+                }
+                WM_CAPTURECHANGED if msg.hwnd == hwnd => {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                    finished = true;
+                }
+                WM_MOUSEMOVE if msg.hwnd == hwnd => {
+                    // 先翻译 + 分发再算落位：让 egui 经自身
+                    // WndProc 先同步到最新指针位置，后续帧的
+                    // 命中判定与光标形状不滞后一帧。
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                    if let Some(cursor) = cursor_pos() {
+                        let proposed =
+                            drag_rect(hit, start_rect, start_cursor, cursor, [min_side, min_side]);
+                        let final_rect = if snap_enabled {
+                            adjust_drag_frame(hwnd, proposed).unwrap_or(proposed)
+                        } else {
+                            proposed
+                        };
+                        apply_drag_rect(hwnd, final_rect);
+                    }
+                }
+                _ => {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+        }
+        if restore {
+            apply_drag_rect(hwnd, start_rect);
+        }
+        ReleaseCapture();
+    }
+}
+
+/// Esc 当前是否按住（GetAsyncKeyState 返回值的高位即当前
+/// 键态）；模态环逐轮轮询用。低位「上次查询以来是否按过」
+/// 不读——取消只认按下沿，按键基线由环维护（库
+/// esc_press_edge）。
+fn esc_is_down() -> bool {
+    // SAFETY: 纯读全局键态，无指针参数。
+    unsafe { GetAsyncKeyState(VK_ESCAPE as i32) < 0 }
+}
+
+/// 当前光标位置（物理像素，屏幕坐标）；取不到返回 None。
+fn cursor_pos() -> Option<[f32; 2]> {
+    let mut point: POINT = unsafe { std::mem::zeroed() };
+    // SAFETY: point 是栈上 POINT，调用同步填充后即读。
+    if unsafe { GetCursorPos(&mut point) } == 0 {
+        return None;
+    }
+    Some([point.x as f32, point.y as f32])
+}
+
+/// 把矩形落到相框窗口上（模态环专用）：只改位置与尺寸，不
+/// 动 Z 序、不激活。
+fn apply_drag_rect(hwnd: HWND, rect: WindowRect) {
+    // SAFETY: hwnd 是本进程相框窗口（模态环持有捕获期间）。
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            rect.left as i32,
+            rect.top as i32,
+            rect.width() as i32,
+            rect.height() as i32,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
     }
 }
 
