@@ -23,7 +23,7 @@ CAPTION/SIZEBOX 挂回去；工单 02 的 [window-style] 日志只证明装配
 
 **Blocked by:** 工单 02（已合并 PR #14）。
 
-**Status:** needs-info
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -48,3 +48,4 @@ CAPTION/SIZEBOX 挂回去；工单 02 的 [window-style] 日志只证明装配
 - 实现笔记 `.agents/notes/implemented/bug-fix/2026-11-27-style-self-heal-probe.md`：tree 门与 archived 门通过；format 门失败名单恰为既有 4 篇（crossfade-merge、multi-instance-snap-review-fixes、leader-driven-group、wm-moving-snap），本笔记不在名单、未代改。
 - 实机清单「窗口投影」一节已追加 3 条（焦点切换、外观切换、日志回传），既有条目未动。
 - 2026-11-28 探针定案（用户回传 pid=23908 运行）：`[window-probe] event=focus-loss style=0x160B0000 exstyle=0x00040010 win_rect=(2591,134,3629,926) draw_rect=(2591,134,3629,926)`。样式在探针时刻干净（CAPTION/SIZEBOX 位不在、剥离存活；WINDOWEDGE 不在），全程无 restrip 行——嫌疑（甲）样式写回排除；win_rect 与 draw_rect 逐像素相等（1038×792，与同轮截图量得的暗带矩形严丝合缝）——嫌疑（乙）几何错位排除。结论：暗带不是样式问题、不是几何错位，而是窗口表面自身在透明区呈现的像素，归因转工单 04（eframe 默认清屏色）。本票 Status 保持 needs-info：清单中与本轮探针无关的确认项不在工单 04 范围。
+- 2026-11-28 结案：本票仪表（自愈 + probe）已回传决定性证据并完成定案使命（探针段见上），工单 04 修复经差分验证台与合并构建实机双重确认；外观切换 probe 行未回传，但其待答问题已由验证台差分关闭，不再需要。Status 置 resolved；自愈与 probe 作为常驻守擂/诊断设施保留在代码中。
