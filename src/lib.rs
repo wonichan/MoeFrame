@@ -10,6 +10,7 @@ pub mod decode_validation;
 pub mod diagnostics;
 pub mod display;
 pub mod display_data;
+pub mod dwm_shadow;
 pub mod frame_art;
 pub mod frame_layout;
 pub mod gesture;
