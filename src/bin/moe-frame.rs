@@ -61,6 +61,9 @@ mod tray;
 #[path = "moe-frame/ui_regressions.rs"]
 mod ui_regressions;
 #[cfg(windows)]
+#[path = "moe-frame/window_probe.rs"]
+mod window_probe;
+#[cfg(windows)]
 #[path = "moe-frame/window_style.rs"]
 mod window_style;
 
@@ -286,6 +289,28 @@ fn window_style_record(event: &str, details: &str) {
     );
 }
 
+/// 窗口实况快照日志（窗口投影工单 03）：与启动标记同文件同格
+/// 式、独立前缀；只在首次失焦与外观模式切换两点位各写一行
+/// （点位与上限判定在库 window_probe），不参与行为。
+#[cfg(windows)]
+fn window_probe_record(event: &str, details: &str) {
+    let Some(directory) = app_directory() else {
+        return;
+    };
+    let path = directory.join("moe_frame.log");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let _ = writeln!(
+        file,
+        "[window-probe] unix_ms={unix_ms} pid={} event={event} {details}",
+        std::process::id()
+    );
+}
+
 #[cfg(windows)]
 fn resize_debug_record(event: &str, details: &str) {
     let Some(directory) = app_directory() else {
@@ -428,6 +453,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             let mut app = FrameApp {
                 window_level: egui::WindowLevel::Normal,
                 level_guard: moe_frame::level_guard::LevelGuard::new(),
+                window_probe: moe_frame::window_probe::WindowProbe::new(),
                 core: FrameCore::new(
                     core_args,
                     system_gesture_thresholds(cc.egui_ctx.pixels_per_point()),

@@ -127,6 +127,10 @@ pub(crate) struct FrameApp {
     /// 窗口层级守擂状态（置顶守擂工单 01）：纯判定在库 level_guard，
     /// 宿主每帧采样焦点轮询；与 window_level 同口径，会话级、不落盘。
     pub(crate) level_guard: moe_frame::level_guard::LevelGuard,
+    /// 窗口实况快照状态（窗口投影工单 03）：纯判定在库
+    /// window_probe，宿主在首次失焦与外观模式切换两点位记一
+    /// 行 [window-probe]；与 level_guard 同口径，会话级、不落盘。
+    pub(crate) window_probe: moe_frame::window_probe::WindowProbe,
     pub(crate) debug_last_inner: Option<[f32; 2]>,
 }
 impl FrameApp {
